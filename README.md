@@ -34,7 +34,7 @@ The application is built using a cloud-native stack focusing on low-latency data
 ```text
 EXCHANGE_GCP/
 ├── backend/            # FastAPI, DuckDB, WebSocket Broadcaster
-├── cloud_function/     # Data ingestion and BQ/GCS sync logic
+├── ingestion/          # Data ingestion and BQ/GCS sync logic
 ├── frontend/           # SvelteKit Dashboard (hosted on Firebase)
 └── docs/               # Architecture diagrams and screenshots
 ```

@@ -5,9 +5,7 @@
     import RankingPanel from '$lib/components/RankingPanel.svelte';
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
     import { onMount } from 'svelte';
-
-    // Cloud Run URL
-    const API_BASE_URL = 'https://exchange-api-32125618847.europe-west3.run.app';
+    import { PUBLIC_BACKEND_URL } from '$env/static/public';
 
     let stockData = $state([]);
     let assets = $state([]); 
@@ -19,7 +17,7 @@
 
     async function fetchAssets() {
         try {
-            const res = await fetch(`${API_BASE_URL}/summary`);
+            const res = await fetch(`${PUBLIC_BACKEND_URL}/summary`);
             if (res.ok) assets = await res.json();
         } catch (e) {
             console.error("Summary fetch error:", e);
@@ -29,7 +27,7 @@
     async function fetchStockData(symbol, period) {
         if (!symbol) return;
         try {
-            const res = await fetch(`${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=${period}`);
+            const res = await fetch(`${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=${period}`);
             stockData = res.ok ? await res.json() : [];
         } catch (e) {
             console.error("Chart fetch error:", e);
