@@ -26,7 +26,7 @@ The application is built using a cloud-native stack focusing on low-latency data
 #### 3. Real-Time Presentation Layer
 * **Cloud Run API**: A FastAPI backend hosted on Cloud Run (with dedicated CPU allocation) handles all RESTful requests and WebSocket management.
 * **Live Seeding**: The backend seeds initial price points from Binance and Yahoo Finance APIs to establish market baselines.
-* **WebSocket Broadcaster**: A persistent WSS (WebSocket Secure) feed pushes simulated real-time ticks to the frontend, ensuring a reactive user experience without constant database polling.
+* **WebSocket Broadcaster**: A persistent WSS (WebSocket Secure) feed pushes real-time ticks to the frontend, ensuring a reactive user experience without constant database polling.
 * **Firebase Hosting**: The SvelteKit frontend is deployed via Firebase, providing a fast and responsive interface that consumes data through both RESTful snapshots and live WebSocket streams.
 
 ## Project Structure
