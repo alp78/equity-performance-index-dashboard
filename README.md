@@ -1,6 +1,6 @@
 # Equity Performance Index Dashboard
 
-High-performance financial dashboard deployed on Google Cloud Platform using SvelteKit, FastAPI, and BigQuery, leveraging GCS-staged ingestion and DuckDB cache hydration to deliver real-time price simulations via WebSockets and Firebase.
+high-performance financial dashboard deployed on Google Cloud Platform using SvelteKit, FastAPI, and BigQuery, using GCS-staged ingestion and DuckDB cache hydration to deliver live market data feeds and real-time price updates via WebSockets and Firebase.
 
 ## Live Dashboard
 The dashboard provides an interface for tracking S&P 500 performance, technical indicators (MA30/MA90), and global macro assets.
