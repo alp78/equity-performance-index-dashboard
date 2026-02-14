@@ -1,0 +1,42 @@
+@import 'tailwindcss';
+
+/* --- Tailwind v4 Theme Variables --- */
+@theme {
+  --color-bloom-dark: #0f0e17;
+  --color-bloom-card: #1e1b2e;
+  --color-bloom-text: #a7a9be;
+  --color-bloom-accent: #7e22ce;
+  --color-bloom-muted: #4a4e69;
+  --color-bloom-up: #26a69a;
+  --color-bloom-down: #ef5350;
+  
+  --font-sans: "Inter", sans-serif;
+}
+
+/* --- Global Reset & Base Styles --- */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bloom-dark);
+  color: #ffffff;
+  margin: 0;
+  font-family: var(--font-sans);
+  overflow: hidden; /* Keeps the dashboard from scrolling the whole page */
+}
+
+/* --- Smooth Terminal Scrollbars --- */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bloom-dark);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-bloom-muted);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-bloom-accent);
+}

@@ -1,0 +1,138 @@
+<script>
+    import { PUBLIC_BACKEND_URL } from '$env/static/public';
+    import { onMount } from 'svelte';
+    import { selectedSymbol, metadata } from '$lib/stores.js';
+
+    let tickers = $state([]);
+    let searchQuery = $state('');
+    let loading = $state(true);
+    let lastPriceDate = $state('—');
+
+    let filteredTickers = $derived(
+        tickers
+            .filter(t => 
+                t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                (t.name && t.name.toLowerCase().includes(searchQuery.toLowerCase()))
+            )
+            .sort((a, b) => a.symbol.localeCompare(b.symbol))
+    );
+
+    onMount(async () => {
+        try {
+            const res = await fetch(`${PUBLIC_BACKEND_URL}/summary`);
+            if (res.ok) {
+                const data = await res.json();
+                tickers = Array.isArray(data) ? data : [];
+
+                if (tickers.length > 0) {
+                    const dateObj = new Date();
+                    lastPriceDate = dateObj.toLocaleDateString('en-GB'); 
+                }
+            }
+        } catch (e) { 
+            console.error("Sidebar fetch error:", e); 
+        } finally { 
+            loading = false; 
+        }
+    });
+
+    function formatVol(val) {
+        if (!val) return '0';
+        if (val >= 1000000) return (val / 1000000).toFixed(1) + 'M';
+        if (val >= 1000) return (val / 1000).toFixed(0) + 'K';
+        return val.toString();
+    }
+</script>
+
+<aside class="w-[480px] bg-bloom-card border-r border-bloom-muted/10 flex flex-col h-screen shrink-0 relative z-20 shadow-2xl">
+    <div class="p-6 space-y-4 bg-gradient-to-b from-white/5 to-transparent">
+        <div class="flex justify-between items-end">
+            <div>
+                <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-1">EQUITY PERFORMANCE INDEX</h2>
+                <div class="text-3xl font-black text-white tracking-tighter uppercase">S&P 500</div>
+            </div>
+            <div class="text-right">
+                <div class="text-[10px] font-bold text-bloom-text/40 uppercase tracking-widest">Last Update</div>
+                <div class="text-xs font-mono font-bold text-bloom-accent">{lastPriceDate}</div>
+            </div>
+        </div>
+
+        <div class="relative group">
+            <input 
+                type="text" 
+                bind:value={searchQuery}
+                placeholder="Search symbol or name..." 
+                class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-3 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
+            />
+            <svg class="absolute left-3 top-3.5 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+        </div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto custom-scrollbar">
+        {#if loading}
+            <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
+                <div class="w-6 h-6 border-2 border-bloom-accent border-t-transparent rounded-full animate-spin"></div>
+                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Tape</span>
+            </div>
+        {:else}
+            {#each filteredTickers as item}
+                <button 
+                    onclick={() => selectedSymbol.set(item.symbol)}
+                    class="w-full px-6 py-5 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
+                    {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"
+                >
+                    {#if $selectedSymbol === item.symbol}
+                        <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
+                    {/if}
+
+                    <div 
+                        class="w-[35%] text-left overflow-hidden" 
+                        title="{item.symbol} - {item.name || 'Equity'}"
+                    >
+                        <div class="font-black text-white text-base tracking-tight group-hover:text-bloom-accent transition-colors">
+                            {item.symbol}
+                        </div>
+                        <div class="text-[9px] font-bold text-bloom-text/30 uppercase tracking-widest truncate pr-2">
+                            {item.name || 'Equity'}
+                        </div>
+                    </div>
+                    
+                    <div class="w-[25%] text-right pr-4">
+                        <div class="text-sm font-mono font-black text-white leading-tight">
+                            ${(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                        </div>
+                        <div class="text-[10px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                            <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
+                            <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
+                        </div>
+                    </div>
+
+                    <div class="w-[25%] text-right font-mono text-[10px] leading-tight space-y-1">
+                        <div class="flex justify-end gap-2 text-white/40">
+                            <span class="font-bold">H</span>
+                            <span class="text-white font-bold">{(item.high ?? 0).toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-end gap-2 text-white/40">
+                            <span class="font-bold">L</span>
+                            <span class="text-white font-bold">{(item.low ?? 0).toFixed(2)}</span>
+                        </div>
+                    </div>
+
+                    <div class="w-[15%] text-right">
+                        <div class="text-[9px] font-black text-bloom-text/30 uppercase tracking-tighter">Vol</div>
+                        <div class="text-[10px] font-bold text-white/60">{formatVol(item.volume)}</div>
+                    </div>
+                </button>
+            {/each}
+        {/if}
+    </div>
+</aside>
+
+<style>
+    .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(168,85,247,0.3); }
+</style>
