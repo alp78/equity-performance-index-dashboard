@@ -1,6 +1,5 @@
 <script>
     // --- IMPORTS ---
-    // 'selectedSymbol' is a global store. When the sidebar updates it, this page reacts automatically.
     import { selectedSymbol } from '$lib/stores.js';
     
     // Components
@@ -10,34 +9,34 @@
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
     
     // Svelte Lifecycle & Environment
-    import { onMount } from 'svelte';
+    // Added 'untrack' to safely manage the initial load dependency
+    import { onMount, untrack } from 'svelte';
     import { PUBLIC_BACKEND_URL } from '$env/static/public';
 
     // --- STATE MANAGEMENT (SVELTE 5 RUNES) ---
     
-    // 1. fullStockData: The "Master" dataset. 
-    // We fetch the ENTIRE history ('max') from the backend and store it here.
+    // 1. fullStockData: The "Master" dataset.
     let fullStockData = $state([]); 
     
-    // 2. stockData: The "View" dataset.
-    // This is the sliced subset passed to the Chart. It updates instantly when 'currentPeriod' changes.
+    // 2. stockData: The "View" dataset passed to the Chart.
     let stockData = $state([]);     
     
-    // 3. Metadata for the header (Company Name, etc.)
+    // 3. Metadata for the header.
     let assets = $state([]); 
     
     // 4. UI State
     let currentPeriod = $state('1y');
 
+    // 5. Initial Load Guard
+    // Prevents the "Dark Chart" issue by tracking if we are still in the boot-up phase.
+    let isInitialLoading = $state(true);
+
     // --- DERIVED STATE ---
-    // Automatically recalculates 'activeAsset' whenever 'assets' or '$selectedSymbol' changes.
-    // Logic: Look up the full object (e.g., "NVDA" -> "NVIDIA Corp") from the summary list.
     let activeAsset = $derived(
         assets.find(a => a.symbol === $selectedSymbol) || { name: $selectedSymbol }
     );
 
-    // --- DATA FETCHING: METADATA ---
-    // Fetches the list of all available stocks (Ticker + Name + Daily Change)
+    // --- DATA FETCHING ---
     async function fetchAssets() {
         try {
             const res = await fetch(`${PUBLIC_BACKEND_URL}/summary`);
@@ -47,15 +46,17 @@
         }
     }
 
-    // --- DATA FETCHING: HISTORICAL DATA ---
-    // STRATEGY: "Heavy Load Once, Zero Latency Later"
-    // Instead of asking the server for "1 Month" of data, we ask for "MAX".
-    // This takes slightly longer (ms) to download but allows instant period switching later.
     async function fetchStockData(symbol) {
         if (!symbol) return;
         try {
             const res = await fetch(`${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`);
-            fullStockData = res.ok ? await res.json() : [];
+            if (res.ok) {
+                fullStockData = await res.json();
+                // Critical: Mark initial load as complete so the UI knows we have data
+                isInitialLoading = false; 
+            } else {
+                fullStockData = [];
+            }
         } catch (e) {
             console.error("Chart fetch error:", e);
             fullStockData = [];
@@ -63,63 +64,58 @@
     }
 
     // --- LIFECYCLE: MOUNT ---
-    // Runs once when the app loads.
-    onMount(() => {
-        fetchAssets();
+    onMount(async () => {
+        // 1. Load Metadata
+        await fetchAssets();
+        
+        // 2. FORCE INITIAL FETCH
+        // This solves the issue where AAPL was dark until clicked.
+        // We explicitly fetch the default symbol immediately on load.
+        await fetchStockData($selectedSymbol);
     });
 
     // --- REACTIVITY: SYMBOL CHANGE ---
-    // Triggers whenever the user clicks a stock in the Sidebar ($selectedSymbol changes).
+    // Triggers whenever the user clicks a stock in the Sidebar.
     $effect(() => {
-        fullStockData = []; // Clear old data immediately to prevent "ghosting"
-        fetchStockData($selectedSymbol);
+        const sym = $selectedSymbol; // Register dependency
+        
+        // Use 'untrack' to check the loading state without creating a circular dependency.
+        // This ensures we don't double-fetch on the very first render.
+        if (untrack(() => isInitialLoading)) return;
+
+        fullStockData = []; // Clear old data to prevent ghosting
+        fetchStockData(sym);
     });
 
     // --- REACTIVITY: CLIENT-SIDE FILTERING ---
-    // Triggers when either 'fullStockData' arrives OR 'currentPeriod' changes.
-    // This logic slices the array in memory (JavaScript) rather than making a network request.
+    // Triggers when data arrives or period changes.
     $effect(() => {
-        // Guard clause: If no data yet, do nothing
         if (fullStockData.length === 0) {
             stockData = [];
             return;
         }
 
-        // Case A: User wants everything. Pass the raw Master array.
         if (currentPeriod === 'max') {
             stockData = fullStockData;
-        } 
-        // Case B: User wants a slice (e.g., '1y').
-        else {
-            // 1. Find the most recent date in the dataset
+        } else {
             const lastItem = fullStockData[fullStockData.length - 1];
             if (!lastItem || !lastItem.time) {
                 stockData = fullStockData;
                 return;
             }
             
-            // 2. Calculate the "Cutoff Date"
             const lastDate = new Date(lastItem.time);
             const cutoff = new Date(lastDate);
             
-            // Map the button labels to days
             const daysMap = { 
-                '1w': 7, 
-                '1mo': 30, 
-                '3mo': 90, 
-                '6mo': 180, 
-                '1y': 365, 
-                '5y': 1825 
+                '1w': 7, '1mo': 30, '3mo': 90, 
+                '6mo': 180, '1y': 365, '5y': 1825 
             };
             
             const daysToSubtract = daysMap[currentPeriod] || 365;
             cutoff.setDate(cutoff.getDate() - daysToSubtract);
             
-            // 3. Format to YYYY-MM-DD for string comparison
             const cutoffStr = cutoff.toISOString().split('T')[0];
-            
-            // 4. FILTER: Keep only rows newer than the cutoff
-            // This happens in <1ms for ~5000 rows.
             stockData = fullStockData.filter(d => d.time >= cutoffStr);
         }
     });
@@ -160,7 +156,6 @@
             
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                
                 <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
             </section>
             

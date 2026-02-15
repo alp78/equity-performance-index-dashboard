@@ -91,118 +91,119 @@ async def refresh_duckdb_cache():
     except Exception as e:
         print(f"CRITICAL: Cache Sync Failed: {e}")
 
+# --- REAL-TIME DATA HELPERS ---
+# We split these out so we can call them immediately on startup (Bootstrap)
+# and then repeatedly in the loop.
+
+async def fetch_crypto_data():
+    """Fetches Crypto data (Binance) - Fast & Cheap."""
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=2)
+        if r.status_code == 200:
+            data = r.json()
+            current_price = float(data['lastPrice'])
+            prev_close = float(data['prevClosePrice'])
+            
+            diff = current_price - prev_close
+            pct = float(data['priceChangePercent'])
+            
+            payload = {
+                "symbol": "BINANCE:BTCUSDT",
+                "price": round(current_price, 2),
+                "diff": round(diff, 2),
+                "pct": round(pct, 2)
+            }
+            
+            LATEST_MARKET_DATA["BINANCE:BTCUSDT"] = payload
+            if manager.active_connections:
+                await manager.broadcast(json.dumps(payload))
+    except Exception as e:
+        print(f"Crypto Fetch Error: {e}")
+
+async def fetch_stock_data():
+    """Fetches Stock data (Yahoo) - Slow & Rate Limited."""
+    try:
+        targets = ["GC=F", "EURUSD=X", "NVDA", "AAPL", "MSFT"]
+        data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True)
+        
+        is_multi = isinstance(data.columns, pd.MultiIndex)
+        
+        for symbol in targets:
+            try:
+                display_symbol = symbol
+                if symbol == "GC=F": display_symbol = "FXCM:XAU/USD"
+                if symbol == "EURUSD=X": display_symbol = "FXCM:EUR/USD"
+
+                if is_multi:
+                    if symbol not in data.columns.levels[0]: continue
+                    df = data[symbol].dropna(subset=['Close'])
+                else:
+                    df = data.dropna(subset=['Close'])
+
+                if df.empty: continue
+                
+                latest = df.iloc[-1]
+                prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else float(latest['Open'])
+                current_price = float(latest['Close'])
+
+                if pd.isna(current_price) or current_price == 0: continue
+
+                diff = current_price - prev_close
+                pct = (diff / prev_close) * 100 if prev_close != 0 else 0
+                
+                payload = {
+                    "symbol": display_symbol,
+                    "price": round(current_price, 2),
+                    "diff": round(diff, 2),
+                    "pct": round(pct, 2)
+                }
+                
+                LATEST_MARKET_DATA[display_symbol] = payload
+                if manager.active_connections:
+                    await manager.broadcast(json.dumps(payload))
+            except Exception: continue
+    except Exception as e:
+        print(f"Stock Fetch Error: {e}")
+
 # --- REAL-TIME DATA FEEDER ---
-# This background task polls external APIs for "Live" prices.
-# It uses a "Hybrid Polling" strategy:
-# - Crypto: Fast polling (5s) because API limits are high.
-# - Stocks: Slow polling (60s) to avoid IP bans from Yahoo Finance.
+# Background task that manages the polling schedule.
 async def market_data_feeder():
-    # 1. Wait for DuckDB to be ready (don't start if cache is empty)
+    # 1. Wait for DuckDB to be ready
     while True:
         try:
             res = local_db.execute("SELECT COUNT(*) FROM prices").fetchone()
             if res and res[0] > 0: break
         except: pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
 
-    print("WebSocket Feeder: Database ready. Starting Dual-Speed Poll...")
+    print("WebSocket Feeder: Database ready. Running initial bootstrap poll...")
     
-    last_crypto_update = 0
-    last_stock_update = 0
+    # 2. BOOTSTRAP: Fetch data IMMEDIATELY (Don't wait for loop)
+    # This ensures LATEST_MARKET_DATA is full before the first user even connects.
+    await fetch_crypto_data()
+    await fetch_stock_data()
+    
+    last_crypto_update = asyncio.get_event_loop().time()
+    last_stock_update = asyncio.get_event_loop().time()
     
     # Polling Intervals (Seconds)
     CRYPTO_INTERVAL = 5
     STOCK_INTERVAL = 60
 
+    print("WebSocket Feeder: Bootstrap complete. Starting Dual-Speed Loop...")
+
     while True:
         now = asyncio.get_event_loop().time()
         
-        # --- PATH A: CRYPTO (FAST) ---
+        # Fast Loop (Crypto)
         if now - last_crypto_update > CRYPTO_INTERVAL:
-            try:
-                # Direct HTTP call to Binance (lighter than using a library)
-                r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=2)
-                if r.status_code == 200:
-                    data = r.json()
-                    current_price = float(data['lastPrice'])
-                    prev_close = float(data['prevClosePrice'])
-                    
-                    diff = current_price - prev_close
-                    pct = float(data['priceChangePercent'])
-                    
-                    payload = {
-                        "symbol": "BINANCE:BTCUSDT",
-                        "price": round(current_price, 2),
-                        "diff": round(diff, 2),
-                        "pct": round(pct, 2)
-                    }
-                    
-                    # Update State & Broadcast
-                    LATEST_MARKET_DATA["BINANCE:BTCUSDT"] = payload
-                    if manager.active_connections:
-                        await manager.broadcast(json.dumps(payload))
-                    
-                    last_crypto_update = now
-            except Exception as e:
-                print(f"Crypto Fetch Error: {e}")
-
-        # --- PATH B: STOCKS (SLOW/SAFE) ---
+            await fetch_crypto_data()
+            last_crypto_update = now
+        
+        # Slow Loop (Stocks)
         if now - last_stock_update > STOCK_INTERVAL:
-            try:
-                # Yahoo Finance Polling
-                # We fetch 5 days of history to handle Weekends/Holidays safely.
-                targets = ["GC=F", "EURUSD=X", "NVDA", "AAPL", "MSFT"]
-                data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True)
-                
-                is_multi = isinstance(data.columns, pd.MultiIndex)
-                
-                for symbol in targets:
-                    try:
-                        # Map Yahoo Tickers to our Frontend IDs
-                        display_symbol = symbol
-                        if symbol == "GC=F": display_symbol = "FXCM:XAU/USD"
-                        if symbol == "EURUSD=X": display_symbol = "FXCM:EUR/USD"
-
-                        # Extract Dataframe for specific symbol
-                        if is_multi:
-                            if symbol not in data.columns.levels[0]: continue
-                            df = data[symbol].dropna(subset=['Close'])
-                        else:
-                            df = data.dropna(subset=['Close'])
-
-                        if df.empty: continue
-                        
-                        # LOGIC: Finding the "Real" Last Price
-                        # On Sunday, the last row might be Friday. That's correct.
-                        latest = df.iloc[-1]
-                        
-                        # Logic for "Previous Close" to calculate % Change
-                        # If we have 2 rows, use row[-2]. If only 1 row exists (rare), use Open price.
-                        prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else float(latest['Open'])
-                        current_price = float(latest['Close'])
-
-                        if pd.isna(current_price) or current_price == 0: continue
-
-                        diff = current_price - prev_close
-                        pct = (diff / prev_close) * 100 if prev_close != 0 else 0
-                        
-                        payload = {
-                            "symbol": display_symbol,
-                            "price": round(current_price, 2),
-                            "diff": round(diff, 2),
-                            "pct": round(pct, 2)
-                        }
-                        
-                        # Update State & Broadcast
-                        LATEST_MARKET_DATA[display_symbol] = payload
-                        if manager.active_connections:
-                            await manager.broadcast(json.dumps(payload))
-                            
-                    except Exception: continue
-                
-                last_stock_update = now
-            except Exception as e:
-                print(f"Stock Fetch Error: {e}")
+            await fetch_stock_data()
+            last_stock_update = now
         
         # Sleep 1s to prevent high CPU usage, but keep loop responsive
         await asyncio.sleep(1)
