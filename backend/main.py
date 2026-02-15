@@ -208,24 +208,26 @@ async def market_data_feeder():
         # Sleep 1s to prevent high CPU usage, but keep loop responsive
         await asyncio.sleep(1)
 
+# --- STARTUP SYNC HELPER ---
+# This runs the heavy data loading in the background
+async def background_startup():
+    # 1. Sync the historical cache
+    await refresh_duckdb_cache()
+    # 2. Start the real-time feeder task
+    asyncio.create_task(market_data_feeder())
+
 # --- APP LIFESPAN ---
 # Controls what happens when the server Starts and Stops.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Warming up GCP In-Memory Cache...")
-    feeder_task = None
-    try:
-        # 1. Load Data
-        await refresh_duckdb_cache()
-        # 2. Start Background Polling
-        feeder_task = asyncio.create_task(market_data_feeder())
-    except Exception as e:
-        print(f"Failed to warm cache: {e}")
-
+    print("🚀 Server Booting...")
+    # Trigger everything in the background. 
+    # We do NOT 'await' this, so the API starts responding to the frontend immediately.
+    asyncio.create_task(background_startup())
+    
     yield # App runs here
     
     # Cleanup on Shutdown
-    if feeder_task: feeder_task.cancel()
     local_db.close()
 
 app = FastAPI(lifespan=lifespan)

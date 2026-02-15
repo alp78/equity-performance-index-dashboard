@@ -1,5 +1,6 @@
 <script>
     // --- IMPORTS ---
+    // 'selectedSymbol' is a global store. When the sidebar updates it, this page reacts automatically.
     import { selectedSymbol } from '$lib/stores.js';
     
     // Components
@@ -64,14 +65,17 @@
     }
 
     // --- LIFECYCLE: MOUNT ---
-    onMount(async () => {
+    // Runs once when the app loads.
+    onMount(() => {
         // 1. Load Metadata
-        await fetchAssets();
+        // Optimization: Removed 'await' to allow parallel fetching.
+        fetchAssets();
         
         // 2. FORCE INITIAL FETCH
         // This solves the issue where AAPL was dark until clicked.
         // We explicitly fetch the default symbol immediately on load.
-        await fetchStockData($selectedSymbol);
+        // Optimization: Removed 'await' to allow parallel fetching.
+        fetchStockData($selectedSymbol);
     });
 
     // --- REACTIVITY: SYMBOL CHANGE ---
