@@ -8,24 +8,28 @@ from datetime import datetime, timedelta
 from io import StringIO
 from google.cloud import bigquery, storage
 
-# Configuration
+# --- CONFIGURATION ---
 PROJECT_ID = ""
 DATASET_ID = ""
 TABLE_ID = ""
-BUCKET_NAME = "d"
+BUCKET_NAME = ""
 
+# --- HELPER: DATABASE STATE ---
+# Before downloading anything, we need to know: where did we stop yesterday?
+# This ensures we only download *new* data (Incremental Load), saving bandwidth and time.
 def get_db_state():
     """Gets the last recorded trade date and ticker map from BigQuery."""
     client = bigquery.Client()
     
-    # 1. Get the max date
+    # 1. Get the latest date in our DB
     date_query = f"SELECT MAX(trade_date) as max_date FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`"
     result = list(client.query(date_query).result())
     
-    # Handle empty table case (default to start of 2023)
+    # Default to 2023-01-01 if the table is empty (First Run)
     max_date = result[0].max_date if result and result[0].max_date else datetime(2023, 1, 1).date()
     
-    # 2. Get the tickers
+    # 2. Get the list of stocks we care about
+    # We fetch the mapping of Symbol -> Company Name so we can attach readable names to new records.
     name_query = f"""
         SELECT symbol, MAX(name) as name
         FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
@@ -38,6 +42,7 @@ def get_db_state():
     
     return tickers, max_date, name_map
 
+# --- MAIN ENTRY POINT ---
 @functions_framework.http
 def sync_stocks(request):
     bq_client = bigquery.Client()
@@ -45,7 +50,7 @@ def sync_stocks(request):
     
     print("--- Starting Sync Job ---")
 
-    # 1. Get DB State
+    # 1. CHECK STATE
     try:
         tickers, last_date, name_map = get_db_state()
         print(f"Found {len(tickers)} tickers. Last DB date: {last_date}")
@@ -57,23 +62,26 @@ def sync_stocks(request):
         print("No tickers found.")
         return "No tickers found to sync.", 200
         
-    # 2. Calculate Date Range
+    # 2. DEFINE DATE RANGE
+    # Start from tomorrow relative to the last record.
     start_date = last_date + timedelta(days=1)
     today = datetime.now().date()
     
-    # Allow running if start_date is today (to catch up end-of-day data)
-    # If start_date is in the future, we stop.
+    # IDEMPOTENCY CHECK:
+    # If we already have data up to today, STOP.
+    # This prevents duplicates if the scheduler accidentally runs twice.
     if start_date > today:
         print("Database is already up to date.")
         return "Database is already up to date.", 200
 
     print(f"Attempting to fetch data from {start_date} to {today}")
 
-    # 3. Download Data
+    # 3. NORMALIZE TICKERS
+    # Yahoo Finance uses hyphens (BRK-B) but many DBs use dots (BRK.B).
     yf_map = {t: t.replace('.', '-') for t in tickers}
     yf_tickers = list(yf_map.values())
 
-    # Note: 'end' is exclusive in yfinance, so we add 1 day to cover 'today'
+    # 4. DOWNLOAD DATA (EXTRACT)
     try:
         data = yf.download(
             yf_tickers, 
@@ -81,7 +89,7 @@ def sync_stocks(request):
             end=(today + timedelta(days=1)).strftime('%Y-%m-%d'), 
             group_by='ticker', 
             auto_adjust=False,
-            threads=True 
+            threads=True # Use parallel threads for speed
         )
     except Exception as e:
         print(f"yfinance download failed: {e}")
@@ -91,20 +99,20 @@ def sync_stocks(request):
         print("yfinance returned no data (Market closed or holiday).")
         return "No new market data available.", 200
 
-    # 4. Process Data
+    # 5. TRANSFORM DATA
     daily_records = []
     
-    # Detect if we have a MultiIndex (many tickers) or Flat Index (1 ticker)
     is_multi_index = isinstance(data.columns, pd.MultiIndex)
     actual_dates = data.index.strftime('%Y-%m-%d').unique()
 
     print(f"Processing {len(actual_dates)} days of data...")
 
     for date_str in actual_dates:
-        # FIX: STRICTLY FILTER DUPLICATES
-        # yfinance might return the previous Friday's data if you ask for Saturday.
-        # We must explicitly check if this date is already in our DB.
         current_data_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        
+        # SAFETY CHECK:
+        # Even though we asked for `start_date`, sometimes APIs return overlapping data.
+        # We explicitly skip any date we already have to guarantee uniqueness.
         if current_data_date <= last_date:
             print(f"Skipping data for {date_str} (already exists in DB).")
             continue
@@ -113,21 +121,20 @@ def sync_stocks(request):
             try:
                 yf_ticker = yf_map[original_ticker]
                 
-                # --- SAFE DATA EXTRACTION ---
+                # Handle MultiIndex vs SingleIndex (depends on # of tickers downloaded)
                 if is_multi_index:
-                    # Check if ticker exists in the downloaded columns
                     if yf_ticker not in data.columns.levels[0]:
                         continue
                     ticker_data = data[yf_ticker].loc[date_str]
                 else:
-                    # Single ticker case
                     ticker_data = data.loc[date_str]
 
-                # Skip if Close price is NaN (no trade happened)
+                # SKIP EMPTY/CLOSED DAYS
                 if pd.isna(ticker_data['Close']): 
                     continue
                 
-                # Handle Open Price logic
+                # FALLBACK LOGIC:
+                # Sometimes 'Open' is missing. Use 'Close' as a fallback to prevent crashes.
                 raw_open = ticker_data.get('Open')
                 open_p = float(raw_open) if pd.notna(raw_open) else float(ticker_data['Close'])
                 company_name = name_map.get(original_ticker, original_ticker) 
@@ -145,15 +152,16 @@ def sync_stocks(request):
                 daily_records.append(record)
 
             except Exception as e:
-                # Log the specific error for this ticker but don't stop the whole job
                 print(f"Skipping {original_ticker} on {date_str}: {e}")
                 continue
         
-    # 5. Upload if we have records
     if daily_records:
         print(f"Uploading {len(daily_records)} records to GCS and BigQuery...")
         
-        # FIX: FORMAT FILENAME WITHOUT DASHES (YYYYMMDD)
+        # 6. LOAD TO GCS (BRONZE LAYER)
+        # We save the raw JSON to Cloud Storage first.
+        # Why? If the BigQuery load fails, or if we need to debug data quality later,
+        # we have the exact raw file in the bucket (Audit Trail).
         file_date_str = today.strftime('%Y%m%d')
         blob_name = f"sync/stock_{file_date_str}.json"
         
@@ -161,11 +169,12 @@ def sync_stocks(request):
             json.dumps(daily_records), content_type='application/json'
         )
         
-        # Load to BigQuery
+        # 7. LOAD TO BIGQUERY (SILVER/GOLD LAYER)
+        # We load directly from the JSON string (newline delimited) into BQ.
         ndjson = "\n".join([json.dumps(r) for r in daily_records])
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND
+            write_disposition=bigquery.WriteDisposition.WRITE_APPEND # Append, don't overwrite!
         )
         
         try:
@@ -179,17 +188,22 @@ def sync_stocks(request):
             print(f"BigQuery Load Failed: {e}")
             return f"BigQuery Load Failed: {e}", 500
 
-        # 6. Webhook Trigger
+        # 8. TRIGGER BACKEND REFRESH (EVENT DRIVEN)
+        # We notify the FastAPI backend that new data is ready.
+        # This allows the backend to update its in-memory DuckDB cache immediately
+        # without waiting for a scheduled restart.
         try:
             api_url = os.getenv("BACKEND_API_URL")
             if api_url:
                 refresh_endpoint = f"{api_url}/api/admin/refresh"
-                # Short timeout for webhook (fire and forget)
+                # Short timeout because we don't need to wait for the refresh to finish, just trigger it.
                 requests.post(refresh_endpoint, timeout=(3.05, 5))
                 print(f"Webhook triggered: {api_url}")
             else:
                 print("Webhook skipped: BACKEND_API_URL env var not set.")
         except requests.exceptions.ReadTimeout:
+            # This is actually a success: we successfully sent the request, 
+            # we just didn't wait around for the 200 OK.
             print("Webhook sent (ReadTimeout ignored).")
         except Exception as e:
             print(f"Webhook warning: {e}")

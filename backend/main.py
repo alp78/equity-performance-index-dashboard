@@ -14,39 +14,55 @@ from google.cloud import bigquery
 from urllib.parse import unquote
 from contextlib import asynccontextmanager
 
-PROJECT_ID = ""
+# --- CONFIGURATION ---
+PROJECT_ID = "esg-analytics-poc"
 
-# Initialize global DuckDB
+# --- IN-MEMORY DATABASE (CACHE LAYER) ---
+# We use DuckDB instead of querying BigQuery for every request.
+# Why? BigQuery has latency (2-3s) and costs money per query.
+# DuckDB lives in RAM, offers sub-millisecond response times, and supports
+# complex Window Functions (for Moving Averages) natively.
 local_db = duckdb.connect(database=':memory:', read_only=False)
 
-# --- WEBSOCKET MANAGER ---
+# --- REAL-TIME STATE CACHE ---
+# Stores the last known price for every symbol (BTC, NVDA, etc.).
+# Used to "Hydrate" new WebSocket clients immediately so they don't see "Waiting...".
+LATEST_MARKET_DATA = {}
+
+# --- WEBSOCKET CONNECTION MANAGER ---
+# Handles the lifecycle of real-time clients.
 class ConnectionManager:
     def __init__(self):
+        # A list to keep track of all currently connected browser sessions
         self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        print(f"WS Manager: New connection. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
+        # Pushes a message to ALL connected clients (Pub/Sub pattern)
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
             except Exception:
-                pass
+                pass # If a client disconnects mid-send, ignore it
 
 manager = ConnectionManager()
 
-# --- CACHE REFRESH LOGIC ---
+# --- DATA INGESTION (ETL) ---
+# This function pulls historical data from BigQuery into DuckDB on startup.
 async def refresh_duckdb_cache():
-    """Logic to pull from BQ and populate DuckDB."""
     print("Syncing DuckDB cache with BigQuery...")
     try:
         bq_client = bigquery.Client(project=PROJECT_ID)
+        
+        # We cast columns explicitly to ensure DuckDB uses the correct numeric types
         load_query = f"""
             SELECT
                 symbol,
@@ -58,59 +74,30 @@ async def refresh_duckdb_cache():
                 CAST(volume AS INT) as volume
             FROM `{PROJECT_ID}.stock_exchange.stock_prices`
         """
+        # 1. Download data to Pandas (RAM)
         raw_df = bq_client.query(load_query).to_dataframe()
         raw_df['trade_date'] = pd.to_datetime(raw_df['trade_date'])
 
+        # 2. Bulk load into DuckDB
+        # "CREATE TABLE AS SELECT" is the fastest way to load data in DuckDB
         local_db.execute("DROP TABLE IF EXISTS prices")
         local_db.register('temp_df', raw_df)
         local_db.execute("CREATE TABLE prices AS SELECT * FROM temp_df")
+        
+        # 3. Create an Index
+        # Makes filtering by "WHERE symbol = 'NVDA'" instant (O(log n) vs O(n))
         local_db.execute("CREATE INDEX idx_symbol ON prices (symbol)")
         print(f"Cache Synced. Loaded {len(raw_df)} rows.")
     except Exception as e:
         print(f"CRITICAL: Cache Sync Failed: {e}")
 
-# --- EXTERNAL API DATA FETCHERS ---
-
-async def fetch_macro_references():
-    refs = {}
-    
-    # Crypto (Binance is 24/7)
-    try:
-        r = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=1", timeout=5)
-        if r.status_code == 200:
-            data = r.json()[0]
-            refs["BINANCE:BTCUSDT"] = {
-                "price": float(data[4]), # Close
-                "prev": float(data[1])   # Open
-            }
-    except Exception as e:
-        print(f"Binance API Error: {e}")
-
-    # Commodities & Forex (Yahoo Finance)
-    # GC=F is Gold Futures, EURUSD=X is Euro
-    mapping = {"FXCM:XAU/USD": "GC=F", "FXCM:EUR/USD": "EURUSD=X"}
-    
-    for label, ticker_symbol in mapping.items():
-        try:
-            ticker = yf.Ticker(ticker_symbol)
-            # 5d to safely span over weekends/holidays
-            hist = ticker.history(period="5d")
-            
-            if len(hist) >= 2:
-                refs[label] = {
-                    "price": float(hist['Close'].iloc[-1]),
-                    "prev": float(hist['Close'].iloc[-2])
-                }
-            else:
-                print(f"Warning: Not enough history for {label} ({ticker_symbol}). Rows found: {len(hist)}")
-                
-        except Exception as e:
-            print(f"Macro Data Error ({label}): {e}")
-            
-    return refs
-
-
+# --- REAL-TIME DATA FEEDER ---
+# This background task polls external APIs for "Live" prices.
+# It uses a "Hybrid Polling" strategy:
+# - Crypto: Fast polling (5s) because API limits are high.
+# - Stocks: Slow polling (60s) to avoid IP bans from Yahoo Finance.
 async def market_data_feeder():
+    # 1. Wait for DuckDB to be ready (don't start if cache is empty)
     while True:
         try:
             res = local_db.execute("SELECT COUNT(*) FROM prices").fetchone()
@@ -118,74 +105,131 @@ async def market_data_feeder():
         except: pass
         await asyncio.sleep(1)
 
-    market_state = await fetch_macro_references()
-    try:
-        # GROUP BY to handle duplicates in WebSocket feeder initialization
-        ref_query = """
-            WITH Daily AS (
-                SELECT symbol, 
-                       MAX(close) as close, 
-                       trade_date
-                FROM prices
-                GROUP BY symbol, trade_date
-            ),
-            Ordered AS (
-                SELECT symbol, close,
-                       ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
-                FROM Daily
-            )
-            SELECT symbol,
-                   MAX(CASE WHEN rn = 1 THEN close END) as latest,
-                   MAX(CASE WHEN rn = 2 THEN close END) as previous
-            FROM Ordered
-            WHERE rn <= 2
-            GROUP BY symbol
-        """
-        rows = local_db.execute(ref_query).fetchall()
-        for symbol, latest, previous in rows:
-            ref_price = previous if previous else (latest * 1.005)
-            market_state[symbol] = {
-                "price": float(latest),
-                "prev": float(ref_price)
-            }
-        print(f"WebSocket Feeder: Initialized {len(market_state)} symbols.")
-
-    except Exception as e:
-        print(f"Feeder initialization error: {e}")
+    print("WebSocket Feeder: Database ready. Starting Dual-Speed Poll...")
+    
+    last_crypto_update = 0
+    last_stock_update = 0
+    
+    # Polling Intervals (Seconds)
+    CRYPTO_INTERVAL = 5
+    STOCK_INTERVAL = 60
 
     while True:
-        if manager.active_connections:
-            for symbol, state in market_state.items():
-                change_factor = random.uniform(-0.0001, 0.0001)
-                state["price"] *= (1 + change_factor)
-                abs_diff = state["price"] - state["prev"]
-                total_pct = (abs_diff / state["prev"]) * 100
-                payload = {
-                    "symbol": symbol,
-                    "price": round(state["price"], 2),
-                    "diff": round(abs_diff, 2),
-                    "pct": round(total_pct, 2)
-                }
-                await manager.broadcast(json.dumps(payload))
+        now = asyncio.get_event_loop().time()
+        
+        # --- PATH A: CRYPTO (FAST) ---
+        if now - last_crypto_update > CRYPTO_INTERVAL:
+            try:
+                # Direct HTTP call to Binance (lighter than using a library)
+                r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=2)
+                if r.status_code == 200:
+                    data = r.json()
+                    current_price = float(data['lastPrice'])
+                    prev_close = float(data['prevClosePrice'])
+                    
+                    diff = current_price - prev_close
+                    pct = float(data['priceChangePercent'])
+                    
+                    payload = {
+                        "symbol": "BINANCE:BTCUSDT",
+                        "price": round(current_price, 2),
+                        "diff": round(diff, 2),
+                        "pct": round(pct, 2)
+                    }
+                    
+                    # Update State & Broadcast
+                    LATEST_MARKET_DATA["BINANCE:BTCUSDT"] = payload
+                    if manager.active_connections:
+                        await manager.broadcast(json.dumps(payload))
+                    
+                    last_crypto_update = now
+            except Exception as e:
+                print(f"Crypto Fetch Error: {e}")
+
+        # --- PATH B: STOCKS (SLOW/SAFE) ---
+        if now - last_stock_update > STOCK_INTERVAL:
+            try:
+                # Yahoo Finance Polling
+                # We fetch 5 days of history to handle Weekends/Holidays safely.
+                targets = ["GC=F", "EURUSD=X", "NVDA", "AAPL", "MSFT"]
+                data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True)
+                
+                is_multi = isinstance(data.columns, pd.MultiIndex)
+                
+                for symbol in targets:
+                    try:
+                        # Map Yahoo Tickers to our Frontend IDs
+                        display_symbol = symbol
+                        if symbol == "GC=F": display_symbol = "FXCM:XAU/USD"
+                        if symbol == "EURUSD=X": display_symbol = "FXCM:EUR/USD"
+
+                        # Extract Dataframe for specific symbol
+                        if is_multi:
+                            if symbol not in data.columns.levels[0]: continue
+                            df = data[symbol].dropna(subset=['Close'])
+                        else:
+                            df = data.dropna(subset=['Close'])
+
+                        if df.empty: continue
+                        
+                        # LOGIC: Finding the "Real" Last Price
+                        # On Sunday, the last row might be Friday. That's correct.
+                        latest = df.iloc[-1]
+                        
+                        # Logic for "Previous Close" to calculate % Change
+                        # If we have 2 rows, use row[-2]. If only 1 row exists (rare), use Open price.
+                        prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else float(latest['Open'])
+                        current_price = float(latest['Close'])
+
+                        if pd.isna(current_price) or current_price == 0: continue
+
+                        diff = current_price - prev_close
+                        pct = (diff / prev_close) * 100 if prev_close != 0 else 0
+                        
+                        payload = {
+                            "symbol": display_symbol,
+                            "price": round(current_price, 2),
+                            "diff": round(diff, 2),
+                            "pct": round(pct, 2)
+                        }
+                        
+                        # Update State & Broadcast
+                        LATEST_MARKET_DATA[display_symbol] = payload
+                        if manager.active_connections:
+                            await manager.broadcast(json.dumps(payload))
+                            
+                    except Exception: continue
+                
+                last_stock_update = now
+            except Exception as e:
+                print(f"Stock Fetch Error: {e}")
+        
+        # Sleep 1s to prevent high CPU usage, but keep loop responsive
         await asyncio.sleep(1)
 
-# --- LIFESPAN (CACHING + FEEDER) ---
+# --- APP LIFESPAN ---
+# Controls what happens when the server Starts and Stops.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Warming up GCP In-Memory Cache...")
     feeder_task = None
     try:
+        # 1. Load Data
         await refresh_duckdb_cache()
+        # 2. Start Background Polling
         feeder_task = asyncio.create_task(market_data_feeder())
     except Exception as e:
         print(f"Failed to warm cache: {e}")
 
-    yield
+    yield # App runs here
+    
+    # Cleanup on Shutdown
     if feeder_task: feeder_task.cancel()
     local_db.close()
 
 app = FastAPI(lifespan=lifespan)
 
+# CORS Setup (Allows Frontend to talk to Backend)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -195,15 +239,22 @@ app.add_middleware(
 )
 
 # --- ENDPOINTS ---
+
+# 1. ADMIN REFRESH
+# Can be called by a Cloud Scheduler or manually to force-reload BigQuery data
 @app.post("/api/admin/refresh")
 async def webhook_refresh():
-    """Immediately acknowledges and triggers the cache refresh independently."""
     asyncio.create_task(refresh_duckdb_cache())
     return {"status": "accepted", "message": "Refresh task offloaded"}
 
+# 2. DASHBOARD SUMMARY
+# Returns the main list of assets with their daily % change.
 @app.get("/summary")
 async def get_summary():
-    # Deduplicate using GROUP BY before calculating LAG to prevent 0% change bug
+    # SQL LOGIC:
+    # 1. UniquePrices: Deduplicates rows (takes MAX if duplicates exist).
+    # 2. Latest: Uses LAG() window function to compare Today vs Yesterday.
+    #    (This avoids performing self-joins, which are slow).
     query = """
         WITH UniquePrices AS (
             SELECT 
@@ -249,17 +300,24 @@ async def get_summary():
         print(f"Summary SQL Error: {e}")
         return []
 
+# 3. CHART DATA
+# Returns historical candles + Moving Averages.
+# Supports ?period=1y filtering.
 @app.get("/data/{symbol:path}")
 async def get_data(symbol: str, period: str = "1y"):
     symbol = unquote(symbol)
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
     days_to_subtract = intervals.get(period.lower(), 365)
+    
     try:
+        # Find the last available date for this stock
         latest_res = local_db.execute("SELECT MAX(trade_date) FROM prices WHERE symbol = ?", [symbol]).fetchone()
         if not latest_res or not latest_res[0]: return []
         anchor_date = latest_res[0]
 
-        # GROUP BY in Common Table Expressions to prevent duplicate dates crashing the chart
+        # SQL LOGIC:
+        # 1. Deduplicate (GROUP BY).
+        # 2. Calculate Moving Averages (MA30, MA90) using Window Functions.
         if period.lower() == "max":
             query = """
                 WITH DailyUnique AS (
@@ -295,11 +353,16 @@ async def get_data(symbol: str, period: str = "1y"):
         logging.error(f"DuckDB Error: {e}")
         return []
 
+# 4. RANKINGS (TOP/BOTTOM PERFORMERS)
+# Calculates performance over a specific period (e.g., 1 Year)
 @app.get("/rankings")
 async def get_rankings(period: str = "1y"):
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
     
-    # GROUP BY deduplication logic
+    # SQL LOGIC:
+    # Uses FIRST_VALUE() twice (once ASC, once DESC) to find the Start and End price
+    # of the period in a single pass, without joining the table to itself.
+    # This is O(n) complexity (fast).
     if period.lower() == "max":
         query = """
             WITH UniquePrices AS (
@@ -353,10 +416,20 @@ async def get_rankings(period: str = "1y"):
         print(f"Ranking Error: {e}")
         return {"selected": {"top": [], "bottom": []}}
 
+# 5. WEBSOCKET ENDPOINT
+# Handles real-time client connections.
 @app.websocket("/ws/market")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
+        # IMMEDIATE HYDRATION:
+        # As soon as a user connects, we dump the last known market state (LATEST_MARKET_DATA)
+        # to them. This prevents the UI from showing "Waiting..." for up to 60 seconds.
+        if LATEST_MARKET_DATA:
+            for payload in LATEST_MARKET_DATA.values():
+                 await websocket.send_text(json.dumps(payload))
+        
+        # Keep connection open until client disconnects
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
