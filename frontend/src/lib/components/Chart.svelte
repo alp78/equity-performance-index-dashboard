@@ -91,7 +91,7 @@
 
                 tooltip.style.display = 'flex';
                 
-                // --- BOUNDARY DETECTION LOGIC ---
+                // --- BOUNDARY DETECTION ---
                 const tooltipWidth = 180;
                 const tooltipHeight = 180;
                 const containerWidth = chartContainer.clientWidth;
@@ -109,7 +109,6 @@
                 if (top + tooltipHeight > containerHeight) {
                     top = param.point.y - tooltipHeight - 20;
                 }
-                // --------------------------------
 
                 tooltip.style.left = `${left}px`;
                 tooltip.style.top = `${top}px`;
@@ -152,12 +151,11 @@
     $effect(() => {
         const raw = $state.snapshot(data);
         if (priceSeries && raw.length > 0) {
-            // FIX START: DEDUPLICATE AND SORT DATA BY TIME
+            // DEDUPLICATE AND SORT DATA BY TIME
             const uniqueMap = new Map();
             raw.forEach(item => uniqueMap.set(item.time, item));
             const uniqueSorted = Array.from(uniqueMap.values())
                                       .sort((a, b) => new Date(a.time) - new Date(b.time));
-            // FIX END
 
             priceSeries.setData(uniqueSorted.map(d => ({ time: d.time, value: d.close })));
             ma30Series.setData(uniqueSorted.map(d => ({ time: d.time, value: d.ma30 })));

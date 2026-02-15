@@ -1,24 +1,64 @@
 <script>
     import { PUBLIC_BACKEND_URL } from '$env/static/public';
-    let { currentPeriod = '1y' } = $props();
-    let rankings = $state(null);
+    import { onMount } from 'svelte';
 
-    async function load() {
-            try {
-                const url = `${PUBLIC_BACKEND_URL}/rankings?period=${currentPeriod}&t=${Date.now()}`;
-                console.log("Fetching rankings from:", url); 
-                const res = await fetch(url);
-                if (res.ok) {
-                    rankings = await res.json();
-                }
-            } catch (e) { 
+    let { currentPeriod = '1y' } = $props();
+    
+    // STATE & CACHE
+    let rankings = $state(null);
+    let rankingCache = {}; // Local memory cache
+    let abortController = null; // To kill stale requests
+
+    async function load(period) {
+        // if in cache, use it immediately.
+        if (rankingCache[period]) {
+            rankings = rankingCache[period];
+            return;
+        }
+
+        // Cancel any previous pending request
+        if (abortController) {
+            abortController.abort();
+        }
+        abortController = new AbortController();
+        const signal = abortController.signal;
+
+        // Reset UI to spinner while loading new data
+        rankings = null;
+
+        try {
+            const url = `${PUBLIC_BACKEND_URL}/rankings?period=${period}&t=${Date.now()}`;
+            const res = await fetch(url, { signal });
+            
+            if (res.ok) {
+                const data = await res.json();
+                // Store in cache for next time
+                rankingCache[period] = data;
+                rankings = data;
+            }
+        } catch (e) { 
+            if (e.name !== 'AbortError') {
                 console.error("Ranking Load Error:", e); 
             }
         }
+    }
 
+    // TRIGGER: Reload when period changes
     $effect(() => { 
-        currentPeriod; 
-        load(); 
+        load(currentPeriod); 
+    });
+
+    // BACKGROUND PREFETCH: Silently load other periods so they are ready before click
+    onMount(() => {
+        const others = ['1w', '1mo', '3mo', '6mo', '1y', '5y', 'max'];
+        others.forEach(p => {
+            if (p !== currentPeriod && !rankingCache[p]) {
+                fetch(`${PUBLIC_BACKEND_URL}/rankings?period=${p}`)
+                    .then(res => res.json())
+                    .then(data => { rankingCache[p] = data; })
+                    .catch(() => {});
+            }
+        });
     });
 
     function getSubsetMax(items) {
