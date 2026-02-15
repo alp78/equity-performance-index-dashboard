@@ -15,7 +15,7 @@ from urllib.parse import unquote
 from contextlib import asynccontextmanager
 
 # --- CONFIGURATION ---
-PROJECT_ID = "esg-analytics-poc"
+PROJECT_ID = ""
 
 # --- IN-MEMORY DATABASE (CACHE LAYER) ---
 # We use DuckDB instead of querying BigQuery for every request.
