@@ -152,12 +152,19 @@
     $effect(() => {
         const raw = $state.snapshot(data);
         if (priceSeries && raw.length > 0) {
-            priceSeries.setData(raw.map(d => ({ time: d.time, value: d.close })));
-            ma30Series.setData(raw.map(d => ({ time: d.time, value: d.ma30 })));
-            ma90Series.setData(raw.map(d => ({ time: d.time, value: d.ma90 })));
+            // FIX START: DEDUPLICATE AND SORT DATA BY TIME
+            const uniqueMap = new Map();
+            raw.forEach(item => uniqueMap.set(item.time, item));
+            const uniqueSorted = Array.from(uniqueMap.values())
+                                      .sort((a, b) => new Date(a.time) - new Date(b.time));
+            // FIX END
+
+            priceSeries.setData(uniqueSorted.map(d => ({ time: d.time, value: d.close })));
+            ma30Series.setData(uniqueSorted.map(d => ({ time: d.time, value: d.ma30 })));
+            ma90Series.setData(uniqueSorted.map(d => ({ time: d.time, value: d.ma90 })));
             
-            const maxVol = Math.max(...raw.map(d => d.volume));
-            volumeSeries.setData(raw.map(d => ({
+            const maxVol = Math.max(...uniqueSorted.map(d => d.volume));
+            volumeSeries.setData(uniqueSorted.map(d => ({
                 time: d.time, value: d.volume,
                 color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)'
             })));

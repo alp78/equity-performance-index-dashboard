@@ -43,57 +43,72 @@ manager = ConnectionManager()
 
 # --- CACHE REFRESH LOGIC ---
 async def refresh_duckdb_cache():
-    """Logic to pull from BQ and populate DuckDB. Preserves your exact casting."""
+    """Logic to pull from BQ and populate DuckDB."""
     print("Syncing DuckDB cache with BigQuery...")
-    bq_client = bigquery.Client(project=PROJECT_ID)
-    load_query = f"""
-        SELECT
-            symbol,
-            name,
-            CAST(trade_date AS DATE) as trade_date,
-            CAST(close_price AS FLOAT64) as close,
-            CAST(high_price AS FLOAT64) as high,
-            CAST(low_price AS FLOAT64) as low,
-            CAST(volume AS INT) as volume
-        FROM `{PROJECT_ID}.stock_exchange.stock_prices`
-    """
-    raw_df = bq_client.query(load_query).to_dataframe()
-    raw_df['trade_date'] = pd.to_datetime(raw_df['trade_date'])
+    try:
+        bq_client = bigquery.Client(project=PROJECT_ID)
+        load_query = f"""
+            SELECT
+                symbol,
+                name,
+                CAST(trade_date AS DATE) as trade_date,
+                CAST(close_price AS FLOAT64) as close,
+                CAST(high_price AS FLOAT64) as high,
+                CAST(low_price AS FLOAT64) as low,
+                CAST(volume AS INT) as volume
+            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+        """
+        raw_df = bq_client.query(load_query).to_dataframe()
+        raw_df['trade_date'] = pd.to_datetime(raw_df['trade_date'])
 
-    local_db.execute("DROP TABLE IF EXISTS prices")
-    local_db.register('temp_df', raw_df)
-    local_db.execute("CREATE TABLE prices AS SELECT * FROM temp_df")
-    local_db.execute("CREATE INDEX idx_symbol ON prices (symbol)")
-    print("Cache Synced.")
+        local_db.execute("DROP TABLE IF EXISTS prices")
+        local_db.register('temp_df', raw_df)
+        local_db.execute("CREATE TABLE prices AS SELECT * FROM temp_df")
+        local_db.execute("CREATE INDEX idx_symbol ON prices (symbol)")
+        print(f"Cache Synced. Loaded {len(raw_df)} rows.")
+    except Exception as e:
+        print(f"CRITICAL: Cache Sync Failed: {e}")
 
 # --- EXTERNAL API DATA FETCHERS ---
+
 async def fetch_macro_references():
     refs = {}
+    
+    # Crypto (Binance is 24/7)
     try:
         r = requests.get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=1", timeout=5)
         if r.status_code == 200:
             data = r.json()[0]
-            open_price = float(data[1])
-            last_price = float(data[4])
             refs["BINANCE:BTCUSDT"] = {
-                "price": last_price,
-                "prev": open_price 
+                "price": float(data[4]), # Close
+                "prev": float(data[1])   # Open
             }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Binance API Error: {e}")
 
+    # Commodities & Forex (Yahoo Finance)
+    # GC=F is Gold Futures, EURUSD=X is Euro
     mapping = {"FXCM:XAU/USD": "GC=F", "FXCM:EUR/USD": "EURUSD=X"}
+    
     for label, ticker_symbol in mapping.items():
         try:
             ticker = yf.Ticker(ticker_symbol)
-            hist = ticker.history(period="2d")
+            # 5d to safely span over weekends/holidays
+            hist = ticker.history(period="5d")
+            
             if len(hist) >= 2:
                 refs[label] = {
                     "price": float(hist['Close'].iloc[-1]),
                     "prev": float(hist['Close'].iloc[-2])
                 }
-        except Exception: pass
+            else:
+                print(f"Warning: Not enough history for {label} ({ticker_symbol}). Rows found: {len(hist)}")
+                
+        except Exception as e:
+            print(f"Macro Data Error ({label}): {e}")
+            
     return refs
+
 
 async def market_data_feeder():
     while True:
@@ -105,16 +120,24 @@ async def market_data_feeder():
 
     market_state = await fetch_macro_references()
     try:
+        # GROUP BY to handle duplicates in WebSocket feeder initialization
         ref_query = """
             WITH Daily AS (
+                SELECT symbol, 
+                       MAX(close) as close, 
+                       trade_date
+                FROM prices
+                GROUP BY symbol, trade_date
+            ),
+            Ordered AS (
                 SELECT symbol, close,
                        ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
-                FROM prices
+                FROM Daily
             )
             SELECT symbol,
                    MAX(CASE WHEN rn = 1 THEN close END) as latest,
                    MAX(CASE WHEN rn = 2 THEN close END) as previous
-            FROM Daily
+            FROM Ordered
             WHERE rn <= 2
             GROUP BY symbol
         """
@@ -180,8 +203,21 @@ async def webhook_refresh():
 
 @app.get("/summary")
 async def get_summary():
+    # Deduplicate using GROUP BY before calculating LAG to prevent 0% change bug
     query = """
-        WITH Latest AS (
+        WITH UniquePrices AS (
+            SELECT 
+                symbol,
+                MAX(name) as name, 
+                MAX(close) as close, 
+                MAX(high) as high, 
+                MAX(low) as low, 
+                MAX(volume) as volume, 
+                trade_date
+            FROM prices
+            GROUP BY symbol, trade_date
+        ),
+        Latest AS (
             SELECT
                 symbol,
                 name,
@@ -192,7 +228,7 @@ async def get_summary():
                 trade_date,
                 LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_price,
                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
-            FROM prices
+            FROM UniquePrices
         )
         SELECT
             symbol,
@@ -223,22 +259,34 @@ async def get_data(symbol: str, period: str = "1y"):
         if not latest_res or not latest_res[0]: return []
         anchor_date = latest_res[0]
 
+        # GROUP BY in Common Table Expressions to prevent duplicate dates crashing the chart
         if period.lower() == "max":
             query = """
+                WITH DailyUnique AS (
+                    SELECT symbol, trade_date, MAX(close) as close, MAX(volume) as volume
+                    FROM prices 
+                    WHERE symbol = ? 
+                    GROUP BY symbol, trade_date
+                )
                 SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
                 AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                 AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
-                FROM prices WHERE symbol = ? ORDER BY trade_date ASC
+                FROM DailyUnique ORDER BY trade_date ASC
             """
             df = local_db.execute(query, [symbol]).df()
         else:
             query = f"""
+                WITH DailyUnique AS (
+                    SELECT symbol, trade_date, MAX(close) as close, MAX(volume) as volume
+                    FROM prices
+                    WHERE symbol = ?
+                    GROUP BY symbol, trade_date
+                )
                 SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
-                FROM prices
-                WHERE symbol = ?
-                QUALIFY trade_date >= CAST(? AS DATE) - INTERVAL {days_to_subtract} DAY
+                FROM DailyUnique
+                WHERE trade_date >= CAST(? AS DATE) - INTERVAL {days_to_subtract} DAY
                 ORDER BY trade_date ASC
             """
             df = local_db.execute(query, [symbol, anchor_date]).df()
@@ -250,14 +298,21 @@ async def get_data(symbol: str, period: str = "1y"):
 @app.get("/rankings")
 async def get_rankings(period: str = "1y"):
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+    
+    # GROUP BY deduplication logic
     if period.lower() == "max":
         query = """
-            WITH Ranked AS (
+            WITH UniquePrices AS (
+                SELECT symbol, trade_date, MAX(close) as close 
+                FROM prices 
+                GROUP BY symbol, trade_date
+            ),
+            Ranked AS (
                 SELECT symbol, close, trade_date,
-                       FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as start_price,
-                       FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as end_price,
-                       ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
-                FROM prices
+                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as start_price,
+                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as end_price,
+                        ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                FROM UniquePrices
             )
             SELECT symbol, ((end_price - start_price) / NULLIF(start_price, 0)) * 100 as value
             FROM Ranked WHERE rn = 1 ORDER BY value DESC
@@ -266,28 +321,37 @@ async def get_rankings(period: str = "1y"):
         days = intervals.get(period.lower(), 365)
         query = f"""
             WITH LatestDate AS (SELECT MAX(trade_date) as max_d FROM prices),
+            UniquePrices AS (
+                 SELECT symbol, trade_date, MAX(close) as close
+                 FROM prices
+                 GROUP BY symbol, trade_date
+            ),
             Filtered AS (
                 SELECT symbol, close, trade_date
-                FROM prices, LatestDate
+                FROM UniquePrices, LatestDate
                 WHERE trade_date >= LatestDate.max_d - INTERVAL {days} DAY
             ),
             Bounds AS (
                 SELECT symbol,
-                       FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-                       FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as last_val,
-                       ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as last_val,
+                        ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
                 FROM Filtered
             )
             SELECT symbol, ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
             FROM Bounds WHERE rn = 1 ORDER BY value DESC
         """
-    df = local_db.execute(query).df()
-    return {
-        "selected": {
-            "top": df.head(3).to_dict(orient='records'),
-            "bottom": df.tail(3).sort_values(by='value').to_dict(orient='records')
+    try:
+        df = local_db.execute(query).df()
+        return {
+            "selected": {
+                "top": df.head(3).to_dict(orient='records'),
+                "bottom": df.tail(3).sort_values(by='value').to_dict(orient='records')
+            }
         }
-    }
+    except Exception as e:
+        print(f"Ranking Error: {e}")
+        return {"selected": {"top": [], "bottom": []}}
 
 @app.websocket("/ws/market")
 async def websocket_endpoint(websocket: WebSocket):
