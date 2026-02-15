@@ -15,7 +15,7 @@ from urllib.parse import unquote
 from contextlib import asynccontextmanager
 
 # --- CONFIGURATION ---
-PROJECT_ID = ""
+PROJECT_ID = "esg-analytics-poc"
 
 # --- IN-MEMORY DATABASE (CACHE LAYER) ---
 # We use DuckDB instead of querying BigQuery for every request.
@@ -58,36 +58,44 @@ manager = ConnectionManager()
 # --- DATA INGESTION (ETL) ---
 # This function pulls historical data from BigQuery into DuckDB on startup.
 async def refresh_duckdb_cache():
-    print("Syncing DuckDB cache with BigQuery...")
+    print("Syncing DuckDB cache (Phase 1: Latest Snapshot)...")
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    
     try:
-        bq_client = bigquery.Client(project=PROJECT_ID)
-        
-        # We cast columns explicitly to ensure DuckDB uses the correct numeric types
-        load_query = f"""
-            SELECT
-                symbol,
-                name,
-                CAST(trade_date AS DATE) as trade_date,
-                CAST(close_price AS FLOAT64) as close,
-                CAST(high_price AS FLOAT64) as high,
-                CAST(low_price AS FLOAT64) as low,
-                CAST(volume AS INT) as volume
+        # Step 1: Fetch ONLY the most recent day for all tickers.
+        # This is a tiny query that finishes in ~1 second.
+        latest_query = f"""
+            SELECT symbol, name, trade_date, 
+                   close_price as close, high_price as high, 
+                   low_price as low, volume
+            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+            WHERE trade_date = (SELECT MAX(trade_date) FROM `{PROJECT_ID}.stock_exchange.stock_prices`)
+        """
+        latest_df = bq_client.query(latest_query).to_dataframe()
+        latest_df['trade_date'] = pd.to_datetime(latest_df['trade_date'])
+
+        # Load this into a temporary table so the Sidebar can work immediately
+        local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM latest_df")
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
+        print(f"Sidebar Ready: Loaded {len(latest_df)} tickers.")
+
+        # Step 2: Now fetch the FULL history in the background (Phase 2)
+        print("Syncing DuckDB cache (Phase 2: Full History)...")
+        history_query = f"""
+            SELECT symbol, name, CAST(trade_date AS DATE) as trade_date,
+                   CAST(close_price AS FLOAT64) as close, CAST(high_price AS FLOAT64) as high,
+                   CAST(low_price AS FLOAT64) as low, CAST(volume AS INT) as volume
             FROM `{PROJECT_ID}.stock_exchange.stock_prices`
         """
-        # 1. Download data to Pandas (RAM)
-        raw_df = bq_client.query(load_query).to_dataframe()
-        raw_df['trade_date'] = pd.to_datetime(raw_df['trade_date'])
+        full_df = bq_client.query(history_query).to_dataframe()
+        full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
 
-        # 2. Bulk load into DuckDB
-        # "CREATE TABLE AS SELECT" is the fastest way to load data in DuckDB
-        local_db.execute("DROP TABLE IF EXISTS prices")
-        local_db.register('temp_df', raw_df)
-        local_db.execute("CREATE TABLE prices AS SELECT * FROM temp_df")
+        # Atomically swap the tiny table for the full table
+        local_db.register('temp_full', full_df)
+        local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM temp_full")
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
         
-        # 3. Create an Index
-        # Makes filtering by "WHERE symbol = 'NVDA'" instant (O(log n) vs O(n))
-        local_db.execute("CREATE INDEX idx_symbol ON prices (symbol)")
-        print(f"Cache Synced. Loaded {len(raw_df)} rows.")
+        print(f"Full Cache Synced: Loaded {len(full_df)} rows.")
     except Exception as e:
         print(f"CRITICAL: Cache Sync Failed: {e}")
 
