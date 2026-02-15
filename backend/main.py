@@ -24,10 +24,6 @@ PROJECT_ID = "esg-analytics-poc"
 # complex Window Functions (for Moving Averages) natively.
 local_db = duckdb.connect(database=':memory:', read_only=False)
 
-# --- GLOBAL SYNC LOCK ---
-# Prevents multiple concurrent BigQuery fetches from colliding.
-SYNC_LOCK = asyncio.Lock()
-
 # --- REAL-TIME STATE CACHE ---
 # Stores the last known price for every symbol (BTC, NVDA, etc.).
 # Used to "Hydrate" new WebSocket clients immediately so they don't see "Waiting...".
@@ -62,60 +58,46 @@ manager = ConnectionManager()
 # --- DATA INGESTION (ETL) ---
 # This function pulls historical data from BigQuery into DuckDB on startup.
 async def refresh_duckdb_cache():
-    if SYNC_LOCK.locked():
-        print("Sync already in progress, skipping redundant request...")
-        return
+    print("Syncing DuckDB cache (Phase 1: Latest Snapshot)...")
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    
+    try:
+        # Step 1: Fetch ONLY the most recent day for all tickers.
+        # This is a tiny query that finishes in ~1 second.
+        latest_query = f"""
+            SELECT symbol, name, trade_date, 
+                   close_price as close, high_price as high, 
+                   low_price as low, volume
+            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+            WHERE trade_date = (SELECT MAX(trade_date) FROM `{PROJECT_ID}.stock_exchange.stock_prices`)
+        """
+        latest_df = bq_client.query(latest_query).to_dataframe()
+        latest_df['trade_date'] = pd.to_datetime(latest_df['trade_date'])
 
-    async with SYNC_LOCK:
-        print("Syncing DuckDB cache (Phase 1: Latest Snapshot)...")
-        bq_client = bigquery.Client(project=PROJECT_ID)
+        # Load this into a temporary table so the Sidebar can work immediately
+        local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM latest_df")
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
+        print(f"Sidebar Ready: Loaded {len(latest_df)} tickers.")
+
+        # Step 2: Now fetch the FULL history in the background (Phase 2)
+        print("Syncing DuckDB cache (Phase 2: Full History)...")
+        history_query = f"""
+            SELECT symbol, name, CAST(trade_date AS DATE) as trade_date,
+                   CAST(close_price AS FLOAT64) as close, CAST(high_price AS FLOAT64) as high,
+                   CAST(low_price AS FLOAT64) as low, CAST(volume AS INT) as volume
+            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+        """
+        full_df = bq_client.query(history_query).to_dataframe()
+        full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
+
+        # Atomically swap the tiny table for the full table
+        local_db.register('temp_full', full_df)
+        local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM temp_full")
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
         
-        try:
-            # Step 1: Fetch ONLY the most recent day for all tickers.
-            # This is a tiny query that finishes in ~1 second.
-            latest_query = f"""
-                SELECT symbol, name, trade_date, 
-                       close_price as close, high_price as high, 
-                       low_price as low, volume
-                FROM `{PROJECT_ID}.stock_exchange.stock_prices`
-                WHERE trade_date = (SELECT MAX(trade_date) FROM `{PROJECT_ID}.stock_exchange.stock_prices`)
-            """
-            latest_df = bq_client.query(latest_query).to_dataframe()
-            latest_df['trade_date'] = pd.to_datetime(latest_df['trade_date'])
-
-            # Load this into a temporary table so the Sidebar can work immediately
-            local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM latest_df")
-            local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
-            print(f"Sidebar Ready: Loaded {len(latest_df)} tickers.")
-
-            # Step 2: Now fetch the FULL history in the background (Phase 2)
-            print("Syncing DuckDB cache (Phase 2: Full History)...")
-            history_query = f"""
-                SELECT symbol, name, CAST(trade_date AS DATE) as trade_date,
-                       CAST(close_price AS FLOAT64) as close, CAST(high_price AS FLOAT64) as high,
-                       CAST(low_price AS FLOAT64) as low, CAST(volume AS INT) as volume
-                FROM `{PROJECT_ID}.stock_exchange.stock_prices`
-            """
-            full_df = bq_client.query(history_query).to_dataframe()
-            full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
-
-            # Step 3: ATOMIC SWAP
-            # We load into a production-ready temp table first to avoid "Table Not Found" errors.
-            local_db.register('temp_full', full_df)
-            local_db.execute("CREATE OR REPLACE TABLE prices_new AS SELECT * FROM temp_full")
-            local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_new ON prices_new (symbol)")
-            
-            # Atomic Rename Transaction
-            local_db.execute("""
-                BEGIN TRANSACTION;
-                DROP TABLE IF EXISTS prices;
-                ALTER TABLE prices_new RENAME TO prices;
-                COMMIT;
-            """)
-            
-            print(f"Full Cache Synced: Loaded {len(full_df)} rows.")
-        except Exception as e:
-            print(f"CRITICAL: Cache Sync Failed: {e}")
+        print(f"Full Cache Synced: Loaded {len(full_df)} rows.")
+    except Exception as e:
+        print(f"CRITICAL: Cache Sync Failed: {e}")
 
 # --- REAL-TIME DATA HELPERS ---
 # We split these out so we can call them immediately on startup (Bootstrap)
@@ -246,7 +228,7 @@ async def background_startup():
 # Controls what happens when the server Starts and Stops.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Server Booting...")
+    print("🚀 Server Booting...")
     # Trigger everything in the background. 
     # We do NOT 'await' this, so the API starts responding to the frontend immediately.
     asyncio.create_task(background_startup())
