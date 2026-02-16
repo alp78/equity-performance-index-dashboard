@@ -33,10 +33,16 @@
 // Logic: Determine if the market is Open or Closed based on backend status and asset type.
     // This controls the "Red/Green" dot and the "Pulsing" animation.
     function getStatus(symbol, data) {
+        // --- PHASE 0: LOADING STATE ---
+        // If price is 0, we are still waiting for the first WS tick.
+        // Return null/empty values to keep the UI clean.
+        if (!data || data.price === 0) {
+            return { label: '', color: '', dot: 'opacity-0', pulse: false };
+        }
+
         const s = symbol.toUpperCase();
 
-        // 1. Backend Override: Trust the Python NYSE/Holiday check if data is available.
-        // This ensures US Equities show CLOSED on holidays like Presidents' Day.
+        // 1. Backend Override: Trust the Python NYSE/Holiday check
         if (data && data.live !== undefined) {
             if (data.live === true) {
                 return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
@@ -50,15 +56,14 @@
             return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
         }
 
-        // 3. Traditional Markets (Stocks/Forex): Closed on Weekends
+        // 3. Traditional Markets: Weekend Check
         const now = new Date();
-        const day = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
-        // Note: Forex technically opens Sunday evening, but for UI simplicity we mark Sunday as Closed.
+        const day = now.getUTCDay(); 
         if (day === 0 || day === 6) {
             return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
         }
 
-        // 4. Weekdays: Assume Live (Fallback if backend data hasn't arrived yet)
+        // 4. Weekdays: Assume Live
         return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
     }
 
