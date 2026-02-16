@@ -1,4 +1,4 @@
-import os
+from os import getenv
 import logging
 import pandas as pd
 import duckdb
@@ -17,7 +17,7 @@ from datetime import datetime
 import pandas_market_calendars as mcal
 
 # --- CONFIGURATION ---
-PROJECT_ID = ""
+PROJECT_ID = getenv("PROJECT_ID")
 
 # --- IN-MEMORY DATABASE (CACHE LAYER) ---
 # We use DuckDB instead of querying BigQuery for every request.
@@ -477,5 +477,5 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
