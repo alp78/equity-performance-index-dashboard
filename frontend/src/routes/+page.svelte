@@ -32,9 +32,14 @@
     // Prevents the "Dark Chart" issue by tracking if we are still in the boot-up phase.
     let isInitialLoading = $state(true);
 
+    // 3.1 Fast-Track Metadata (Added for instant name loading)
+    let currentMetadata = $state({ name: "" });
+
     // --- DERIVED STATE ---
     let activeAsset = $derived(
-        assets.find(a => a.symbol === $selectedSymbol) || { name: $selectedSymbol }
+        currentMetadata.name 
+        ? { name: currentMetadata.name, symbol: $selectedSymbol }
+        : (assets.find(a => a.symbol === $selectedSymbol) || { name: $selectedSymbol })
     );
 
     // --- DATA FETCHING ---
@@ -49,6 +54,16 @@
 
     async function fetchStockData(symbol) {
         if (!symbol) return;
+        
+        // PARALLEL METADATA FETCH
+        // This fires immediately and updates 'currentMetadata' as soon as it returns
+        fetch(`${PUBLIC_BACKEND_URL}/metadata/${encodeURIComponent(symbol)}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data && data.name) currentMetadata.name = data.name;
+            })
+            .catch(e => console.error("Metadata fetch error:", e));
+
         try {
             const res = await fetch(`${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`);
             if (res.ok) {
@@ -83,6 +98,9 @@
     $effect(() => {
         const sym = $selectedSymbol; // Register dependency
         
+        // Clear local metadata to ensure the new name is fetched fresh
+        untrack(() => { currentMetadata.name = ""; });
+
         // Use 'untrack' to check the loading state without creating a circular dependency.
         // This ensures we don't double-fetch on the very first render.
         if (untrack(() => isInitialLoading)) return;

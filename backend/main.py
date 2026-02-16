@@ -4,7 +4,7 @@ import pandas as pd
 import duckdb
 import asyncio
 import json
-import random
+import pytz
 import requests
 import uvicorn
 import yfinance as yf
@@ -13,9 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
 from urllib.parse import unquote
 from contextlib import asynccontextmanager
+from datetime import datetime
+import pandas_market_calendars as mcal
 
 # --- CONFIGURATION ---
-PROJECT_ID = "esg-analytics-poc"
+PROJECT_ID = ""
 
 # --- IN-MEMORY DATABASE (CACHE LAYER) ---
 # We use DuckDB instead of querying BigQuery for every request.
@@ -129,8 +131,16 @@ async def fetch_crypto_data():
         print(f"Crypto Fetch Error: {e}")
 
 async def fetch_stock_data():
-    """Fetches Stock data (Yahoo) - Slow & Rate Limited."""
+    """Fetches Stock data (Yahoo) - Now with Holiday/Holiday awareness."""
     try:
+        # 1. Market Status Check
+        nyse = mcal.get_calendar('NYSE')
+        now_utc = datetime.now(pytz.utc)
+        schedule = nyse.schedule(start_date=now_utc.date(), end_date=now_utc.date())
+        
+        # Strictly False if holiday/weekend; otherwise check current time
+        is_nyse_open = False if schedule.empty else nyse.open_at_time(schedule, now_utc)
+
         targets = ["GC=F", "EURUSD=X", "NVDA", "AAPL", "MSFT"]
         data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True)
         
@@ -156,14 +166,18 @@ async def fetch_stock_data():
 
                 if pd.isna(current_price) or current_price == 0: continue
 
+                # FIX: Keep diff as a raw float for maximum precision
                 diff = current_price - prev_close
                 pct = (diff / prev_close) * 100 if prev_close != 0 else 0
                 
+                is_equity = symbol in ["NVDA", "AAPL", "MSFT"]
+                
                 payload = {
                     "symbol": display_symbol,
-                    "price": round(current_price, 2),
-                    "diff": round(diff, 2),
-                    "pct": round(pct, 2)
+                    "price": current_price, 
+                    "diff": diff,
+                    "pct": pct,
+                    "live": True if not is_equity or is_nyse_open else False
                 }
                 
                 LATEST_MARKET_DATA[display_symbol] = payload
@@ -172,6 +186,7 @@ async def fetch_stock_data():
             except Exception: continue
     except Exception as e:
         print(f"Stock Fetch Error: {e}")
+
 
 # --- REAL-TIME DATA FEEDER ---
 # Background task that manages the polling schedule.
@@ -250,6 +265,21 @@ app.add_middleware(
 )
 
 # --- ENDPOINTS ---
+
+# --- METADATA ENDPOINT ---
+# Provides near-instant name lookup for the UI header.
+@app.get("/metadata/{symbol:path}")
+async def get_asset_metadata(symbol: str):
+    symbol = unquote(symbol)
+    try:
+        # This simple query is much faster than the full /summary endpoint
+        res = local_db.execute("SELECT name FROM prices WHERE symbol = ? LIMIT 1", [symbol]).fetchone()
+        return {
+            "symbol": symbol,
+            "name": res[0] if res else symbol
+        }
+    except Exception:
+        return {"symbol": symbol, "name": symbol}
 
 # 1. ADMIN REFRESH
 # Can be called by a Cloud Scheduler or manually to force-reload BigQuery data

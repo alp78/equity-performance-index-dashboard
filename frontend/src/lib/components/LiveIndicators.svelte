@@ -21,17 +21,36 @@
         return s && s.includes(':') ? s.split(':')[1] : s;
     }
 
-    // Logic: Determine if the market is Open or Closed based on the asset type.
-    // This controls the "Red/Green" dot and the "Pulsing" animation.
-    function getStatus(symbol) {
+    // Determines decimal precision based on asset type
+    function getPrecision(symbol) {
         const s = symbol.toUpperCase();
+        if (s.includes('USD') || s.includes('EUR') || s.includes('GC=F') || s.includes('XAU')) {
+            return 5; // 5 decimals for FX/Gold
+        }
+        return 2; // Default for Stocks
+}
+
+// Logic: Determine if the market is Open or Closed based on backend status and asset type.
+    // This controls the "Red/Green" dot and the "Pulsing" animation.
+    function getStatus(symbol, data) {
+        const s = symbol.toUpperCase();
+
+        // 1. Backend Override: Trust the Python NYSE/Holiday check if data is available.
+        // This ensures US Equities show CLOSED on holidays like Presidents' Day.
+        if (data && data.live !== undefined) {
+            if (data.live === true) {
+                return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
+            } else {
+                return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
+            }
+        }
         
-        // 1. Crypto: Always Live (24/7)
+        // 2. Crypto: Always Live (24/7)
         if (s.includes('BTC') || s.includes('ETH')) {
             return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
         }
 
-        // 2. Traditional Markets (Stocks/Forex): Closed on Weekends
+        // 3. Traditional Markets (Stocks/Forex): Closed on Weekends
         const now = new Date();
         const day = now.getUTCDay(); // 0 = Sunday, 6 = Saturday
         // Note: Forex technically opens Sunday evening, but for UI simplicity we mark Sunday as Closed.
@@ -39,7 +58,7 @@
             return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
         }
 
-        // 3. Weekdays: Assume Live
+        // 4. Weekdays: Assume Live (Fallback if backend data hasn't arrived yet)
         return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
     }
 
@@ -66,9 +85,10 @@
                         quotes[s] = {
                             price: update.price,
                             pct: update.pct,
-                            diff: update.diff
+                            diff: update.diff,
+                            live: update.live
                         };
-                        break; // Stop looking once found
+                        break;
                     }
                 }
             } catch (e) { console.error("Payload Error:", e); }
@@ -87,8 +107,8 @@
 
     <div class="flex-1 grid grid-rows-3 gap-2">
         {#each symbols as symbol}
-            {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0 }}
-            {@const status = getStatus(symbol)}
+            {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0, live: false }}
+            {@const status = getStatus(symbol, data)}
             
             {@const hasData = data.price > 0}
 
@@ -108,22 +128,25 @@
                 <div class="flex flex-col items-end">
                     <span class="text-base font-mono font-black text-white leading-none mb-1 tabular-nums">
                         {#if hasData}
-                            ${data.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            ${data.price.toLocaleString(undefined, { 
+                                minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
+                                maximumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2 
+                            })}
                         {:else}
                             <span class="animate-pulse opacity-20">---</span>
                         {/if}
                     </span>
                     
                     <div class="flex items-center gap-1.5 font-bold {data.pct >= 0 ? 'text-green-500' : 'text-red-500'}">
-                         {#if hasData}
+                        {#if hasData}
                             <span class="text-sm tabular-nums">
-                                {data.pct >= 0 ? '+' : ''}{data.pct.toFixed(2)}%
+                                {data.pct >= 0 ? '+' : ''}{data.pct.toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
                             </span> 
                             <span class="text-[11px] opacity-70 tabular-nums font-black">
-                                ({data.diff >= 0 ? '+' : ''}{data.diff.toFixed(2)})
+                                ({data.diff >= 0 ? '+' : ''}{data.diff.toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
                             </span>
                         {:else}
-                             <span class="text-[10px] opacity-20">waiting...</span>
+                            <span class="text-[10px] opacity-20">waiting...</span>
                         {/if}
                     </div>
                 </div>
