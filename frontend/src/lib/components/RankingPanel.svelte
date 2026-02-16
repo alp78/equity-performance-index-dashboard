@@ -1,5 +1,6 @@
 <script>
     // --- IMPORTS ---
+    import { browser } from '$app/environment';
     import { PUBLIC_BACKEND_URL } from '$env/static/public';
     import { onMount } from 'svelte';
 
@@ -8,7 +9,8 @@
     let { currentPeriod = '1y' } = $props();
     
     // --- STATE ---
-    let rankings = $state(null); // The data currently being displayed
+    let localRankings = $state(null);
+    let localLoading = $state(false);
     
     // CACHE: Stores previously fetched results in memory.
     // Structure: { '1y': { top: [...], bottom: [...] }, '3mo': ... }
@@ -22,10 +24,13 @@
 
     // --- DATA LOADING LOGIC ---
     async function load(period) {
+        // Only run in browser
+        if (!browser) return;
+        
         // 1. CACHE HIT CHECK
         // If we already have this data in memory, use it immediately.
         if (rankingCache[period]) {
-            rankings = rankingCache[period];
+            localRankings = rankingCache[period];
             return;
         }
 
@@ -39,11 +44,11 @@
         const signal = abortController.signal;
 
         // 3. UI RESET
-        // Set to null to show the loading spinner while fetching
-        rankings = null;
+        // Set loading state
+        localLoading = true;
 
         try {
-            // Add timestamp (?t=...) to prevent browser-level HTTP caching issues if needed
+            // Add timestamp (?t=...) to prevent browser-level HTTP caching issues
             const url = `${PUBLIC_BACKEND_URL}/rankings?period=${period}&t=${Date.now()}`;
             const res = await fetch(url, { signal });
             
@@ -54,20 +59,24 @@
                 rankingCache[period] = data;
                 
                 // 5. UPDATE UI
-                rankings = data;
+                localRankings = data;
+                localLoading = false;
             }
         } catch (e) { 
             // Ignore "AbortError" because that means *we* cancelled it on purpose.
             if (e.name !== 'AbortError') {
-                console.error("Ranking Load Error:", e); 
+                console.error("Ranking Load Error:", e);
+                localLoading = false;
             }
         }
     }
 
     // --- REACTIVITY ---
     // Whenever 'currentPeriod' changes (user clicks a button), run the load function.
-    $effect(() => { 
-        load(currentPeriod); 
+    $effect(() => {
+        if (browser) {
+            load(currentPeriod);
+        }
     });
 
     // --- BACKGROUND PREFETCHING ---
@@ -103,8 +112,8 @@
     </div>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-hidden">
-        {#if rankings && rankings.selected}
-            {@const data = rankings.selected}
+        {#if localRankings && localRankings.selected}
+            {@const data = localRankings.selected}
             {@const topMax = getSubsetMax(data.top)}
             {@const botMax = getSubsetMax(data.bottom)}
 
