@@ -1,7 +1,7 @@
 <script>
     // --- IMPORTS ---
     // 'selectedSymbol' is a global store. When the sidebar updates it, this page reacts automatically.
-    import { selectedSymbol } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, loadRankingsData } from '$lib/stores.js';
     
     // Components
     import Sidebar from '$lib/components/Sidebar.svelte';
@@ -27,12 +27,15 @@
     
     // 4. UI State
     let currentPeriod = $state('1y');
+    
+    // 5. Track previous period to detect changes
+    let previousPeriod = $state('1y');
 
-    // 5. Initial Load Guard
+    // 6. Initial Load Guard
     // Prevents the "Dark Chart" issue by tracking if we are still in the boot-up phase.
     let isInitialLoading = $state(true);
 
-    // 3.1 Fast-Track Metadata (Added for instant name loading)
+    // 7. Fast-Track Metadata (Added for instant name loading)
     let currentMetadata = $state({ name: "" });
 
     // --- DERIVED STATE ---
@@ -43,16 +46,21 @@
     );
 
     // --- DATA FETCHING ---
-    async function fetchAssets() {
+    // OPTIMIZATION: Load summary and rankings separately
+    async function fetchInitialData() {
         try {
-            const res = await fetch(`${PUBLIC_BACKEND_URL}/summary`);
-            if (res.ok) assets = await res.json();
+            // Fetch summary data (sidebar) - only called once
+            const summaryResult = await loadSummaryData(PUBLIC_BACKEND_URL);
+            assets = summaryResult || [];
+            
+            // Fetch initial rankings data
+            await loadRankingsData(PUBLIC_BACKEND_URL, currentPeriod);
         } catch (e) {
-            console.error("Summary fetch error:", e);
+            console.error("Initial data fetch error:", e);
         }
     }
 
-    async function fetchStockData(symbol) {
+    async function fetchStockData(symbol, period = 'max') {
         if (!symbol) return;
         
         // PARALLEL METADATA FETCH
@@ -65,6 +73,7 @@
             .catch(e => console.error("Metadata fetch error:", e));
 
         try {
+            // ALWAYS fetch full data (max) and filter client-side for responsiveness
             const res = await fetch(`${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`);
             if (res.ok) {
                 fullStockData = await res.json();
@@ -82,15 +91,13 @@
     // --- LIFECYCLE: MOUNT ---
     // Runs once when the app loads.
     onMount(() => {
-        // 1. Load Metadata
-        // Optimization: Removed 'await' to allow parallel fetching.
-        fetchAssets();
+        // 1. OPTIMIZATION: Load summary + rankings separately
+        fetchInitialData();
         
         // 2. FORCE INITIAL FETCH
         // This solves the issue where AAPL was dark until clicked.
         // We explicitly fetch the default symbol immediately on load.
-        // Optimization: Removed 'await' to allow parallel fetching.
-        fetchStockData($selectedSymbol);
+        fetchStockData($selectedSymbol, currentPeriod);
     });
 
     // --- REACTIVITY: SYMBOL CHANGE ---
@@ -106,7 +113,22 @@
         if (untrack(() => isInitialLoading)) return;
 
         fullStockData = []; // Clear old data to prevent ghosting
-        fetchStockData(sym);
+        fetchStockData(sym, untrack(() => currentPeriod));
+    });
+
+    // --- REACTIVITY: PERIOD CHANGE ---
+    // Triggers when period buttons are clicked
+    $effect(() => {
+        const period = currentPeriod;
+        
+        // Skip if initial load hasn't completed
+        if (untrack(() => isInitialLoading)) return;
+        
+        // Only reload rankings if period actually changed
+        if (period !== untrack(() => previousPeriod)) {
+            previousPeriod = period;
+            loadRankingsData(PUBLIC_BACKEND_URL, period).catch(console.error);
+        }
     });
 
     // --- REACTIVITY: CLIENT-SIDE FILTERING ---

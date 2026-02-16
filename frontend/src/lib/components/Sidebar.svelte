@@ -6,13 +6,15 @@
     // GLOBAL STORE:
     // This is the "Remote Control" of the app. When we set 'selectedSymbol' here,
     // the +page.svelte (Chart) automatically reacts and fetches new data.
-    import { selectedSymbol, metadata } from '$lib/stores.js';
+    import { selectedSymbol, summaryData } from '$lib/stores.js';
 
     // --- STATE (Svelte 5 Runes) ---
-    let tickers = $state([]);       // Raw list of all available stocks from backend
     let searchQuery = $state('');   // User input for filtering
-    let loading = $state(true);     // Spinner state
     let lastPriceDate = $state('—'); // Display date for the "Last Update" label
+
+    // --- OPTIMIZATION: Read from dedicated summary store (won't change when period changes) ---
+    let tickers = $derived($summaryData.assets || []);
+    let loading = $derived($summaryData.loading);
 
     // --- DERIVED STATE (Reactive Filtering) ---
     // This automatically re-runs whenever 'tickers' OR 'searchQuery' changes.
@@ -28,35 +30,12 @@
             .sort((a, b) => a.symbol.localeCompare(b.symbol))
     );
 
-    // --- INITIAL DATA FETCH ---
-    onMount(async () => {
-        let attempts = 0;
-        const maxAttempts = 5;
-
-        async function tryFetch() {
-            try {
-                const res = await fetch(`${PUBLIC_BACKEND_URL}/summary`);
-                if (res.ok) {
-                    const data = await res.json();
-                    // If backend is still warming up, it might return an empty list
-                    if (data.length === 0 && attempts < maxAttempts) {
-                        attempts++;
-                        setTimeout(tryFetch, 1000);
-                        return;
-                    }
-                    tickers = Array.isArray(data) ? data : [];
-                    if (tickers.length > 0) {
-                        lastPriceDate = new Date().toLocaleDateString('en-GB'); 
-                    }
-                }
-            } catch (e) { 
-                console.error("Sidebar fetch error:", e); 
-            } finally { 
-                loading = false; 
-            }
+    // --- WATCH FOR DATA LOADED ---
+    // Update the last price date when data arrives
+    $effect(() => {
+        if (tickers.length > 0) {
+            lastPriceDate = new Date().toLocaleDateString('en-GB');
         }
-
-        tryFetch();
     });
 
     // --- HELPER: FORMAT VOLUME ---

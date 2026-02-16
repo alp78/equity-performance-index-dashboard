@@ -8,6 +8,7 @@ import pytz
 import requests
 import uvicorn
 import yfinance as yf
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
@@ -21,7 +22,7 @@ PROJECT_ID = getenv("PROJECT_ID")
 
 # --- IN-MEMORY DATABASE (CACHE LAYER) ---
 # We use DuckDB instead of querying BigQuery for every request.
-# Why? BigQuery has latency (2-3s) and costs money per query.
+# BigQuery has latency (2-3s) and costs per query.
 # DuckDB lives in RAM, offers sub-millisecond response times, and supports
 # complex Window Functions (for Moving Averages) natively.
 local_db = duckdb.connect(database=':memory:', read_only=False)
@@ -30,6 +31,25 @@ local_db = duckdb.connect(database=':memory:', read_only=False)
 # Stores the last known price for every symbol (BTC, NVDA, etc.).
 # Used to "Hydrate" new WebSocket clients immediately so they don't see "Waiting...".
 LATEST_MARKET_DATA = {}
+
+# --- API RESPONSE CACHE ---
+# NEW: In-memory cache for API endpoints with TTL (Time To Live)
+# Structure: { endpoint_key: (data, timestamp) }
+# This prevents redundant DuckDB queries when multiple components request the same data
+API_CACHE = {}
+CACHE_TTL = 1800 # 30 min
+
+def get_cached_response(cache_key):
+    """Retrieve cached response if still valid, otherwise return None"""
+    if cache_key in API_CACHE:
+        data, timestamp = API_CACHE[cache_key]
+        if time.time() - timestamp < CACHE_TTL:
+            return data
+    return None
+
+def set_cached_response(cache_key, data):
+    """Store response in cache with current timestamp"""
+    API_CACHE[cache_key] = (data, time.time())
 
 # --- WEBSOCKET CONNECTION MANAGER ---
 # Handles the lifecycle of real-time clients.
@@ -66,28 +86,51 @@ async def refresh_duckdb_cache():
     try:
         # Step 1: Fetch ONLY the most recent day for all tickers.
         # This is a tiny query that finishes in ~1 second.
+        # DEFENSIVE: Use ROW_NUMBER to deduplicate any potential duplicates in BigQuery
         latest_query = f"""
-            SELECT symbol, name, trade_date, 
-                   close_price as close, high_price as high, 
-                   low_price as low, volume
-            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
-            WHERE trade_date = (SELECT MAX(trade_date) FROM `{PROJECT_ID}.stock_exchange.stock_prices`)
+            WITH RankedData AS (
+                SELECT 
+                    symbol, name, trade_date, 
+                    close_price as close, high_price as high, 
+                    low_price as low, volume,
+                    ROW_NUMBER() OVER (PARTITION BY symbol, trade_date ORDER BY volume DESC) as rn
+                FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+                WHERE trade_date = (SELECT MAX(trade_date) FROM `{PROJECT_ID}.stock_exchange.stock_prices`)
+            )
+            SELECT symbol, name, trade_date, close, high, low, volume
+            FROM RankedData
+            WHERE rn = 1
         """
         latest_df = bq_client.query(latest_query).to_dataframe()
         latest_df['trade_date'] = pd.to_datetime(latest_df['trade_date'])
 
         # Load this into a temporary table so the Sidebar can work immediately
         local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM latest_df")
-        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
+        
+        # OPTIMIZATION: Create composite index for faster lookups
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_date ON prices (symbol, trade_date)")
+        
         print(f"Sidebar Ready: Loaded {len(latest_df)} tickers.")
 
         # Step 2: Now fetch the FULL history in the background (Phase 2)
         print("Syncing DuckDB cache (Phase 2: Full History)...")
+        
+        # DEFENSIVE: Deduplicate in BigQuery before loading into DuckDB
+        # This ensures clean data for all subsequent queries
         history_query = f"""
-            SELECT symbol, name, CAST(trade_date AS DATE) as trade_date,
-                   CAST(close_price AS FLOAT64) as close, CAST(high_price AS FLOAT64) as high,
-                   CAST(low_price AS FLOAT64) as low, CAST(volume AS INT) as volume
-            FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+            WITH RankedData AS (
+                SELECT 
+                    symbol, name, CAST(trade_date AS DATE) as trade_date,
+                    CAST(close_price AS FLOAT64) as close, 
+                    CAST(high_price AS FLOAT64) as high,
+                    CAST(low_price AS FLOAT64) as low, 
+                    CAST(volume AS INT) as volume,
+                    ROW_NUMBER() OVER (PARTITION BY symbol, trade_date ORDER BY volume DESC) as rn
+                FROM `{PROJECT_ID}.stock_exchange.stock_prices`
+            )
+            SELECT symbol, name, trade_date, close, high, low, volume
+            FROM RankedData
+            WHERE rn = 1
         """
         full_df = bq_client.query(history_query).to_dataframe()
         full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
@@ -95,7 +138,12 @@ async def refresh_duckdb_cache():
         # Atomically swap the tiny table for the full table
         local_db.register('temp_full', full_df)
         local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM temp_full")
-        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol ON prices (symbol)")
+        
+        # OPTIMIZATION: Create composite index for faster lookups
+        local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_date ON prices (symbol, trade_date)")
+        
+        # Clear API cache when data refreshes
+        API_CACHE.clear()
         
         print(f"Full Cache Synced: Loaded {len(full_df)} rows.")
     except Exception as e:
@@ -271,13 +319,25 @@ app.add_middleware(
 @app.get("/metadata/{symbol:path}")
 async def get_asset_metadata(symbol: str):
     symbol = unquote(symbol)
+    cache_key = f"metadata_{symbol}"
+    
+    # Check cache
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+    
     try:
-        # This simple query is much faster than the full /summary endpoint
-        res = local_db.execute("SELECT name FROM prices WHERE symbol = ? LIMIT 1", [symbol]).fetchone()
-        return {
+        # OPTIMIZATION: Use indexed lookup
+        res = local_db.execute(
+            "SELECT name FROM prices WHERE symbol = ? LIMIT 1", 
+            [symbol]
+        ).fetchone()
+        result = {
             "symbol": symbol,
             "name": res[0] if res else symbol
         }
+        set_cached_response(cache_key, result)
+        return result
     except Exception:
         return {"symbol": symbol, "name": symbol}
 
@@ -292,51 +352,45 @@ async def webhook_refresh():
 # Returns the main list of assets with their daily % change.
 @app.get("/summary")
 async def get_summary():
-    # SQL LOGIC:
-    # 1. UniquePrices: Deduplicates rows (takes MAX if duplicates exist).
-    # 2. Latest: Uses LAG() window function to compare Today vs Yesterday.
-    #    (This avoids performing self-joins, which are slow).
+    cache_key = "summary"
+    
+    # Check cache
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+    
+    # OPTIMIZED + DEFENSIVE SQL:
+    # Data is already deduplicated at load time, so queries can be simple and fast
     query = """
-        WITH UniquePrices AS (
-            SELECT 
-                symbol,
-                MAX(name) as name, 
-                MAX(close) as close, 
-                MAX(high) as high, 
-                MAX(low) as low, 
-                MAX(volume) as volume, 
-                trade_date
-            FROM prices
-            GROUP BY symbol, trade_date
-        ),
-        Latest AS (
+        SELECT
+            symbol,
+            name,
+            CAST(close AS FLOAT) as last_price,
+            CAST(high AS FLOAT) as high,
+            CAST(low AS FLOAT) as low,
+            CAST(volume AS BIGINT) as volume,
+            trade_date,
+            CAST(((close - prev_price) / NULLIF(prev_price, 0)) * 100 AS FLOAT) as daily_change_pct
+        FROM (
             SELECT
                 symbol,
                 name,
-                close as last_price,
+                close,
                 high,
                 low,
                 volume,
                 trade_date,
                 LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_price,
                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
-            FROM UniquePrices
-        )
-        SELECT
-            symbol,
-            name,
-            CAST(last_price AS FLOAT) as last_price,
-            CAST(high AS FLOAT) as high,
-            CAST(low AS FLOAT) as low,
-            CAST(volume AS BIGINT) as volume,
-            trade_date,
-            CAST(((last_price - prev_price) / NULLIF(prev_price, 0)) * 100 AS FLOAT) as daily_change_pct
-        FROM Latest
+            FROM prices
+        ) t
         WHERE rn = 1
     """
     try:
         df = local_db.execute(query).df()
-        return df.fillna(0).to_dict(orient='records')
+        result = df.fillna(0).to_dict(orient='records')
+        set_cached_response(cache_key, result)
+        return result
     except Exception as e:
         print(f"Summary SQL Error: {e}")
         return []
@@ -347,49 +401,52 @@ async def get_summary():
 @app.get("/data/{symbol:path}")
 async def get_data(symbol: str, period: str = "1y"):
     symbol = unquote(symbol)
+    cache_key = f"data_{symbol}_{period}"
+    
+    # Check cache
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+    
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
     days_to_subtract = intervals.get(period.lower(), 365)
     
     try:
-        # Find the last available date for this stock
-        latest_res = local_db.execute("SELECT MAX(trade_date) FROM prices WHERE symbol = ?", [symbol]).fetchone()
-        if not latest_res or not latest_res[0]: return []
-        anchor_date = latest_res[0]
-
-        # SQL LOGIC:
-        # 1. Deduplicate (GROUP BY).
-        # 2. Calculate Moving Averages (MA30, MA90) using Window Functions.
+        # OPTIMIZED + DEFENSIVE:
+        # Data is already deduplicated at load time, so we can query directly
+        # No need for DailyUnique CTE or GROUP BY operations
+        
         if period.lower() == "max":
             query = """
-                WITH DailyUnique AS (
-                    SELECT symbol, trade_date, MAX(close) as close, MAX(volume) as volume
-                    FROM prices 
-                    WHERE symbol = ? 
-                    GROUP BY symbol, trade_date
-                )
-                SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
-                AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
-                AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
-                FROM DailyUnique ORDER BY trade_date ASC
+                SELECT 
+                    strftime(trade_date, '%Y-%m-%d') as time, 
+                    close, 
+                    volume,
+                    AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
+                    AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
+                FROM prices 
+                WHERE symbol = ? 
+                ORDER BY trade_date ASC
             """
             df = local_db.execute(query, [symbol]).df()
         else:
             query = f"""
-                WITH DailyUnique AS (
-                    SELECT symbol, trade_date, MAX(close) as close, MAX(volume) as volume
-                    FROM prices
-                    WHERE symbol = ?
-                    GROUP BY symbol, trade_date
-                )
-                SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
+                SELECT 
+                    strftime(trade_date, '%Y-%m-%d') as time, 
+                    close, 
+                    volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
-                FROM DailyUnique
-                WHERE trade_date >= CAST(? AS DATE) - INTERVAL {days_to_subtract} DAY
+                FROM prices
+                WHERE symbol = ?
+                  AND trade_date >= (SELECT MAX(trade_date) FROM prices WHERE symbol = ?) - INTERVAL {days_to_subtract} DAY
                 ORDER BY trade_date ASC
             """
-            df = local_db.execute(query, [symbol, anchor_date]).df()
-        return df.replace({float('nan'): 0}).to_dict(orient='records')
+            df = local_db.execute(query, [symbol, symbol]).df()
+        
+        result = df.replace({float('nan'): 0}).to_dict(orient='records')
+        set_cached_response(cache_key, result)
+        return result
     except Exception as e:
         logging.error(f"DuckDB Error: {e}")
         return []
@@ -398,61 +455,76 @@ async def get_data(symbol: str, period: str = "1y"):
 # Calculates performance over a specific period (e.g., 1 Year)
 @app.get("/rankings")
 async def get_rankings(period: str = "1y"):
+    cache_key = f"rankings_{period}"
+    
+    # Check cache
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+    
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
     
-    # SQL LOGIC:
-    # Uses FIRST_VALUE() twice (once ASC, once DESC) to find the Start and End price
-    # of the period in a single pass, without joining the table to itself.
-    # This is O(n) complexity (fast).
+    # OPTIMIZED + DEFENSIVE SQL:
+    # Data is already deduplicated at load time
+    # Uses FIRST_VALUE and LAST_VALUE with proper window frames for efficiency
+    
     if period.lower() == "max":
         query = """
-            WITH UniquePrices AS (
-                SELECT symbol, trade_date, MAX(close) as close 
-                FROM prices 
-                GROUP BY symbol, trade_date
-            ),
-            Ranked AS (
-                SELECT symbol, close, trade_date,
-                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as start_price,
-                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as end_price,
-                        ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
-                FROM UniquePrices
+            WITH Ranked AS (
+                SELECT 
+                    symbol,
+                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as start_price,
+                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as end_price,
+                    ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                FROM prices
             )
-            SELECT symbol, ((end_price - start_price) / NULLIF(start_price, 0)) * 100 as value
-            FROM Ranked WHERE rn = 1 ORDER BY value DESC
+            SELECT 
+                symbol, 
+                ((end_price - start_price) / NULLIF(start_price, 0)) * 100 as value
+            FROM Ranked 
+            WHERE rn = 1 
+            ORDER BY value DESC
         """
     else:
         days = intervals.get(period.lower(), 365)
         query = f"""
-            WITH LatestDate AS (SELECT MAX(trade_date) as max_d FROM prices),
-            UniquePrices AS (
-                 SELECT symbol, trade_date, MAX(close) as close
-                 FROM prices
-                 GROUP BY symbol, trade_date
+            WITH Filtered AS (
+                SELECT 
+                    symbol, 
+                    close, 
+                    trade_date
+                FROM prices
+                WHERE trade_date >= (SELECT MAX(trade_date) FROM prices) - INTERVAL {days} DAY
             ),
-            Filtered AS (
-                SELECT symbol, close, trade_date
-                FROM UniquePrices, LatestDate
-                WHERE trade_date >= LatestDate.max_d - INTERVAL {days} DAY
-            ),
-            Bounds AS (
-                SELECT symbol,
-                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-                        FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date DESC) as last_val,
-                        ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
+            Ranked AS (
+                SELECT 
+                    symbol,
+                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as first_val,
+                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                    ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
                 FROM Filtered
             )
-            SELECT symbol, ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
-            FROM Bounds WHERE rn = 1 ORDER BY value DESC
+            SELECT 
+                symbol, 
+                ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
+            FROM Ranked 
+            WHERE rn = 1 
+            ORDER BY value DESC
         """
     try:
         df = local_db.execute(query).df()
-        return {
+        result = {
             "selected": {
                 "top": df.head(3).to_dict(orient='records'),
                 "bottom": df.tail(3).sort_values(by='value').to_dict(orient='records')
             }
         }
+        set_cached_response(cache_key, result)
+        return result
     except Exception as e:
         print(f"Ranking Error: {e}")
         return {"selected": {"top": [], "bottom": []}}
