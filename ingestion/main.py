@@ -1,6 +1,6 @@
 import functions_framework
 import json
-import os
+from os import getenv
 import pandas as pd
 import yfinance as yf
 import requests
@@ -8,11 +8,10 @@ from datetime import datetime, timedelta
 from io import StringIO
 from google.cloud import bigquery, storage
 
-# --- CONFIGURATION ---
-PROJECT_ID = ""
-DATASET_ID = ""
-TABLE_ID = ""
-BUCKET_NAME = ""
+PROJECT_ID = getenv("PROJECT_ID")
+DATASET_ID = getenv("DATASET_ID")
+TABLE_ID = getenv("TABLE_ID")
+BUCKET_NAME = getenv("BUCKET_NAME")
 
 # --- HELPER: DATABASE STATE ---
 # Before downloading anything, we need to know: where did we stop yesterday?
@@ -193,7 +192,7 @@ def sync_stocks(request):
         # This allows the backend to update its in-memory DuckDB cache immediately
         # without waiting for a scheduled restart.
         try:
-            api_url = os.getenv("BACKEND_API_URL")
+            api_url = getenv("BACKEND_API_URL")
             if api_url:
                 refresh_endpoint = f"{api_url}/api/admin/refresh"
                 # Short timeout because we don't need to wait for the refresh to finish, just trigger it.
