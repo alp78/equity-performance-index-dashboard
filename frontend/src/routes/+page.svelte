@@ -245,16 +245,17 @@
             
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                {#if chartLoading && fullStockData.length === 0}
-                    <div class="absolute inset-0 flex items-center justify-center">
+                {#if isInitialLoading && fullStockData.length === 0}
+                    <div class="absolute inset-0 flex items-center justify-center z-10">
                         <div class="flex flex-col items-center space-y-3 opacity-30">
                             <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
                             <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
                         </div>
                     </div>
-                {:else}
-                    <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
                 {/if}
+                <div class="flex-1 min-h-0 min-w-0" style="transition: none !important;">
+                    <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
+                </div>
             </section>
             
             <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">

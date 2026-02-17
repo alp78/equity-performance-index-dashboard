@@ -214,14 +214,26 @@
                 color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)'
             })));
 
-            // 6. FIT CONTENT
+            // 6. FIT CONTENT (DISABLE ANIMATION)
             // Adjust the view to show all data points nicely.
             const timeScale = chart.timeScale();
+            
+            // Disable animations by applying options with duration 0
+            chart.applyOptions({
+                timeScale: {
+                    rightOffset: 0,
+                    barSpacing: 10,
+                    fixLeftEdge: true,
+                    fixRightEdge: true,
+                }
+            });
+            
             timeScale.fitContent();
             
             // CSS Hack: Sometimes 'fitContent' cuts off the very first/last bar half-way.
             // This logical range adjustment ensures a tiny bit of breathing room.
-            requestAnimationFrame(() => {
+            // Use setTimeout with 0 instead of requestAnimationFrame to avoid animation frame
+            setTimeout(() => {
                 const logicalRange = timeScale.getVisibleLogicalRange();
                 if (logicalRange) {
                     timeScale.setVisibleLogicalRange({
@@ -229,7 +241,7 @@
                         to: logicalRange.to - 0.5
                     });
                 }
-            });
+            }, 0);
         }
     });
 
@@ -240,7 +252,7 @@
     });
 </script>
 
-<div bind:this={chartContainer} class="w-full h-full min-h-[500px] relative rounded-2xl overflow-hidden bg-[#0d0d12]">
+<div bind:this={chartContainer} class="w-full h-full min-h-[500px] relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="transition: none !important;">
     <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
         <div class="flex items-center gap-2"><div class="w-4 h-[2px] bg-[#a855f7]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest">Price</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
