@@ -6,7 +6,7 @@
     // GLOBAL STORE:
     // This is the "Remote Control" of the app. When we set 'selectedSymbol' here,
     // the +page.svelte (Chart) automatically reacts and fetches new data.
-    import { selectedSymbol, summaryData } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData } from '$lib/stores.js';
 
     // --- STATE (Svelte 5 Runes) ---
     let searchQuery = $state('');   // User input for filtering
@@ -15,6 +15,7 @@
     // --- OPTIMIZATION: Read from dedicated summary store (won't change when period changes) ---
     let tickers = $derived($summaryData.assets || []);
     let loading = $derived($summaryData.loading);
+    let error = $derived($summaryData.error);
 
     // --- DERIVED STATE (Reactive Filtering) ---
     // This automatically re-runs whenever 'tickers' OR 'searchQuery' changes.
@@ -82,6 +83,23 @@
             <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
                 <div class="w-6 h-6 border-2 border-bloom-accent border-t-transparent rounded-full animate-spin"></div>
                 <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Tape</span>
+            </div>
+        {:else if error}
+            <div class="flex flex-col items-center justify-center h-40 space-y-3 px-6">
+                <div class="text-center space-y-2">
+                    <div class="text-red-500 text-sm font-bold">Failed to load market data</div>
+                    <div class="text-bloom-text/40 text-xs font-mono">{error}</div>
+                </div>
+                <button
+                    onclick={() => loadSummaryData(PUBLIC_BACKEND_URL)}
+                    class="px-4 py-2 bg-bloom-accent/20 hover:bg-bloom-accent/30 border border-bloom-accent/50 rounded-lg text-white text-xs font-bold uppercase tracking-wider transition-all"
+                >
+                    Retry
+                </button>
+            </div>
+        {:else if filteredTickers.length === 0}
+            <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
+                <span class="text-[10px] font-black uppercase tracking-widest text-white">No matches for "{searchQuery}"</span>
             </div>
         {:else}
             {#each filteredTickers as item}

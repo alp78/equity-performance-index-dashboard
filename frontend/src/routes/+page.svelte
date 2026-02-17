@@ -14,6 +14,24 @@
     import { onMount, untrack } from 'svelte';
     import { PUBLIC_BACKEND_URL } from '$env/static/public';
 
+    // --- TIMEOUT HELPER FOR CHART DATA ---
+    async function fetchWithTimeout(url, timeout = 10000) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        
+        try {
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            return response;
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error(`Request timeout after ${timeout}ms`);
+            }
+            throw error;
+        }
+    }
+
     // --- STATE MANAGEMENT (SVELTE 5 RUNES) ---
     
     // 1. fullStockData: The "Master" dataset.
@@ -37,6 +55,9 @@
 
     // 7. Fast-Track Metadata (Added for instant name loading)
     let currentMetadata = $state({ name: "" });
+
+    // 8. Chart loading state
+    let chartLoading = $state(false);
 
     // --- DERIVED STATE ---
     let activeAsset = $derived(
@@ -63,29 +84,53 @@
     async function fetchStockData(symbol, period = 'max') {
         if (!symbol) return;
         
+        chartLoading = true;
+        
         // PARALLEL METADATA FETCH
         // This fires immediately and updates 'currentMetadata' as soon as it returns
-        fetch(`${PUBLIC_BACKEND_URL}/metadata/${encodeURIComponent(symbol)}`)
+        fetchWithTimeout(`${PUBLIC_BACKEND_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
                 if (data && data.name) currentMetadata.name = data.name;
             })
-            .catch(e => console.error("Metadata fetch error:", e));
+            .catch(e => console.warn("Metadata fetch error:", e));
 
-        try {
-            // ALWAYS fetch full data (max) and filter client-side for responsiveness
-            const res = await fetch(`${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`);
-            if (res.ok) {
-                fullStockData = await res.json();
-                // Critical: Mark initial load as complete so the UI knows we have data
-                isInitialLoading = false; 
-            } else {
-                fullStockData = [];
+        // Retry logic for chart data
+        let retries = 2;
+        let lastError;
+        
+        for (let i = 0; i < retries; i++) {
+            try {
+                // ALWAYS fetch full data (max) and filter client-side for responsiveness
+                const res = await fetchWithTimeout(
+                    `${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`,
+                    10000
+                );
+                
+                if (res.ok) {
+                    fullStockData = await res.json();
+                    // Critical: Mark initial load as complete so the UI knows we have data
+                    isInitialLoading = false;
+                    chartLoading = false;
+                    return; // Success - exit retry loop
+                } else {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+            } catch (e) {
+                lastError = e;
+                console.warn(`Chart fetch attempt ${i + 1}/${retries} failed:`, e.message);
+                
+                if (i < retries - 1) {
+                    // Wait 1 second before retry
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
             }
-        } catch (e) {
-            console.error("Chart fetch error:", e);
-            fullStockData = [];
         }
+        
+        // All retries failed
+        console.error("Chart fetch failed after retries:", lastError);
+        fullStockData = [];
+        chartLoading = false;
     }
 
     // --- LIFECYCLE: MOUNT ---
@@ -200,7 +245,16 @@
             
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
+                {#if chartLoading && fullStockData.length === 0}
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="flex flex-col items-center space-y-3 opacity-30">
+                            <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                            <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
+                        </div>
+                    </div>
+                {:else}
+                    <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
+                {/if}
             </section>
             
             <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
