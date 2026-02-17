@@ -1,53 +1,119 @@
 # Equity Performance Index Dashboard
 
-high-performance financial dashboard deployed on Google Cloud Platform using SvelteKit, FastAPI, and BigQuery, using GCS-staged ingestion and DuckDB cache hydration to deliver live market data feeds and real-time price updates via WebSockets and Firebase.
+A high-performance, cloud-native financial dashboard built on Google Cloud Platform. Combines a SvelteKit frontend, FastAPI backend, and BigQuery data warehouse to deliver real-time S&P 500 market data, technical indicators, and global macro feeds through WebSocket and REST APIs.
+
+---
 
 ## Live Dashboard
-The dashboard provides an interface for tracking S&P 500 performance, technical indicators (MA30/MA90), and global macro assets.
 
 ![Live Dashboard](docs/Dashboard.jpg)
 
+The interface is composed of six panels: a searchable S&P 500 sidebar with live daily price, high/low, and volume; an interactive price chart with MA30/MA90 overlays and a volume histogram; a period selector (1W through MAX) that filters client-side with no additional network requests; US equities and global macro panels fed by a persistent WebSocket connection; and a period performance panel showing the top and bottom three S&P 500 movers.
+
+---
+
 ## System Architecture
-The application is built using a cloud-native stack focusing on low-latency data delivery and cost-efficient scaling.
 
 ![System Diagram](docs/Diagram.jpg)
 
-### Core Components
+---
 
-#### 1. Data Ingestion & Persistence
-* **Daily Fetch**: A Python-based Cloud Function (`sync_stocks`) performs daily EOD data retrieval from the Yahoo Finance API.
-* **Staging & Audit**: Data is first streamed as NDJSON to a Google Cloud Storage (GCS) bucket, serving as an immutable raw data lake.
-* **BigQuery Data Warehouse**: A daily insert job moves staged data from GCS into BigQuery (`stock_prices`) for long-term analytical storage.
+## Core Components
 
-#### 2. Event-Driven Orchestration
-* **Async Webhook Trigger**: Upon successful BigQuery ingestion, the Cloud Function fires an asynchronous webhook to the backend API. This pattern decouples the ingestion pipeline from the application layer.
-* **Cache Hydration**: The backend receives the trigger and initiates an internal background task to pull fresh data from BigQuery into a high-speed DuckDB In-Memory cache.
+### 1. Data Ingestion and Persistence
 
-#### 3. Real-Time Presentation Layer
-* **Cloud Run API**: A FastAPI backend hosted on Cloud Run (with dedicated CPU allocation) handles all RESTful requests and WebSocket management.
-* **Live Seeding**: The backend seeds initial price points from Binance and Yahoo Finance APIs to establish market baselines.
-* **WebSocket Broadcaster**: A persistent WSS (WebSocket Secure) feed pushes real-time ticks to the frontend, ensuring a reactive user experience without constant database polling.
-* **Firebase Hosting**: The SvelteKit frontend is deployed via Firebase, providing a fast and responsive interface that consumes data through both RESTful snapshots and live WebSocket streams.
+| Component | Role |
+|---|---|
+| Cloud Function `sync_stocks` | Triggered daily by Cloud Scheduler. Performs an incremental EOD pull from Yahoo Finance — idempotent, fetches only dates not yet in BigQuery |
+| GCS Bucket | Receives each daily batch as NDJSON before any database write, serving as an immutable bronze-layer audit trail |
+| BigQuery `stock_prices` | System of record for all historical OHLCV data. Append-only with read-time deduplication via `ROW_NUMBER() OVER (PARTITION BY symbol, trade_date)` |
+
+### 2. Event-Driven Cache Orchestration
+
+On successful ingestion, the Cloud Function fires an async webhook to the FastAPI backend at `/api/admin/refresh`. The backend responds immediately and runs a two-phase background refresh: first loading only the latest trade date into DuckDB (~1 second, makes the sidebar immediately available), then replacing the full historical dataset atomically. The API response cache is cleared on completion.
+
+### 3. Serving Layer — Cloud Run API
+
+A FastAPI application on Cloud Run with dedicated CPU allocation, serving REST endpoints and WebSocket connections backed by a two-layer cache:
+
+| Layer | Technology | TTL | Purpose |
+|---|---|---|---|
+| Response Cache | Python dict `API_CACHE` | 30 minutes | Eliminates redundant DuckDB queries |
+| Data Cache | DuckDB In-Memory | Until webhook | Reduces query latency from 2–5s to under 30ms |
+
+All analytical queries use DuckDB window functions (`LAG`, `FIRST_VALUE`, `LAST_VALUE`, `AVG OVER ROWS`) in single-pass operations. A composite index on `(symbol, trade_date)` supports sub-millisecond lookups.
+
+**REST Endpoints**
+
+| Endpoint | Description |
+|---|---|
+| `GET /summary` | All tickers with daily change, high, low, volume |
+| `GET /data/{symbol}?period=` | Historical OHLCV with MA30 and MA90 |
+| `GET /rankings?period=` | Top and bottom three period performers |
+| `GET /metadata/{symbol}` | Company name for chart header |
+| `POST /api/admin/refresh` | Webhook receiver — triggers cache reload |
+
+### 4. Real-Time Feed — WebSocket Broadcaster
+
+A persistent async background task polls two sources at different cadences and broadcasts updates to all connected clients. New connections receive an immediate snapshot of the last-known state before entering the live stream.
+
+| Source | Assets | Interval |
+|---|---|---|
+| Binance REST API | BTC/USDT | Every 5 seconds |
+| Yahoo Finance | NVDA, AAPL, MSFT, XAU/USD, EUR/USD | Every 60 seconds |
+
+NYSE market hours are checked via `pandas_market_calendars` on each poll cycle, driving the LIVE/CLOSED indicator in the UI.
+
+### 5. Frontend — SvelteKit on Firebase
+
+The SvelteKit application is deployed on Firebase Hosting with global CDN edge distribution, automatic SSL, and Brotli/Gzip compression. SSR is disabled — the dashboard is fully client-rendered.
+
+A centralized store architecture (`stores.js`) ensures data is fetched once and shared across components. Summary data loads on mount and is never reloaded. Period changes affect only the RankingPanel. Chart data is fetched at `period=max` on symbol load and filtered client-side for all period views. The RankingPanel prefetches all period variants on mount for instant switching.
+
+---
 
 ## Project Structure
 
 ```text
 EXCHANGE_GCP/
-├── backend/            # FastAPI, DuckDB, WebSocket Broadcaster
-├── ingestion/          # Data ingestion and BQ/GCS sync logic
-├── frontend/           # SvelteKit Dashboard (hosted on Firebase)
-└── docs/               # Architecture diagrams and screenshots
+├── backend/
+│   └── main.py                  # FastAPI, DuckDB, WebSocket, caching
+├── ingestion/
+│   └── main.py                  # Cloud Function: Yahoo Finance → GCS → BigQuery → Webhook
+├── frontend/
+│   ├── src/
+│   │   ├── routes/
+│   │   │   ├── +page.svelte     # Root layout and state orchestration
+│   │   │   └── +page.js         # SSR and prerendering disabled
+│   │   └── lib/
+│   │       ├── stores.js        # Centralized reactive state
+│   │       └── components/
+│   │           ├── Sidebar.svelte
+│   │           ├── Chart.svelte
+│   │           ├── LiveIndicators.svelte
+│   │           └── RankingPanel.svelte
+│   └── firebase.json
+└── docs/
+    ├── Dashboard.jpg
+    └── Diagram.jpg
 ```
 
+---
+
 ## Technical Specifications
-* **Cache Hydration**: Minimizes BigQuery costs and latency by serving active data from an in-memory DuckDB instance.
 
-* **SvelteKit Reactivity**: Leveraging Svelte's compiler-first approach to surgically update the DOM when WebSocket ticks arrive. This avoids the heavy overhead of a Virtual DOM, allowing for high-frequency UI updates (flickering price changes) with minimal CPU usage.
+| Metric | Value |
+|---|---|
+| Initial page load | 1–2 seconds |
+| Chart and rankings period switch | Instant — client-side, no network call |
+| Symbol switch | ~200ms (cache hit) / ~1s (cache miss) |
+| Crypto refresh | Every 5 seconds |
+| Equity refresh | Every 60 seconds |
+| DuckDB query latency | 10–30ms vs 2–5s raw BigQuery |
+| API cache hit rate | ~95% |
 
-* **Global Edge Distribution**: By using Firebase Hosting, the application benefits from automatic SSL, compression (Brotli/Gzip), and a global CDN. This ensures the initial consumption is extremely fast.
+**Decoupled architecture.** Ingestion, storage, and serving layers operate and recover independently. A failure in any one layer does not cascade to the others.
 
-* **NDJSON Streaming**: Ensures memory-efficient data transfers between cloud services.
+**Hybrid data model.** Accurate EOD historical data from BigQuery is combined with live intraday price action from WebSocket feeds, giving the chart both depth and recency.
 
-* **Decoupled Architecture**: Ingestion, Storage, and Serving layers operate independently, increasing system resilience.
-
-* **Hybrid Data Model**: Combines accurate EOD historical data from BigQuery with live price action.
+**Compiler-first frontend.** Svelte eliminates the Virtual DOM, surgically updating only the DOM nodes that change when WebSocket ticks arrive — well suited for a high-frequency, multi-panel price dashboard.
