@@ -80,6 +80,7 @@ manager = ConnectionManager()
 # --- DATA INGESTION (ETL) ---
 # This function pulls historical data from BigQuery into DuckDB on startup.
 async def refresh_duckdb_cache():
+    start_total = time.time()
     print("Syncing DuckDB cache (Phase 1: Latest Snapshot)...")
     bq_client = bigquery.Client(project=PROJECT_ID)
     
@@ -87,6 +88,7 @@ async def refresh_duckdb_cache():
         # Step 1: Fetch ONLY the most recent day for all tickers.
         # This is a tiny query that finishes in ~1 second.
         # DEFENSIVE: Use ROW_NUMBER to deduplicate any potential duplicates in BigQuery
+        start_phase1 = time.time()
         latest_query = f"""
             WITH RankedData AS (
                 SELECT 
@@ -103,17 +105,21 @@ async def refresh_duckdb_cache():
         """
         latest_df = bq_client.query(latest_query).to_dataframe()
         latest_df['trade_date'] = pd.to_datetime(latest_df['trade_date'])
+        print(f"Phase 1 BigQuery fetch took {time.time() - start_phase1:.2f}s")
 
         # Load this into a temporary table so the Sidebar can work immediately
+        start_load = time.time()
         local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM latest_df")
         
         # OPTIMIZATION: Create composite index for faster lookups
         local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_date ON prices (symbol, trade_date)")
+        print(f"⏱Phase 1 DuckDB load + index took {time.time() - start_load:.2f}s")
         
-        print(f"Sidebar Ready: Loaded {len(latest_df)} tickers.")
+        print(f"Sidebar Ready: Loaded {len(latest_df)} tickers in {time.time() - start_total:.2f}s")
 
         # Step 2: Now fetch the FULL history in the background (Phase 2)
         print("Syncing DuckDB cache (Phase 2: Full History)...")
+        start_phase2 = time.time()
         
         # DEFENSIVE: Deduplicate in BigQuery before loading into DuckDB
         # This ensures clean data for all subsequent queries
@@ -134,36 +140,45 @@ async def refresh_duckdb_cache():
         """
         full_df = bq_client.query(history_query).to_dataframe()
         full_df['trade_date'] = pd.to_datetime(full_df['trade_date'])
+        print(f"⏱Phase 2 BigQuery fetch took {time.time() - start_phase2:.2f}s")
 
         # Atomically swap the tiny table for the full table
+        start_swap = time.time()
         local_db.register('temp_full', full_df)
         local_db.execute("CREATE OR REPLACE TABLE prices AS SELECT * FROM temp_full")
         
         # OPTIMIZATION: Create composite index for faster lookups
         local_db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_date ON prices (symbol, trade_date)")
+        print(f"⏱Phase 2 DuckDB swap + index took {time.time() - start_swap:.2f}s")
         
         # Clear API cache when data refreshes
         API_CACHE.clear()
         
-        print(f"Full Cache Synced: Loaded {len(full_df)} rows.")
+        print(f"Full Cache Synced: Loaded {len(full_df)} rows in {time.time() - start_total:.2f}s total")
     except Exception as e:
-        print(f"CRITICAL: Cache Sync Failed: {e}")
+        print(f"CRITICAL: Cache Sync Failed after {time.time() - start_total:.2f}s: {e}")
 
 # --- REAL-TIME DATA HELPERS ---
 # We split these out so we can call them immediately on startup (Bootstrap)
 # and then repeatedly in the loop.
 
 async def fetch_crypto_data():
-    """Fetches Crypto data (Binance) - Fast & Cheap."""
+    """Fetches BTC data based on Daily Open (00:00 UTC) to match aggregators."""
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT", timeout=2)
         if r.status_code == 200:
             data = r.json()
-            current_price = float(data['lastPrice'])
-            prev_close = float(data['prevClosePrice'])
             
-            diff = current_price - prev_close
-            pct = float(data['priceChangePercent'])
+            # 1. Get current price
+            current_price = float(data['lastPrice'])
+            
+            # 2. Get the 'openPrice' from the 24h ticker.
+            # Binance's 24h ticker openPrice represents the start of the 24h window.
+            day_open = float(data['openPrice']) 
+            
+            # 3. Calculate metrics based on that open price for parity
+            diff = current_price - day_open
+            pct = (diff / day_open) * 100 if day_open != 0 else 0
             
             payload = {
                 "symbol": "BINANCE:BTCUSDT",
@@ -179,19 +194,27 @@ async def fetch_crypto_data():
         print(f"Crypto Fetch Error: {e}")
 
 async def fetch_stock_data():
-    """Fetches Stock data (Yahoo) - Now with Holiday/Holiday awareness."""
+    """Fetches Stock data (Yahoo) - Fixed for pre-market and reference errors."""
     try:
-        # 1. Market Status Check
-        nyse = mcal.get_calendar('NYSE')
-        now_utc = datetime.now(pytz.utc)
-        schedule = nyse.schedule(start_date=now_utc.date(), end_date=now_utc.date())
+        # Initialize variable to prevent "referenced before assignment" errors
+        is_nyse_open = False 
         
-        # Strictly False if holiday/weekend; otherwise check current time
-        is_nyse_open = False if schedule.empty else nyse.open_at_time(schedule, now_utc)
+        try:
+            nyse = mcal.get_calendar('NYSE')
+            now_utc = datetime.now(pytz.utc)
+            schedule = nyse.schedule(start_date=now_utc.date(), end_date=now_utc.date())
+            if not schedule.empty:
+                is_nyse_open = nyse.open_at_time(schedule, now_utc)
+        except Exception as cal_err:
+            print(f"Calendar check failed: {cal_err}")
 
         targets = ["GC=F", "EURUSD=X", "NVDA", "AAPL", "MSFT"]
-        data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True)
+        # Use prepost=True to fetch indicative prices during closed hours
+        data = yf.download(targets, period="5d", interval="1d", progress=False, group_by='ticker', threads=True, prepost=True)
         
+        if data.empty:
+            return
+
         is_multi = isinstance(data.columns, pd.MultiIndex)
         
         for symbol in targets:
@@ -200,21 +223,21 @@ async def fetch_stock_data():
                 if symbol == "GC=F": display_symbol = "FXCM:XAU/USD"
                 if symbol == "EURUSD=X": display_symbol = "FXCM:EUR/USD"
 
-                if is_multi:
-                    if symbol not in data.columns.levels[0]: continue
-                    df = data[symbol].dropna(subset=['Close'])
-                else:
-                    df = data.dropna(subset=['Close'])
-
+                df = data[symbol] if is_multi else data
+                
+                # If the current row is empty (market closed), drop it and use the last valid day
+                if pd.isna(df['Close'].iloc[-1]):
+                    df = df.dropna(subset=['Close'])
+                
                 if df.empty: continue
                 
                 latest = df.iloc[-1]
+                # prev_close: compare vs yesterday's close
                 prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else float(latest['Open'])
                 current_price = float(latest['Close'])
 
                 if pd.isna(current_price) or current_price == 0: continue
 
-                # FIX: Keep diff as a raw float for maximum precision
                 diff = current_price - prev_close
                 pct = (diff / prev_close) * 100 if prev_close != 0 else 0
                 
@@ -225,16 +248,18 @@ async def fetch_stock_data():
                     "price": current_price, 
                     "diff": diff,
                     "pct": pct,
+                    # Stocks follow the calendar; Forex/Gold are 24/5
                     "live": True if not is_equity or is_nyse_open else False
                 }
                 
                 LATEST_MARKET_DATA[display_symbol] = payload
                 if manager.active_connections:
                     await manager.broadcast(json.dumps(payload))
-            except Exception: continue
+            except Exception as e: 
+                print(f"Error processing {symbol}: {e}")
+                continue
     except Exception as e:
-        print(f"Stock Fetch Error: {e}")
-
+        print(f"Stock Fetch Global Error: {e}")
 
 # --- REAL-TIME DATA FEEDER ---
 # Background task that manages the polling schedule.
@@ -250,7 +275,6 @@ async def market_data_feeder():
     print("WebSocket Feeder: Database ready. Running initial bootstrap poll...")
     
     # 2. BOOTSTRAP: Fetch data IMMEDIATELY (Don't wait for loop)
-    # This ensures LATEST_MARKET_DATA is full before the first user even connects.
     await fetch_crypto_data()
     await fetch_stock_data()
     
@@ -291,7 +315,7 @@ async def background_startup():
 # Controls what happens when the server Starts and Stops.
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Server Booting...")
+    print("Server Booting...")
     # Trigger everything in the background. 
     # We do NOT 'await' this, so the API starts responding to the frontend immediately.
     asyncio.create_task(background_startup())
@@ -312,7 +336,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request logging middleware for performance monitoring
+@app.middleware("http")
+async def log_requests(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    
+    # Log slow requests
+    if duration > 1.0:
+        print(f"SLOW REQUEST: {request.method} {request.url.path} took {duration:.2f}s")
+    
+    return response
+
 # --- ENDPOINTS ---
+
+# --- HEALTH CHECK ENDPOINT ---
+# Allows frontend to check if backend is ready before making data requests
+@app.get("/health")
+async def health_check():
+    """Health check endpoint - returns database readiness status"""
+    try:
+        result = local_db.execute("SELECT COUNT(*) FROM prices").fetchone()
+        if result and result[0] > 0:
+            return {
+                "status": "healthy",
+                "cache_rows": result[0],
+                "cache_keys": len(API_CACHE)
+            }
+        else:
+            return {"status": "warming_up", "cache_rows": 0}, 503
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}, 503
 
 # --- METADATA ENDPOINT ---
 # Provides near-instant name lookup for the UI header.
@@ -320,16 +375,16 @@ app.add_middleware(
 async def get_asset_metadata(symbol: str):
     symbol = unquote(symbol)
     cache_key = f"metadata_{symbol}"
-    
+   
     # Check cache
     cached = get_cached_response(cache_key)
     if cached:
         return cached
-    
+   
     try:
         # OPTIMIZATION: Use indexed lookup
         res = local_db.execute(
-            "SELECT name FROM prices WHERE symbol = ? LIMIT 1", 
+            "SELECT name FROM prices WHERE symbol = ? LIMIT 1",
             [symbol]
         ).fetchone()
         result = {
@@ -353,12 +408,12 @@ async def webhook_refresh():
 @app.get("/summary")
 async def get_summary():
     cache_key = "summary"
-    
+   
     # Check cache
     cached = get_cached_response(cache_key)
     if cached:
         return cached
-    
+   
     # OPTIMIZED + DEFENSIVE SQL:
     # Data is already deduplicated at load time, so queries can be simple and fast
     query = """
@@ -402,38 +457,37 @@ async def get_summary():
 async def get_data(symbol: str, period: str = "1y"):
     symbol = unquote(symbol)
     cache_key = f"data_{symbol}_{period}"
-    
+   
     # Check cache
     cached = get_cached_response(cache_key)
     if cached:
         return cached
-    
+   
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
     days_to_subtract = intervals.get(period.lower(), 365)
-    
+   
     try:
         # OPTIMIZED + DEFENSIVE:
         # Data is already deduplicated at load time, so we can query directly
-        # No need for DailyUnique CTE or GROUP BY operations
-        
+       
         if period.lower() == "max":
             query = """
-                SELECT 
-                    strftime(trade_date, '%Y-%m-%d') as time, 
-                    close, 
+                SELECT
+                    strftime(trade_date, '%Y-%m-%d') as time,
+                    close,
                     volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
-                FROM prices 
-                WHERE symbol = ? 
+                FROM prices
+                WHERE symbol = ?
                 ORDER BY trade_date ASC
             """
             df = local_db.execute(query, [symbol]).df()
         else:
             query = f"""
-                SELECT 
-                    strftime(trade_date, '%Y-%m-%d') as time, 
-                    close, 
+                SELECT
+                    strftime(trade_date, '%Y-%m-%d') as time,
+                    close,
                     volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
@@ -443,7 +497,7 @@ async def get_data(symbol: str, period: str = "1y"):
                 ORDER BY trade_date ASC
             """
             df = local_db.execute(query, [symbol, symbol]).df()
-        
+       
         result = df.replace({float('nan'): 0}).to_dict(orient='records')
         set_cached_response(cache_key, result)
         return result
@@ -456,63 +510,59 @@ async def get_data(symbol: str, period: str = "1y"):
 @app.get("/rankings")
 async def get_rankings(period: str = "1y"):
     cache_key = f"rankings_{period}"
-    
+   
     # Check cache
     cached = get_cached_response(cache_key)
     if cached:
         return cached
-    
+   
     intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
-    
-    # OPTIMIZED + DEFENSIVE SQL:
-    # Data is already deduplicated at load time
-    # Uses FIRST_VALUE and LAST_VALUE with proper window frames for efficiency
-    
+   
     if period.lower() == "max":
         query = """
             WITH Ranked AS (
-                SELECT 
+                SELECT
                     symbol,
-                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as start_price,
-                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as end_price,
                     ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
                 FROM prices
             )
-            SELECT 
-                symbol, 
+            SELECT
+                symbol,
                 ((end_price - start_price) / NULLIF(start_price, 0)) * 100 as value
-            FROM Ranked 
-            WHERE rn = 1 
+            FROM Ranked
+            WHERE rn = 1
             ORDER BY value DESC
         """
     else:
         days = intervals.get(period.lower(), 365)
         query = f"""
             WITH Filtered AS (
-                SELECT 
-                    symbol, 
-                    close, 
+                SELECT
+                    symbol,
+                    close,
                     trade_date
                 FROM prices
                 WHERE trade_date >= (SELECT MAX(trade_date) FROM prices) - INTERVAL {days} DAY
             ),
             Ranked AS (
-                SELECT 
+                SELECT
                     symbol,
-                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                    FIRST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as first_val,
-                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC 
+                    LAST_VALUE(close) OVER(PARTITION BY symbol ORDER BY trade_date ASC
                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
                     ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY trade_date DESC) as rn
                 FROM Filtered
             )
-            SELECT 
-                symbol, 
+            SELECT
+                symbol,
                 ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
-            FROM Ranked 
-            WHERE rn = 1 
+            FROM Ranked
+            WHERE rn = 1
             ORDER BY value DESC
         """
     try:
@@ -535,14 +585,12 @@ async def get_rankings(period: str = "1y"):
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # IMMEDIATE HYDRATION:
-        # As soon as a user connects, we dump the last known market state (LATEST_MARKET_DATA)
-        # to them. This prevents the UI from showing "Waiting..." for up to 60 seconds.
-        if LATEST_MARKET_DATA:
-            for payload in LATEST_MARKET_DATA.values():
+        # Copy to avoid mutation issues during broadcast
+        current_data = list(LATEST_MARKET_DATA.values())
+        if current_data:
+            for payload in current_data:
                  await websocket.send_text(json.dumps(payload))
-        
-        # Keep connection open until client disconnects
+       
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
