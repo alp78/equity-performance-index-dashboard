@@ -1,24 +1,29 @@
 <script>
-    // --- IMPORTS ---
-    // 'selectedSymbol' is a global store. When the sidebar updates it, this page reacts automatically.
-    import { selectedSymbol, loadSummaryData, loadRankingsData } from '$lib/stores.js';
-    
-    // Components
+    /**
+     * @file +page.svelte
+     * @description Core application orchestrator for the Market Dashboard.
+     * Manages global state synchronization, reactive data fetching, 
+     * and client-side time-series filtering using Svelte 5 Runes.
+     */
+
+    import { selectedSymbol, loadSummaryData, loadRankingsData, marketIndex } from '$lib/stores.js';
+    import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Chart from '$lib/components/Chart.svelte';
     import RankingPanel from '$lib/components/RankingPanel.svelte';
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
-    
-    // Svelte Lifecycle & Environment
-    // Added 'untrack' to safely manage the initial load dependency
     import { onMount, untrack } from 'svelte';
-    import { PUBLIC_BACKEND_URL } from '$env/static/public';
 
-    // --- TIMEOUT HELPER FOR CHART DATA ---
+    // --- UTILITIES ---
+
+    /**
+     * Standard fetch wrapper with AbortController integration for request timeouts.
+     * @param {string} url - The target endpoint.
+     * @param {number} timeout - Maximum wait time in milliseconds.
+     */
     async function fetchWithTimeout(url, timeout = 10000) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
-        
         try {
             const response = await fetch(url, { signal: controller.signal });
             clearTimeout(timeoutId);
@@ -32,152 +37,140 @@
         }
     }
 
-    // --- STATE MANAGEMENT (SVELTE 5 RUNES) ---
-    
-    // 1. fullStockData: The "Master" dataset.
+    // --- STATE MANAGEMENT (Svelte 5 Runes) ---
+
+    // Master dataset: Stores the full 'max' history fetched from the backend.
     let fullStockData = $state([]); 
-    
-    // 2. stockData: The "View" dataset passed to the Chart.
+    // View dataset: The filtered subset actually passed to the Chart component.
     let stockData = $state([]);     
-    
-    // 3. Metadata for the header.
+    // Registry of available assets for the current market index.
     let assets = $state([]); 
-    
-    // 4. UI State
+    // Active time window (e.g., '1w', '1y') for filtering historical data.
     let currentPeriod = $state('1y');
-    
-    // 5. Track previous period to detect changes
+    // Change tracker to prevent redundant ranking fetches.
     let previousPeriod = $state('1y');
-
-    // 6. Initial Load Guard
-    // Prevents the "Dark Chart" issue by tracking if we are still in the boot-up phase.
+    // Guard to prevent reactive effects from firing during initial boot.
     let isInitialLoading = $state(true);
-
-    // 7. Fast-Track Metadata (Added for instant name loading)
+    // Transient storage for specific asset name and description.
     let currentMetadata = $state({ name: "" });
-
-    // 8. Chart loading state
+    // Flag to trigger loading overlays in the chart section.
     let chartLoading = $state(false);
 
     // --- DERIVED STATE ---
+
+    /**
+     * Computes the display object for the active asset.
+     * Prioritizes live metadata over the summary registry.
+     */
     let activeAsset = $derived(
         currentMetadata.name 
         ? { name: currentMetadata.name, symbol: $selectedSymbol }
         : (assets.find(a => a.symbol === $selectedSymbol) || { name: $selectedSymbol })
     );
 
-    // --- DATA FETCHING ---
-    // OPTIMIZATION: Load summary and rankings separately
+    // --- DATA ORCHESTRATION ---
+
+    /**
+     * Initial bootstrap: Fetches the market summary and initial ranking set.
+     */
     async function fetchInitialData() {
         try {
-            // Fetch summary data (sidebar) - only called once
-            const summaryResult = await loadSummaryData(PUBLIC_BACKEND_URL);
+            const summaryResult = await loadSummaryData($marketIndex);
             assets = summaryResult || [];
-            
-            // Fetch initial rankings data
-            await loadRankingsData(PUBLIC_BACKEND_URL, currentPeriod);
+            await loadRankingsData(currentPeriod, $marketIndex);
         } catch (e) {
             console.error("Initial data fetch error:", e);
         }
     }
 
+    /**
+     * Fetches historical time-series data and asset metadata.
+     * Implements a 2-attempt retry logic for resilient network connectivity.
+     */
     async function fetchStockData(symbol, period = 'max') {
         if (!symbol) return;
-        
         chartLoading = true;
         
-        // PARALLEL METADATA FETCH
-        // This fires immediately and updates 'currentMetadata' as soon as it returns
-        fetchWithTimeout(`${PUBLIC_BACKEND_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
+        // Parallel metadata fetch (Fire and forget)
+        fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
                 if (data && data.name) currentMetadata.name = data.name;
             })
             .catch(e => console.warn("Metadata fetch error:", e));
 
-        // Retry logic for chart data
         let retries = 2;
         let lastError;
         
+        // Historical data fetch loop
         for (let i = 0; i < retries; i++) {
             try {
-                // ALWAYS fetch full data (max) and filter client-side for responsiveness
+                // Request 'max' period to enable instant client-side filtering later
                 const res = await fetchWithTimeout(
-                    `${PUBLIC_BACKEND_URL}/data/${encodeURIComponent(symbol)}?period=max`,
+                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`,
                     10000
                 );
-                
                 if (res.ok) {
                     fullStockData = await res.json();
-                    // Critical: Mark initial load as complete so the UI knows we have data
                     isInitialLoading = false;
                     chartLoading = false;
-                    return; // Success - exit retry loop
+                    return;
                 } else {
                     throw new Error(`HTTP ${res.status}`);
                 }
             } catch (e) {
                 lastError = e;
                 console.warn(`Chart fetch attempt ${i + 1}/${retries} failed:`, e.message);
-                
                 if (i < retries - 1) {
-                    // Wait 1 second before retry
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             }
         }
         
-        // All retries failed
         console.error("Chart fetch failed after retries:", lastError);
         fullStockData = [];
         chartLoading = false;
     }
 
-    // --- LIFECYCLE: MOUNT ---
-    // Runs once when the app loads.
+    // --- LIFECYCLE & REACTIVE EFFECTS ---
+
+    /**
+     * Application Entry Point.
+     */
     onMount(() => {
-        // 1. OPTIMIZATION: Load summary + rankings separately
         fetchInitialData();
-        
-        // 2. FORCE INITIAL FETCH
-        // This solves the issue where AAPL was dark until clicked.
-        // We explicitly fetch the default symbol immediately on load.
         fetchStockData($selectedSymbol, currentPeriod);
     });
 
-    // --- REACTIVITY: SYMBOL CHANGE ---
-    // Triggers whenever the user clicks a stock in the Sidebar.
+    /**
+     * SYMBOL CHANGE HANDLER
+     * Reacts to changes in the global symbol store.
+     */
     $effect(() => {
-        const sym = $selectedSymbol; // Register dependency
-        
-        // Clear local metadata to ensure the new name is fetched fresh
+        const sym = $selectedSymbol;
         untrack(() => { currentMetadata.name = ""; });
-
-        // Use 'untrack' to check the loading state without creating a circular dependency.
-        // This ensures we don't double-fetch on the very first render.
         if (untrack(() => isInitialLoading)) return;
-
-        fullStockData = []; // Clear old data to prevent ghosting
+        fullStockData = []; // Clear state to avoid chart ghosting
         fetchStockData(sym, untrack(() => currentPeriod));
     });
 
-    // --- REACTIVITY: PERIOD CHANGE ---
-    // Triggers when period buttons are clicked
+    /**
+     * PERIOD CHANGE HANDLER
+     * Updates local rankings when the time horizon is toggled.
+     */
     $effect(() => {
         const period = currentPeriod;
-        
-        // Skip if initial load hasn't completed
         if (untrack(() => isInitialLoading)) return;
-        
-        // Only reload rankings if period actually changed
         if (period !== untrack(() => previousPeriod)) {
             previousPeriod = period;
-            loadRankingsData(PUBLIC_BACKEND_URL, period).catch(console.error);
+            loadRankingsData(period, $marketIndex).catch(console.error);
         }
     });
 
-    // --- REACTIVITY: CLIENT-SIDE FILTERING ---
-    // Triggers when data arrives or period changes.
+    /**
+     * CLIENT-SIDE TIME FILTERING
+     * Slices the 'fullStockData' locally to ensure sub-millisecond chart updates.
+     */
     $effect(() => {
         if (fullStockData.length === 0) {
             stockData = [];
@@ -196,6 +189,7 @@
             const lastDate = new Date(lastItem.time);
             const cutoff = new Date(lastDate);
             
+            // Define time-series cutoff intervals
             const daysMap = { 
                 '1w': 7, '1mo': 30, '3mo': 90, 
                 '6mo': 180, '1y': 365, '5y': 1825 
@@ -210,18 +204,18 @@
     });
 </script>
 
-<div class="flex h-screen w-full bg-[#0d0d12] text-white overflow-hidden font-sans selection:bg-purple-500/30">
+<div class="flex h-screen w-screen bg-[#0d0d12] text-white overflow-hidden font-sans selection:bg-purple-500/30">
     
-    <Sidebar />
+    <div class="w-[480px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
+        <Sidebar />
+    </div>
 
     <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0">
         
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
-                <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg">
-                    {$selectedSymbol}
-                </h1>
-                <span class="text-xs font-bold text-white/30 uppercase tracking-[0.2em] pl-1">
+                <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSymbol}</h1>
+                <span class="text-sm font-bold text-white/40 uppercase tracking-[0.2em] pl-1">
                     { (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol }
                 </span>
             </div>
@@ -242,9 +236,9 @@
         </header>
 
         <div class="flex-1 flex flex-col gap-6 min-h-0 min-w-0 z-0">
-            
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
+                
                 {#if isInitialLoading && fullStockData.length === 0}
                     <div class="absolute inset-0 flex items-center justify-center z-10">
                         <div class="flex flex-col items-center space-y-3 opacity-30">
@@ -253,17 +247,22 @@
                         </div>
                     </div>
                 {/if}
-                <div class="flex-1 min-h-0 min-w-0" style="transition: none !important;">
-                    <Chart data={stockData} symbol={$selectedSymbol} companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } />
+
+                <div class="flex-1 min-h-0 min-w-0 chart-no-animate" style="transition: none !important;">
+                    <Chart 
+                        data={stockData} 
+                        symbol={$selectedSymbol} 
+                        companyName={ (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol } 
+                    />
                 </div>
             </section>
             
             <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
-                
                 <div class="col-span-8 grid grid-cols-2 gap-6 min-h-0">
                     <LiveIndicators 
                         title="US EQUITIES" 
                         symbols={['NVDA', 'AAPL', 'MSFT']} 
+                        dynamicByIndex={true}
                     />
                     
                     <LiveIndicators 

@@ -1,72 +1,93 @@
+<!--
+  Chart Component
+  ===============
+  Interactive stock chart powered by TradingView's lightweight-charts library.
+
+  Renders four data series:
+    1. Price    — purple area chart (main series)
+    2. MA 30    — 30-day moving average (cyan dashed line)
+    3. MA 90    — 90-day moving average (indigo dashed line)
+    4. Volume   — histogram along the bottom (bars highlight when above 80% of max)
+
+  Features:
+    - Custom tooltip showing historical price, % vs live, MAs, and volume
+    - Responsive: auto-resizes when the browser window changes
+    - Deduplicates data points to prevent lightweight-charts errors
+    - Period filtering is handled by the parent — this component just renders what it receives
+
+  Props:
+    data — array of { time, close, volume, ma30, ma90 } objects, sorted by date
+-->
+
 <script>
-    // --- IMPORTS ---
     import { onMount, onDestroy } from 'svelte';
-    // Lightweight Charts: High-performance canvas rendering engine (same as TradingView).
-    // We use 'Area' for price to give it that modern "Robinhood/Crypto" feel.
     import { createChart, ColorType, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts';
 
-    // --- PROPS (Svelte 5) ---
-    // Receives the sliced data array from +page.svelte.
-    // Default to empty array to prevent render crashes on load.
+    // --- PROPS ---
     let { data = [] } = $props();
 
-    // --- INTERNAL STATE ---
-    let chartContainer; // DOM reference to the div
-    let tooltip;        // DOM reference to the floating tooltip
-    let chart;          // The chart instance
-    
-    // Series References (We need these to update data later)
-    let priceSeries, volumeSeries, ma30Series, ma90Series;
-    
-    let observer; // For the "Watermark Remover"
+    // --- DOM REFERENCES ---
+    let chartContainer;
+    let tooltip;
 
-    // Helper: Formats YYYY-MM-DD to DD/MM/YYYY for the UI
+    // --- CHART INSTANCES ---
+    let chart;
+    let priceSeries, volumeSeries, ma30Series, ma90Series;
+    let observer;  // MutationObserver for hiding attribution watermark
+
+    // --- FORMATTERS ---
+
+    // Convert "2024-06-15" → "15/06/2024" for tooltip display
     function formatDate(timeStr) {
         if (!timeStr) return "";
         const [year, month, day] = timeStr.split('-');
         return `${day}/${month}/${year}`;
     }
 
-    // --- INITIALIZATION ---
+    // Compact volume display: 15000000 → "15.0M", 523000 → "523.0K"
+    function formatVolume(val) {
+        if (!val || val === 0) return '—';
+        if (val >= 1000000) return (val / 1000000).toFixed(1) + 'M';
+        if (val >= 1000) return (val / 1000).toFixed(1) + 'K';
+        return val.toString();
+    }
+
+    // --- CHART INITIALIZATION ---
+
     onMount(() => {
-        // 1. CREATE CHART
-        // We configure the chart for a "Dark/Minimalist" aesthetic.
+        // Create the base chart with dark theme configuration
         chart = createChart(chartContainer, {
-            layout: { 
-                background: { type: ColorType.Solid, color: '#0d0d12' }, 
+            layout: {
+                background: { type: ColorType.Solid, color: '#0d0d12' },
                 textColor: '#94a3b8',
-                fontFamily: 'Inter, sans-serif'
+                fontFamily: 'Inter, sans-serif',
             },
-            // Hide the grid lines for a cleaner look
-            grid: { vertLines: { visible: false }, horzLines: { color: 'rgba(255, 255, 255, 0.03)' } },
-            // Price Scale (Y-Axis) settings
-            rightPriceScale: { 
-                borderVisible: false, 
-                scaleMargins: { top: 0.1, bottom: 0.3 }, // Leave room at bottom for Volume
-                visible: true 
+            grid: {
+                vertLines: { visible: false },
+                horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
             },
-            // Time Scale (X-Axis) settings
-            timeScale: { 
-                borderVisible: false, 
-                fixLeftEdge: true,   // Prevent scrolling past the start
-                fixRightEdge: true,  // Prevent scrolling past the end
+            rightPriceScale: {
+                borderVisible: false,
+                scaleMargins: { top: 0.1, bottom: 0.3 },  // Leave room for volume at bottom
+                visible: true,
+            },
+            timeScale: {
+                borderVisible: false,
+                fixLeftEdge: true,
+                fixRightEdge: true,
                 rightOffset: 0,
-                barSpacing: 10,      // Wider spacing for better readability
+                barSpacing: 10,
             },
-            // Magnet Crosshair: Snaps to specific data points
-            crosshair: { 
-                mode: CrosshairMode.Magnet, 
-                vertLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: false }, 
-                horzLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: true } 
+            crosshair: {
+                mode: CrosshairMode.Magnet,  // Snaps to nearest data point
+                vertLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: false },
+                horzLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: true },
             },
-            // Disable scrolling/scaling to keep the view "Fixed" on the selected period
-            handleScroll: false,
-            handleScale: false
+            handleScroll: false,  // Disable pan/zoom — period buttons handle this
+            handleScale: false,
         });
 
-        // 2. THE "NUKE" OBSERVER (DOM HACK)
-        // Lightweight Charts injects a "TradingView" attribution link.
-        // This function aggressively monitors the DOM and removes that specific element.
+        // Hide the TradingView attribution watermark (required by lightweight-charts)
         const nuke = () => {
             const targets = chartContainer.querySelectorAll('div, a, span');
             targets.forEach(el => {
@@ -75,55 +96,69 @@
                 }
             });
         };
-        nuke(); // Run once immediately
-        // Keep watching in case the library re-injects it on resize/update
+        nuke();
         observer = new MutationObserver(nuke);
         observer.observe(chartContainer, { childList: true, subtree: true });
 
-        // 3. ADD SERIES LAYERS
-        // Layer 1: Price (Purple Area)
+        // --- SERIES SETUP ---
+
+        // Main price area (purple gradient fill under the line)
         priceSeries = chart.addSeries(AreaSeries, {
-            lineColor: '#a855f7', 
-            topColor: 'rgba(168, 85, 247, 0.3)', 
-            bottomColor: 'rgba(168, 85, 247, 0)', 
+            lineColor: '#a855f7',
+            topColor: 'rgba(168, 85, 247, 0.3)',
+            bottomColor: 'rgba(168, 85, 247, 0)',
             lineWidth: 3,
-            lastValueVisible: true,
-            priceLineVisible: true,
+            lastValueVisible: true,       // Show current price label on the right axis
+            priceLineVisible: true,        // Dashed horizontal line at current price
             priceLineColor: '#ffffff',
-            priceLineStyle: LineStyle.Dashed
+            priceLineStyle: LineStyle.Dashed,
         });
 
-        // Layer 2 & 3: Moving Averages (Dashed Lines)
-        ma30Series = chart.addSeries(LineSeries, { color: '#22d3ee', lineWidth: 1, lineStyle: LineStyle.Dashed, lastValueVisible: false, priceLineVisible: false });
-        ma90Series = chart.addSeries(LineSeries, { color: '#6366f1', lineWidth: 1, lineStyle: LineStyle.Dashed, lastValueVisible: false, priceLineVisible: false });
-        
-        // Layer 4: Volume (Histogram at the bottom)
-        // We give it a separate priceScaleId ('vol') to stack it separately from the price
-        volumeSeries = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: true });
-        chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 }, borderVisible: false });
+        // Moving averages (dashed overlays)
+        ma30Series = chart.addSeries(LineSeries, {
+            color: '#22d3ee', lineWidth: 1, lineStyle: LineStyle.Dashed,
+            lastValueVisible: false, priceLineVisible: false,
+        });
+        ma90Series = chart.addSeries(LineSeries, {
+            color: '#6366f1', lineWidth: 1, lineStyle: LineStyle.Dashed,
+            lastValueVisible: false, priceLineVisible: false,
+        });
 
-        // 4. TOOLTIP LOGIC (CROSSHAIR MOVE)
-        // This manually updates the floating HTML tooltip when the mouse moves.
+        // Volume histogram on a separate price scale pinned to the bottom 15%
+        volumeSeries = chart.addSeries(HistogramSeries, {
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'vol',
+            lastValueVisible: true,
+        });
+        chart.priceScale('vol').applyOptions({
+            scaleMargins: { top: 0.85, bottom: 0 },
+            borderVisible: false,
+        });
+
+        // --- CUSTOM TOOLTIP ---
+        // Built via innerHTML on crosshair move for maximum rendering speed.
+        // Shows: date, historical price, diff vs live price, MA values, volume.
         chart.subscribeCrosshairMove((param) => {
-            if (!tooltip || !param.time || !param.point || param.point.x < 0) { 
-                if (tooltip) tooltip.style.display = 'none'; 
-                return; 
+            if (!tooltip || !param.time || !param.point || param.point.x < 0) {
+                if (tooltip) tooltip.style.display = 'none';
+                return;
             }
-            // Extract values for the hovered point
+
             const pData = param.seriesData.get(priceSeries);
             const vData = param.seriesData.get(volumeSeries);
             const m30Data = param.seriesData.get(ma30Series);
             const m90Data = param.seriesData.get(ma90Series);
 
             if (pData && data.length > 0) {
-                // MATH: Calculate difference between Hovered Price vs Current Live Price
+                // Compare hovered historical price against the most recent close
                 const livePrice = data[data.length - 1].close;
                 const diff = livePrice - pData.value;
                 const diffPct = (diff / pData.value) * 100;
                 const colorClass = diff >= 0 ? 'text-green-500' : 'text-red-500';
 
-                // POSITIONING: Calculate X/Y coordinates
                 tooltip.style.display = 'flex';
+
+                // Position the tooltip near the cursor, flipping if it would overflow
                 const tooltipWidth = 180;
                 const tooltipHeight = 180;
                 const containerWidth = chartContainer.clientWidth;
@@ -132,7 +167,6 @@
                 let left = param.point.x + 20;
                 let top = param.point.y + 20;
 
-                // Edge Detection: Flip tooltip if it goes off-screen
                 if (left + tooltipWidth > containerWidth) {
                     left = param.point.x - tooltipWidth - 20;
                 }
@@ -142,8 +176,7 @@
 
                 tooltip.style.left = `${left}px`;
                 tooltip.style.top = `${top}px`;
-                
-                // RENDER HTML
+
                 tooltip.innerHTML = `
                     <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[160px] gap-1.5 pointer-events-none">
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
@@ -167,78 +200,67 @@
                         </div>
                         <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
                             <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
-                            <span class="text-xs text-purple-400 font-bold">${vData ? (vData.value / 1000000).toFixed(1) + 'M' : '—'}</span>
+                            <span class="text-xs text-purple-400 font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
                         </div>
                     </div>`;
             }
         });
 
-        // 5. RESPONSIVE RESIZER
-        // Automatically redraws the chart if the window size changes.
+        // Auto-resize the chart when the container dimensions change
         const resizer = new ResizeObserver(() => {
-            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
+            chart.applyOptions({
+                width: chartContainer.clientWidth,
+                height: chartContainer.clientHeight,
+            });
             chart.timeScale().fitContent();
         });
         resizer.observe(chartContainer);
     });
 
-    // --- REACTIVITY: DATA UPDATES ---
-    // This effect runs whenever the 'data' prop changes (e.g. user switches to '1M').
+    // --- REACTIVE DATA UPDATE ---
+    // Runs whenever the parent passes new data (e.g. different ticker or period).
     $effect(() => {
-        // 1. Snapshot: Svelte 5 proxies state. We need a clean JS object for the library.
         const raw = $state.snapshot(data);
-        
+
         if (priceSeries && raw.length > 0) {
-            // 2. DEDUPLICATION (CRITICAL)
-            // Lightweight charts will CRASH if two data points have the same time.
-            // We use a Map to keep only the last entry for any given date.
+            // Deduplicate by date — lightweight-charts throws if it receives duplicate timestamps
             const uniqueMap = new Map();
             raw.forEach(item => uniqueMap.set(item.time, item));
-            
-            // 3. SORTING
-            // Data must be strictly ascending by date.
             const uniqueSorted = Array.from(uniqueMap.values())
-                                    .sort((a, b) => new Date(a.time) - new Date(b.time));
+                .sort((a, b) => new Date(a.time) - new Date(b.time));
 
-            // 4. MAP TO SERIES FORMAT
-            // We transform our backend data shape {time, close, volume...} to the library format {time, value}.
+            // Update all four series
             priceSeries.setData(uniqueSorted.map(d => ({ time: d.time, value: d.close })));
             ma30Series.setData(uniqueSorted.map(d => ({ time: d.time, value: d.ma30 })));
             ma90Series.setData(uniqueSorted.map(d => ({ time: d.time, value: d.ma90 })));
-            
-            // 5. VOLUME STYLING
-            // Logic: If volume > 80% of max, make it bright purple. Otherwise, dim it.
+
+            // Volume bars: highlight in solid purple when above 80% of the period's max volume
             const maxVol = Math.max(...uniqueSorted.map(d => d.volume));
             volumeSeries.setData(uniqueSorted.map(d => ({
-                time: d.time, value: d.volume,
-                color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)'
+                time: d.time,
+                value: d.volume,
+                color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
             })));
 
-            // 6. FIT CONTENT (DISABLE ANIMATION)
-            // Adjust the view to show all data points nicely.
+            // Fit the visible range to show all data points
             const timeScale = chart.timeScale();
-            
-            // Disable animations by applying options with duration 0
             chart.applyOptions({
                 timeScale: {
                     rightOffset: 0,
                     barSpacing: 10,
                     fixLeftEdge: true,
                     fixRightEdge: true,
-                }
+                },
             });
-            
             timeScale.fitContent();
-            
-            // CSS Hack: Sometimes 'fitContent' cuts off the very first/last bar half-way.
-            // This logical range adjustment ensures a tiny bit of breathing room.
-            // Use setTimeout with 0 instead of requestAnimationFrame to avoid animation frame
+
+            // Slight inset to prevent data from touching the edges
             setTimeout(() => {
                 const logicalRange = timeScale.getVisibleLogicalRange();
                 if (logicalRange) {
                     timeScale.setVisibleLogicalRange({
                         from: logicalRange.from + 0.5,
-                        to: logicalRange.to - 0.5
+                        to: logicalRange.to - 0.5,
                     });
                 }
             }, 0);
@@ -248,11 +270,14 @@
     // --- CLEANUP ---
     onDestroy(() => {
         observer?.disconnect();
-        chart?.remove(); // Prevents memory leaks by destroying the canvas instance
+        chart?.remove();
     });
 </script>
 
+<!-- Chart container + overlay elements -->
 <div bind:this={chartContainer} class="w-full h-full min-h-[500px] relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="transition: none !important;">
+
+    <!-- Legend: color-coded labels for each series (top-left corner) -->
     <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
         <div class="flex items-center gap-2"><div class="w-4 h-[2px] bg-[#a855f7]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest">Price</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
@@ -260,10 +285,12 @@
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-white/30 uppercase font-black tracking-widest">Volume</span></div>
     </div>
+
+    <!-- Tooltip: positioned absolutely, rendered via innerHTML for performance -->
     <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-75"></div>
 </div>
 
 <style>
-    /* Force hide any attribution links that the JS observer might miss */
+    /* Hide the TradingView branding injected by lightweight-charts */
     :global(.tv-lightweight-charts-attribution) { display: none !important; }
 </style>

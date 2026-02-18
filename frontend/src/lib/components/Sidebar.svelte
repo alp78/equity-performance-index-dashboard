@@ -1,27 +1,31 @@
+<!--
+  Sidebar Component
+  =================
+  Left panel of the dashboard. Displays all tickers for the selected market index
+  with live price, daily change, high/low, and volume.
+
+  Responsibilities:
+    - Index switching (STOXX 50 ↔ S&P 500) via tab buttons
+    - Real-time search/filter by symbol or company name
+    - Selecting a ticker updates the global store, which triggers the chart to reload
+-->
+
 <script>
-    // --- IMPORTS ---
-    import { PUBLIC_BACKEND_URL } from '$env/static/public';
     import { onMount } from 'svelte';
-    
-    // GLOBAL STORE:
-    // This is the "Remote Control" of the app. When we set 'selectedSymbol' here,
-    // the +page.svelte (Chart) automatically reacts and fetches new data.
-    import { selectedSymbol, summaryData, loadSummaryData } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex } from '$lib/stores.js';
 
-    // --- STATE (Svelte 5 Runes) ---
-    let searchQuery = $state('');   // User input for filtering
-    let lastPriceDate = $state('—'); // Display date for the "Last Update" label
+    // --- LOCAL STATE ---
+    let searchQuery = $state('');
+    let lastPriceDate = $state('—');
 
-    // --- OPTIMIZATION: Read from dedicated summary store (won't change when period changes) ---
+    // --- DERIVED FROM GLOBAL STORES ---
+    // These automatically update when the store changes (e.g. after an index switch)
     let tickers = $derived($summaryData.assets || []);
     let loading = $derived($summaryData.loading);
     let error = $derived($summaryData.error);
+    let currentIndex = $derived($marketIndex);
 
-    // --- DERIVED STATE (Reactive Filtering) ---
-    // This automatically re-runs whenever 'tickers' OR 'searchQuery' changes.
-    // It performs two operations in one pass:
-    // 1. FILTER: Matches symbol (NVDA) or name (NVIDIA).
-    // 2. SORT: Alphabetical order A-Z.
+    // Filter + sort: runs automatically when tickers or search query change
     let filteredTickers = $derived(
         tickers
             .filter(t => 
@@ -31,17 +35,47 @@
             .sort((a, b) => a.symbol.localeCompare(b.symbol))
     );
 
-    // --- WATCH FOR DATA LOADED ---
-    // Update the last price date when data arrives
+    // Update the "Last Update" label when data arrives
     $effect(() => {
         if (tickers.length > 0) {
             lastPriceDate = new Date().toLocaleDateString('en-GB');
         }
     });
 
-    // --- HELPER: FORMAT VOLUME ---
-    // Converts raw numbers (15000000) into human readable strings (15.0M)
-    // Critical for fitting large numbers into the sidebar columns.
+    // Safety net: if the parent page hasn't loaded data yet, do it here
+    onMount(() => {
+        if (!$summaryData.loaded && !$summaryData.loading) {
+            loadSummaryData($marketIndex);
+        }
+    });
+
+    // --- INDEX CONFIGURATION ---
+    // To add a new index, add an entry here and in DEFAULT_SYMBOLS
+    const INDEX_OPTIONS = [
+        { key: 'stoxx50', label: 'STOXX 50', short: 'STOXX' },
+        { key: 'sp500', label: 'S&P 500', short: 'S&P' },
+    ];
+
+    // The ticker that gets selected automatically when switching to an index
+    const DEFAULT_SYMBOLS = {
+        stoxx50: 'ASML.AS',
+        sp500: 'NVDA',
+    };
+
+    // --- INDEX SWITCH HANDLER ---
+    async function switchIndex(key) {
+        if (key === currentIndex) return;
+
+        marketIndex.set(key);
+        searchQuery = '';
+        await loadSummaryData(key);
+
+        // Select the default "hero" ticker for the new index
+        selectedSymbol.set(DEFAULT_SYMBOLS[key] || $summaryData.assets?.[0]?.symbol || '');
+    }
+
+    // --- VOLUME FORMATTER ---
+    // Converts raw numbers (15000000) into compact strings (15.0M)
     function formatVol(val) {
         if (!val) return '0';
         if (val >= 1000000) return (val / 1000000).toFixed(1) + 'M';
@@ -50,14 +84,33 @@
     }
 </script>
 
-<aside class="w-[480px] bg-bloom-card border-r border-bloom-muted/10 flex flex-col h-screen shrink-0 relative z-20 shadow-2xl">
+<aside class="flex flex-col h-full bg-bloom-card border-r border-bloom-muted/10 relative z-20 shadow-2xl overflow-hidden">
     
+    <!-- HEADER: Index tabs, title, search -->
     <div class="p-6 space-y-4 bg-gradient-to-b from-white/5 to-transparent">
         
+        <!-- Index switcher: pill-style tabs showing all available indices -->
+        <div class="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/5">
+            {#each INDEX_OPTIONS as opt}
+                <button 
+                    onclick={() => switchIndex(opt.key)}
+                    class="flex-1 py-2.5 px-3 rounded-lg text-center transition-all duration-300 relative
+                    {currentIndex === opt.key 
+                        ? 'bg-bloom-accent text-white shadow-[0_0_20px_rgba(168,85,247,0.4)] font-black' 
+                        : 'text-white/40 hover:text-white/70 hover:bg-white/5 font-bold'}"
+                >
+                    <span class="text-xs uppercase tracking-widest">{opt.label}</span>
+                </button>
+            {/each}
+        </div>
+
+        <!-- Index name + last update timestamp -->
         <div class="flex justify-between items-end">
             <div>
                 <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-1">EQUITY PERFORMANCE INDEX</h2>
-                <div class="text-3xl font-black text-white tracking-tighter uppercase">S&P 500</div>
+                <div class="text-3xl font-black text-white tracking-tighter uppercase">
+                    {INDEX_OPTIONS.find(o => o.key === currentIndex)?.label || 'INDEX'}
+                </div>
             </div>
             <div class="text-right">
                 <div class="text-[10px] font-bold text-bloom-text/40 uppercase tracking-widest">Last Update</div>
@@ -65,6 +118,7 @@
             </div>
         </div>
 
+        <!-- Search box: filters by ticker symbol or company name -->
         <div class="relative group">
             <input 
                 type="text" 
@@ -78,52 +132,48 @@
         </div>
     </div>
 
+    <!-- TICKER LIST: scrollable rows, one per stock -->
     <div class="flex-1 overflow-y-auto custom-scrollbar">
+
         {#if loading}
             <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
                 <div class="w-6 h-6 border-2 border-bloom-accent border-t-transparent rounded-full animate-spin"></div>
                 <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Tape</span>
             </div>
+
         {:else if error}
             <div class="flex flex-col items-center justify-center h-40 space-y-3 px-6">
                 <div class="text-center space-y-2">
                     <div class="text-red-500 text-sm font-bold">Failed to load market data</div>
                     <div class="text-bloom-text/40 text-xs font-mono">{error}</div>
                 </div>
-                <button
-                    onclick={() => loadSummaryData(PUBLIC_BACKEND_URL)}
-                    class="px-4 py-2 bg-bloom-accent/20 hover:bg-bloom-accent/30 border border-bloom-accent/50 rounded-lg text-white text-xs font-bold uppercase tracking-wider transition-all"
-                >
-                    Retry
-                </button>
+                <button onclick={() => loadSummaryData(currentIndex)} class="px-4 py-2 bg-bloom-accent/20 hover:bg-bloom-accent/30 border border-bloom-accent/50 rounded-lg text-white text-xs font-bold uppercase tracking-wider transition-all">Retry</button>
             </div>
-        {:else if filteredTickers.length === 0}
-            <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
-                <span class="text-[10px] font-black uppercase tracking-widest text-white">No matches for "{searchQuery}"</span>
-            </div>
+
         {:else}
             {#each filteredTickers as item}
+                <!-- Each row: clicking sets the global selectedSymbol, which triggers the chart -->
                 <button 
                     onclick={() => selectedSymbol.set(item.symbol)}
                     class="w-full px-6 py-5 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
                     {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"
                 >
+                    <!-- Active indicator: purple bar on the left edge -->
                     {#if $selectedSymbol === item.symbol}
                         <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
                     {/if}
 
-                    <div 
-                        class="w-[35%] text-left overflow-hidden" 
-                        title="{item.symbol} - {item.name || 'Equity'}"
-                    >
+                    <!-- Column 1: Symbol + company name -->
+                    <div class="w-[35%] text-left overflow-hidden">
                         <div class="font-black text-white text-base tracking-tight group-hover:text-bloom-accent transition-colors">
                             {item.symbol}
                         </div>
-                        <div class="text-[9px] font-bold text-bloom-text/30 uppercase tracking-widest truncate pr-2">
+                        <div class="text-[11px] font-bold text-bloom-text/40 uppercase tracking-wide truncate pr-2">
                             {item.name || 'Equity'}
                         </div>
                     </div>
                     
+                    <!-- Column 2: Price + daily change % -->
                     <div class="w-[25%] text-right pr-4">
                         <div class="text-sm font-mono font-black text-white leading-tight">
                             ${(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
@@ -134,6 +184,7 @@
                         </div>
                     </div>
 
+                    <!-- Column 3: Day high / low -->
                     <div class="w-[25%] text-right font-mono text-[10px] leading-tight space-y-1">
                         <div class="flex justify-end gap-2 text-white/40">
                             <span class="font-bold">H</span>
@@ -145,6 +196,7 @@
                         </div>
                     </div>
 
+                    <!-- Column 4: Volume -->
                     <div class="w-[15%] text-right">
                         <div class="text-[9px] font-black text-bloom-text/30 uppercase tracking-tighter">Vol</div>
                         <div class="text-[10px] font-bold text-white/60">{formatVol(item.volume)}</div>
@@ -156,7 +208,7 @@
 </aside>
 
 <style>
-    /* CUSTOM SCROLLBAR STYLING (Webkit only) */
+    /* Minimal scrollbar that blends with the dark theme */
     .custom-scrollbar::-webkit-scrollbar { width: 4px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
     .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }

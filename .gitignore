@@ -29,3 +29,4 @@ Thumbs.db
 .npmrc
 firebase.json
 assets/
+config.js

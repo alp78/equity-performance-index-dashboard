@@ -1,114 +1,107 @@
+<!--
+  RankingPanel Component
+  ======================
+  Displays the top 3 and bottom 3 performing stocks for the selected
+  index and time period, as horizontal bar charts.
+
+  Data flow:
+    - Receives `currentPeriod` as a prop from the parent page (e.g. '1y', '3mo')
+    - Reads `marketIndex` from the global store (e.g. 'sp500', 'stoxx50')
+    - Fetches rankings from the backend whenever either value changes
+    - Caches results in memory so switching back to a previous period is instant
+
+  The bar widths are normalized relative to the best/worst performer
+  in each section, so the top gainer always fills ~75% of the row.
+-->
+
 <script>
-    // --- IMPORTS ---
     import { browser } from '$app/environment';
-    import { PUBLIC_BACKEND_URL } from '$env/static/public';
-    import { onMount } from 'svelte';
+    import { API_BASE_URL } from '$lib/config.js';
+    import { marketIndex } from '$lib/stores.js';
 
     // --- PROPS ---
-    // Receives the selected time period (e.g., '1y', '3mo') from the parent page.
     let { currentPeriod = '1y' } = $props();
-    
-    // --- STATE ---
+
+    // --- LOCAL STATE ---
     let localRankings = $state(null);
     let localLoading = $state(false);
-    
-    // CACHE: Stores previously fetched results in memory.
-    // Structure: { '1y': { top: [...], bottom: [...] }, '3mo': ... }
-    // If user clicks '1Y' -> '3M' -> '1Y', the second '1Y' is instant (no network call).
-    let rankingCache = {}; 
-    
-    // ABORT CONTROLLER: Manages network requests.
-    // If user fast-clicks '1Y' -> '3M' -> 'MAX', we must cancel the '1Y' and '3M' requests
-    // so they don't overwrite the correct 'MAX' data when they finally arrive.
+    let currentIndex = $derived($marketIndex);
+
+    // In-memory cache: { "sp500_1y": {...}, "stoxx50_3mo": {...} }
+    // Prevents redundant API calls when toggling between periods
+    let rankingCache = {};
+
+    // Tracks the in-flight request so we can cancel it if the user
+    // clicks a new period before the previous one finishes
     let abortController = null;
 
-    // --- DATA LOADING LOGIC ---
-    async function load(period) {
-        // Only run in browser
+    // Human-readable labels for the index badge
+    const INDEX_LABELS = {
+        sp500: 'S&P 500',
+        stoxx50: 'EURO STOXX 50',
+    };
+
+    // --- DATA FETCHING ---
+    async function load(period, index) {
         if (!browser) return;
-        
-        // 1. CACHE HIT CHECK
-        // If we already have this data in memory, use it immediately.
-        if (rankingCache[period]) {
-            localRankings = rankingCache[period];
+
+        // Check cache first — instant if we've already fetched this combo
+        const cacheKey = `${index}_${period}`;
+        if (rankingCache[cacheKey]) {
+            localRankings = rankingCache[cacheKey];
             return;
         }
 
-        // 2. CANCEL PREVIOUS REQUESTS
-        // If a request is currently flying, kill it.
-        if (abortController) {
-            abortController.abort();
-        }
-        // Create a new controller for this specific request
+        // Cancel any in-flight request to prevent stale data overwriting fresh data
+        if (abortController) abortController.abort();
         abortController = new AbortController();
         const signal = abortController.signal;
 
-        // 3. UI RESET
-        // Set loading state
         localLoading = true;
-
         try {
-            // Add timestamp (?t=...) to prevent browser-level HTTP caching issues
-            const url = `${PUBLIC_BACKEND_URL}/rankings?period=${period}&t=${Date.now()}`;
-            const res = await fetch(url, { signal });
-            
-            if (res.ok) {
-                const data = await res.json();
-                
-                // 4. WRITE TO CACHE
-                rankingCache[period] = data;
-                
-                // 5. UPDATE UI
-                localRankings = data;
-                localLoading = false;
+            const res = await fetch(
+                `${API_BASE_URL}/rankings?period=${period}&index=${index}&t=${Date.now()}`,
+                { signal },
+            );
+            if (!res.ok) throw new Error("API Error");
+            const data = await res.json();
+            localRankings = data;
+            rankingCache[cacheKey] = data;
+        } catch (err) {
+            // AbortError means *we* cancelled it on purpose — not a real error
+            if (err.name !== 'AbortError') {
+                console.error("Ranking Load Error:", err);
+                localRankings = null;
             }
-        } catch (e) { 
-            // Ignore "AbortError" because that means *we* cancelled it on purpose.
-            if (e.name !== 'AbortError') {
-                console.error("Ranking Load Error:", e);
-                localLoading = false;
-            }
+        } finally {
+            localLoading = false;
         }
     }
 
-    // --- REACTIVITY ---
-    // Whenever 'currentPeriod' changes (user clicks a button), run the load function.
+    // Re-fetch whenever the period or index changes
     $effect(() => {
-        if (browser) {
-            load(currentPeriod);
-        }
+        load(currentPeriod, currentIndex);
     });
 
-    // --- BACKGROUND PREFETCHING ---
-    // UX Trick: When the component mounts, we silently fetch ALL other periods in the background.
-    // This ensures that when the user eventually clicks them, the data is already in the cache.
-    onMount(() => {
-        const others = ['1w', '1mo', '3mo', '6mo', '1y', '5y', 'max'];
-        others.forEach(p => {
-            // Only fetch if not current and not already cached
-            if (p !== currentPeriod && !rankingCache[p]) {
-                fetch(`${PUBLIC_BACKEND_URL}/rankings?period=${p}`)
-                    .then(res => res.json())
-                    .then(data => { rankingCache[p] = data; })
-                    .catch(() => {}); // Silent fail is fine here
-            }
-        });
-    });
-
-    // --- VISUALIZATION HELPER ---
-    // Finds the maximum absolute value in a list to scale the bar charts correctly.
-    // Example: If top gainer is +50%, that bar should take up 100% of the available width.
+    // --- BAR SCALING ---
+    // Finds the largest absolute value in a list so we can scale bars proportionally.
+    // Example: if the top gainer is +50%, its bar fills 75% of the row width.
     function getSubsetMax(items) {
         if (!items || items.length === 0) return 1;
         return Math.max(...items.map(i => Math.abs(i.value || 0)), 1);
     }
 </script>
 
-<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-4 border border-white/5 overflow-hidden shadow-2xl backdrop-blur-md">
-    <div class="flex-none flex justify-center items-center mb-2 border-b border-white/5 pb-2">
-        <h3 class="text-[9px] font-black text-white/30 uppercase tracking-[0.3em]">
+<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-hidden shadow-2xl backdrop-blur-md">
+
+    <!-- Header: period label + index badge -->
+    <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
+        <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
             Period Performance ({currentPeriod.toUpperCase()})
         </h3>
+        <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
+            {INDEX_LABELS[currentIndex] || currentIndex}
+        </span>
     </div>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-hidden">
@@ -118,42 +111,33 @@
             {@const botMax = getSubsetMax(data.bottom)}
 
             <div class="flex-1 flex flex-col min-h-0 gap-1">
-                
+
+                <!-- TOP PERFORMERS: green bars growing left-to-right -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
-                        {@const width = (item.value / topMax) * 75}
-                        
+                        {@const width = (Math.abs(item.value) / topMax) * 75}
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">
-                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">
-                                {item.symbol}
-                            </span>
-                            
+                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">{item.symbol}</span>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
-                                <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" 
-                                     style="width: {width}%">
-                                    <span class="text-[11px] font-medium text-white whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">
-                                        +{item.value.toFixed(1)}%
-                                    </span>
+                                <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
+                                    <span class="text-[11px] font-medium text-white whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{item.value.toFixed(1)}%</span>
                                 </div>
                             </div>
                         </div>
                     {/each}
                 </div>
 
+                <!-- Divider -->
                 <div class="flex-none h-px bg-white/10 mx-2"></div>
 
+                <!-- BOTTOM PERFORMERS: red bars growing right-to-left -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / botMax) * 75}
-                        
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">
-                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">
-                                {item.symbol}
-                            </span>
-                            
+                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">{item.symbol}</span>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
-                                <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" 
-                                     style="width: {width}%">
+                                <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
                                     <span class="text-[11px] font-medium text-white whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
                                         {item.value.toFixed(1)}%
                                     </span>
@@ -163,7 +147,9 @@
                     {/each}
                 </div>
             </div>
+
         {:else}
+            <!-- Loading spinner while waiting for data -->
             <div class="flex-1 flex items-center justify-center">
                 <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
@@ -173,8 +159,8 @@
 
 <style>
     div { user-select: none; }
-    
-    /* Smooth animation for the bars growing/shrinking */
+
+    /* Smooth animation for the bars growing/shrinking on data change */
     .transition-all {
         transition-property: all;
         transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
