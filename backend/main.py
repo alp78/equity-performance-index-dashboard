@@ -132,6 +132,7 @@ async def refresh_duckdb_cache():
                     WITH RankedData AS (
                         SELECT symbol, name,
                             CAST(trade_date AS DATE) as trade_date,
+                            CAST(open_price AS FLOAT64) as open,
                             CAST(close_price AS FLOAT64) as close,
                             CAST(high_price AS FLOAT64) as high,
                             CAST(low_price AS FLOAT64) as low,
@@ -141,7 +142,7 @@ async def refresh_duckdb_cache():
                             ) as rn
                         FROM `{config['table_id']}`
                     )
-                    SELECT symbol, name, trade_date, close, high, low, volume
+                    SELECT symbol, name, trade_date, open, close, high, low, volume
                     FROM RankedData WHERE rn = 1
                 """
                 df = bq_client.query(query).to_dataframe()
@@ -169,7 +170,7 @@ async def refresh_duckdb_cache():
             local_db.execute("DROP TABLE IF EXISTS latest_prices")
             local_db.execute("""
                 CREATE TABLE latest_prices AS
-                SELECT symbol, name, market_index, trade_date, close, high, low, volume,
+                SELECT symbol, name, market_index, trade_date, open, close, high, low, volume,
                     LAG(close) OVER (
                         PARTITION BY symbol, market_index ORDER BY trade_date
                     ) as prev_price
@@ -496,7 +497,7 @@ async def get_data(symbol: str, period: str = "1y"):
     try:
         if period.lower() == "max":
             df = local_db.execute("""
-                SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
+                SELECT strftime(trade_date, '%Y-%m-%d') as time, open, close, high, low, volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
                 FROM prices
@@ -506,7 +507,7 @@ async def get_data(symbol: str, period: str = "1y"):
         else:
             days = intervals.get(period.lower(), 365)
             df = local_db.execute(f"""
-                SELECT strftime(trade_date, '%Y-%m-%d') as time, close, volume,
+                SELECT strftime(trade_date, '%Y-%m-%d') as time, open, close, high, low, volume,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
                     AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
                 FROM prices

@@ -8,7 +8,7 @@
 
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import { createChart, ColorType, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts';
+    import { createChart, ColorType, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts';
 
     let {
         data = [],
@@ -360,11 +360,13 @@
         observer = new MutationObserver(nuke);
         observer.observe(chartContainer, { childList: true, subtree: true });
 
-        priceSeries = chart.addSeries(AreaSeries, {
-            lineColor: '#a855f7',
-            topColor: 'rgba(168, 85, 247, 0.3)',
-            bottomColor: 'rgba(168, 85, 247, 0)',
-            lineWidth: 3,
+        priceSeries = chart.addSeries(CandlestickSeries, {
+            upColor: '#a855f7',
+            downColor: '#6b21a8',
+            borderUpColor: '#c084fc',
+            borderDownColor: '#7c3aed',
+            wickUpColor: '#c084fc',
+            wickDownColor: '#7c3aed',
             lastValueVisible: false,
             priceLineVisible: false,
         });
@@ -400,13 +402,19 @@
             const m90Data = param.seriesData.get(ma90Series);
 
             if (pData && processedData.length > 0) {
+                const closePrice = pData.close;
+                const openPrice = pData.open;
+                const highPrice = pData.high;
+                const lowPrice = pData.low;
                 const livePrice = processedData[processedData.length - 1].close;
-                const diff = livePrice - pData.value;
-                const diffPct = (diff / pData.value) * 100;
+                const diff = livePrice - closePrice;
+                const diffPct = (diff / closePrice) * 100;
                 const colorClass = diff >= 0 ? 'text-green-500' : 'text-red-500';
+                const candleUp = closePrice >= openPrice;
+                const candleColor = candleUp ? 'text-purple-400' : 'text-purple-600';
 
                 tooltip.style.display = 'flex';
-                const tooltipWidth = 180, tooltipHeight = 180;
+                const tooltipWidth = 190, tooltipHeight = 260;
                 let left = param.point.x + 20, top = param.point.y + 20;
                 if (left + tooltipWidth > chartContainer.clientWidth) left = param.point.x - tooltipWidth - 20;
                 if (top + tooltipHeight > chartContainer.clientHeight) top = param.point.y - tooltipHeight - 20;
@@ -414,13 +422,25 @@
                 tooltip.style.top = `${top}px`;
 
                 tooltip.innerHTML = `
-                    <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[160px] gap-1.5 pointer-events-none">
+                    <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[170px] gap-1.5 pointer-events-none">
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-white/60 uppercase font-bold">Hist. Price</span>
-                            <span class="text-xs text-white font-black">$${pData.value.toFixed(2)}</span>
+                            <span class="text-[9px] text-white/40 uppercase font-bold">Open</span>
+                            <span class="text-xs ${candleColor} font-black">$${openPrice.toFixed(2)}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4">
+                            <span class="text-[9px] text-white/40 uppercase font-bold">High</span>
+                            <span class="text-xs text-white/70 font-black">$${highPrice.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between items-center gap-4">
+                            <span class="text-[9px] text-white/40 uppercase font-bold">Low</span>
+                            <span class="text-xs text-white/70 font-black">$${lowPrice.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between items-center gap-4">
+                            <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
+                            <span class="text-xs text-white font-black">$${closePrice.toFixed(2)}</span>
+                        </div>
+                        <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-white/40 uppercase font-bold">vs Live</span>
                             <span class="text-[10px] font-black ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
                         </div>
@@ -488,7 +508,13 @@
             raw.forEach(item => uniqueMap.set(item.time, item));
             processedData = Array.from(uniqueMap.values()).sort((a, b) => new Date(a.time) - new Date(b.time));
 
-            priceSeries.setData(processedData.map(d => ({ time: d.time, value: d.close })));
+            priceSeries.setData(processedData.map(d => ({
+                time: d.time,
+                open: d.open || d.close,
+                high: d.high || d.close,
+                low: d.low || d.close,
+                close: d.close,
+            })));
             ma30Series.setData(processedData.map(d => ({ time: d.time, value: d.ma30 })));
             ma90Series.setData(processedData.map(d => ({ time: d.time, value: d.ma90 })));
 
@@ -557,7 +583,7 @@
 
     <!-- Legend -->
     <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
-        <div class="flex items-center gap-2"><div class="w-4 h-[2px] bg-[#a855f7]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest">Price</span></div>
+        <div class="flex items-center gap-2"><div class="w-3 h-4 bg-[#a855f7] rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest">OHLC</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
