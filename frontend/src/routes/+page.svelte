@@ -3,7 +3,7 @@
 -->
 
 <script>
-    import { selectedSymbol, loadSummaryData, loadRankingsData, marketIndex, currentCurrency, INDEX_CONFIG } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Chart from '$lib/components/Chart.svelte';
@@ -26,24 +26,32 @@
     }
 
     let fullStockData = $state([]);
-    let assets = $state([]);
     let currentPeriod = $state('1y');
     let isInitialLoading = $state(true);
+    let isIndexSwitching = $state(false);
 
-    let metadataCache = $state({});
+    // Name cache: plain object, not reactive
+    let metadataCache = {};
+    let metadataFetchId = 0;
+    let lastFetchedSymbol = '';
+    let lastFetchedIndex = '';
+    let displayNameText = $state('');
+
     let currentSymbol = $derived($selectedSymbol);
     let ccy = $derived($currentCurrency);
+    // Track assets from the summary store — updates when index switches
+    let assets = $derived($summaryData.assets || []);
 
     let selectMode = $state(false);
     let customRange = $state(null);
 
-    let displayName = $derived(() => {
-        const cached = metadataCache[currentSymbol];
-        if (cached) return cached;
+    // Display name: metadata → assets → empty (NOT symbol fallback — that's the h1's job)
+    let displayName = $derived((() => {
+        if (displayNameText) return displayNameText;
         const asset = assets.find(a => a.symbol === currentSymbol);
-        if (asset && asset.name && asset.name !== 0) return asset.name;
+        if (asset && asset.name && asset.name !== 0 && asset.name !== currentSymbol) return asset.name;
         return '';
-    });
+    })());
 
     function fmtDate(d) {
         if (!d) return '';
@@ -55,10 +63,7 @@
     }
 
     function handleResetPeriod() {
-        if (customRange) {
-            customRange = null;
-            selectMode = false;
-        }
+        if (customRange) { customRange = null; selectMode = false; }
         const p = currentPeriod || '1y';
         currentPeriod = null;
         setTimeout(() => { currentPeriod = p; }, 10);
@@ -71,11 +76,7 @@
     }
 
     function toggleCustomMode() {
-        if (selectMode && customRange) {
-            selectMode = false;
-            customRange = null;
-            return;
-        }
+        if (selectMode && customRange) { selectMode = false; customRange = null; return; }
         if (selectMode) { selectMode = false; return; }
         selectMode = true;
         customRange = null;
@@ -87,47 +88,85 @@
         currentPeriod = null;
     }
 
-    async function fetchInitialData() {
-        try {
-            const summaryResult = await loadSummaryData($marketIndex);
-            assets = summaryResult || [];
-            await loadRankingsData('1y', $marketIndex);
-        } catch (e) { console.error("Initial data fetch error:", e); }
-    }
-
     async function fetchStockData(symbol) {
         if (!symbol) return;
-        fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
+
+        // Fetch metadata — set displayNameText on success
+        const fetchId = ++metadataFetchId;
+        fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 8000)
             .then(r => r.ok ? r.json() : null)
-            .then(data => { if (data && data.name) metadataCache[symbol] = data.name; })
+            .then(data => {
+                if (data && data.name && fetchId === metadataFetchId) {
+                    metadataCache[symbol] = data.name;
+                    displayNameText = data.name;
+                }
+            })
             .catch(() => {});
 
-        let retries = 2;
-        for (let i = 0; i < retries; i++) {
+        // Retry up to 5 times with backoff — backend may be lazy-loading the index
+        const maxRetries = 5;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 const res = await fetchWithTimeout(
-                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 10000
+                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 30000
                 );
                 if (res.ok) {
-                    fullStockData = await res.json();
-                    isInitialLoading = false;
-                    return;
+                    const json = await res.json();
+                    if (json && json.length > 0) {
+                        fullStockData = json;
+                        isInitialLoading = false;
+                        isIndexSwitching = false;
+                        return;
+                    }
+                    // Empty response = backend still loading index, retry
+                    if (attempt < maxRetries - 1) {
+                        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                        continue;
+                    }
                 }
             } catch (e) {
-                if (i < retries - 1) await new Promise(r => setTimeout(r, 1000));
+                if (attempt < maxRetries - 1) {
+                    await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                    continue;
+                }
+                console.error(`Failed to fetch data for ${symbol}:`, e);
             }
         }
-        fullStockData = [];
+        isInitialLoading = false;
+        isIndexSwitching = false;
     }
 
-    onMount(() => {
-        fetchInitialData();
-        fetchStockData($selectedSymbol);
+    onMount(async () => {
+        lastFetchedIndex = $marketIndex;
+        lastFetchedSymbol = $selectedSymbol;
+
+        // Load sidebar data (with retry)
+        await loadSummaryData($marketIndex);
+
+        // Load chart data
+        await fetchStockData($selectedSymbol);
+        isInitialLoading = false;
     });
 
+    // React to INDEX changes
+    $effect(() => {
+        const idx = $marketIndex;
+        if (idx === lastFetchedIndex) return;
+        lastFetchedIndex = idx;
+        fullStockData = [];
+        isIndexSwitching = true;
+        displayNameText = '';
+        // Force symbol re-fetch by clearing the guard
+        lastFetchedSymbol = '';
+    });
+
+    // React to SYMBOL changes
     $effect(() => {
         const sym = $selectedSymbol;
-        if (untrack(() => isInitialLoading)) return;
+        if (!sym) return;
+        if (sym === lastFetchedSymbol) return;
+        lastFetchedSymbol = sym;
+        displayNameText = metadataCache[sym] || '';
         fullStockData = [];
         selectMode = false;
         fetchStockData(sym);
@@ -135,8 +174,7 @@
 
     $effect(() => {
         const period = currentPeriod;
-        if (untrack(() => isInitialLoading)) return;
-        if (period) loadRankingsData(period, $marketIndex).catch(console.error);
+        // Don't block on isInitialLoading — RankingPanel handles its own loading
     });
 </script>
 
@@ -151,8 +189,8 @@
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
                 <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
-                <span class="text-sm font-bold text-white/40 uppercase tracking-[0.2em] pl-1">
-                    {displayName() || currentSymbol}
+                <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
+                    {displayName || 'Loading...'}
                 </span>
             </div>
 
@@ -194,11 +232,18 @@
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
                 {selectMode ? 'ring-2 ring-orange-500/30' : ''}">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                {#if isInitialLoading && fullStockData.length === 0}
+                {#if (isInitialLoading || isIndexSwitching) && fullStockData.length === 0}
                     <div class="absolute inset-0 flex items-center justify-center z-10">
                         <div class="flex flex-col items-center space-y-3 opacity-30">
                             <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
                             <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
+                        </div>
+                    </div>
+                {:else if fullStockData.length === 0}
+                    <div class="absolute inset-0 flex items-center justify-center z-10">
+                        <div class="flex flex-col items-center space-y-3 opacity-30">
+                            <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                            <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Data</span>
                         </div>
                     </div>
                 {/if}

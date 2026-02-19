@@ -127,15 +127,33 @@ async function fetchWithRetry(url, retries = 2, timeout = 10000) {
 export async function loadSummaryData(index = 'stoxx50') {
     if (!browser) return;
     summaryData.update(s => ({ ...s, loading: true, error: null }));
-    try {
-        const data = await fetchWithRetry(
-            `${API_BASE_URL}/summary?index=${index}&t=${Date.now()}`
-        );
-        summaryData.set({ assets: data || [], loaded: true, loading: false, error: null });
-        return data;
-    } catch (error) {
-        summaryData.set({ assets: [], loaded: false, loading: false, error: error.message });
+
+    // Retry with backoff — backend may be lazy-loading the index from BigQuery
+    const maxRetries = 5;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const data = await fetchWithRetry(
+                `${API_BASE_URL}/summary?index=${index}&t=${Date.now()}`
+            );
+            if (data && data.length > 0) {
+                summaryData.set({ assets: data, loaded: true, loading: false, error: null });
+                return data;
+            }
+            // Empty = backend still loading, retry
+            if (attempt < maxRetries - 1) {
+                await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                continue;
+            }
+        } catch (error) {
+            if (attempt < maxRetries - 1) {
+                await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                continue;
+            }
+            summaryData.set({ assets: [], loaded: false, loading: false, error: error.message });
+            return;
+        }
     }
+    summaryData.set({ assets: [], loaded: true, loading: false, error: null });
 }
 
 export async function loadRankingsData(period = '1y', index = 'stoxx50') {

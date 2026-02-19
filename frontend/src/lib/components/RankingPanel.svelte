@@ -14,7 +14,7 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { marketIndex, INDEX_CONFIG } from '$lib/stores.js';
+    import { marketIndex, INDEX_CONFIG, selectedSymbol, summaryData } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -23,6 +23,15 @@
     let currentIndex = $derived($marketIndex);
     let rankingCache = {};
     let abortController = null;
+
+    // Build name map from sidebar data
+    let nameMap = $derived(
+        Object.fromEntries(($summaryData.assets || []).map(a => [a.symbol, a.name || '']))
+    );
+
+    function selectSymbol(symbol) {
+        selectedSymbol.set(symbol);
+    }
 
     function formatDateShort(dateStr) {
         if (!dateStr) return '';
@@ -44,33 +53,67 @@
             return;
         }
 
+        // Only use cache if it has actual data
         if (rankingCache[cacheKey]) {
-            localRankings = rankingCache[cacheKey];
-            return;
+            const cached = rankingCache[cacheKey];
+            if (cached?.selected?.top?.length > 0 || cached?.selected?.bottom?.length > 0) {
+                localRankings = cached;
+                return;
+            }
         }
 
         if (abortController) abortController.abort();
         abortController = new AbortController();
 
         localLoading = true;
-        try {
-            const res = await fetch(url, { signal: abortController.signal });
-            if (!res.ok) throw new Error("API Error");
-            const data = await res.json();
-            localRankings = data;
-            rankingCache[cacheKey] = data;
-        } catch (err) {
-            if (err.name !== 'AbortError') {
+
+        // Retry up to 8 times — backend may still be loading the index from BigQuery
+        const maxRetries = 8;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                const res = await fetch(url, { signal: abortController.signal });
+                if (!res.ok) throw new Error("API Error");
+                const data = await res.json();
+
+                // Check if we got real data
+                const hasData = data?.selected?.top?.length > 0 || data?.selected?.bottom?.length > 0;
+                if (hasData) {
+                    localRankings = data;
+                    rankingCache[cacheKey] = data;
+                    localLoading = false;
+                    return;
+                }
+
+                // Empty = backend still loading, retry with short delay
+                if (attempt < maxRetries - 1) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    continue;
+                }
+
+                localRankings = data;
+            } catch (err) {
+                if (err.name === 'AbortError') return;
+                if (attempt < maxRetries - 1) {
+                    await new Promise(r => setTimeout(r, 1500));
+                    continue;
+                }
                 console.error("Ranking Load Error:", err);
                 localRankings = null;
             }
-        } finally {
-            localLoading = false;
         }
+        localLoading = false;
     }
 
+    let lastRankingIndex = '';
+
     $effect(() => {
-        load(currentPeriod, currentIndex, customRange);
+        const idx = currentIndex;
+        // Clear rankings when index changes to show loading spinner
+        if (idx !== lastRankingIndex) {
+            lastRankingIndex = idx;
+            localRankings = null;
+        }
+        load(currentPeriod, idx, customRange);
     });
 
     function getSubsetMax(items) {
@@ -112,9 +155,13 @@
             <div class="flex-1 flex flex-col min-h-0 gap-1">
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
-                        {@const width = (Math.abs(item.value) / topMax) * 75}
+                        {@const width = (Math.abs(item.value) / topMax) * 70}
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">
-                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">{item.symbol}</span>
+                            <button
+                                onclick={() => selectSymbol(item.symbol)}
+                                title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
+                                class="w-20 text-[11px] font-black text-white shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                            >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
                                 <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
                                     <span class="text-[11px] font-medium text-white whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{item.value.toFixed(1)}%</span>
@@ -128,9 +175,13 @@
 
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 3) as item}
-                        {@const width = (Math.abs(item.value) / botMax) * 75}
+                        {@const width = (Math.abs(item.value) / botMax) * 70}
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">
-                            <span class="w-12 text-[12px] font-black text-white shrink-0 uppercase tracking-tighter mr-2">{item.symbol}</span>
+                            <button
+                                onclick={() => selectSymbol(item.symbol)}
+                                title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
+                                class="w-20 text-[11px] font-black text-white shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                            >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
                                 <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
                                     <span class="text-[11px] font-medium text-white whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">

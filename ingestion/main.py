@@ -345,7 +345,7 @@ def sync_stocks(request):
         if count > 0:
             synced_indices.append(index_key)
 
-    # Notify backend — per-index refresh for each synced index
+    # Notify backend — per-index refresh only (not full refresh)
     if synced_indices:
         api_url = getenv("BACKEND_API_URL")
         if api_url:
@@ -357,13 +357,6 @@ def sync_stocks(request):
                     pass
                 except Exception as e:
                     logger.warning(f"  Webhook warning for {idx}: {e}")
-
-            # Also trigger a full refresh if multiple indices were synced
-            if len(synced_indices) > 1:
-                try:
-                    requests.post(f"{api_url}/api/admin/refresh", timeout=(3.05, 5))
-                except:
-                    pass
 
     summary = f"Sync complete (target: {target_index}). Total: {total_records} records. Details: {json.dumps(results)}"
     logger.info(f"\n--- {summary} ---")

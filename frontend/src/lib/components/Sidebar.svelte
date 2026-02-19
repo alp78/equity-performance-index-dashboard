@@ -31,7 +31,7 @@
         if (tickers.length > 0) lastPriceDate = new Date().toLocaleDateString('en-GB');
     });
 
-    // Scroll to selected symbol when it changes
+    // Scroll selected symbol to center of list instantly
     $effect(() => {
         const sym = $selectedSymbol;
         if (!scrollContainer || !sym) return;
@@ -39,9 +39,12 @@
         setTimeout(() => {
             const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(sym)}"]`);
             if (el) {
-                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                const containerRect = scrollContainer.getBoundingClientRect();
+                const elRect = el.getBoundingClientRect();
+                const offset = elRect.top - containerRect.top - (containerRect.height / 2) + (elRect.height / 2);
+                scrollContainer.scrollTop += offset;
             }
-        }, 50);
+        }, 30);
     });
 
     // Close dropdown on outside click
