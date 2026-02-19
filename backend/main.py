@@ -145,7 +145,7 @@ def _load_index_from_bq(index_key):
 
         # Simple flat SELECT — no window functions in BigQuery = much faster
         query = f"""
-            SELECT symbol, name,
+            SELECT symbol, name, sector, industry,
                 CAST(trade_date AS DATE) as trade_date,
                 CAST(open_price AS FLOAT64) as open,
                 CAST(close_price AS FLOAT64) as close,
@@ -171,7 +171,7 @@ def _load_index_from_bq(index_key):
             # Dedup in DuckDB (sub-second vs seconds in BigQuery)
             local_db.execute(f"""
                 CREATE TABLE {table_name} AS
-                SELECT symbol, name, trade_date, open, close, high, low, volume, market_index
+                SELECT symbol, name, sector, industry, trade_date, open, close, high, low, volume, market_index
                 FROM (
                     SELECT *, ROW_NUMBER() OVER (
                         PARTITION BY symbol, trade_date ORDER BY volume DESC
@@ -183,7 +183,7 @@ def _load_index_from_bq(index_key):
             local_db.execute(f"DROP TABLE IF EXISTS {latest_table}")
             local_db.execute(f"""
                 CREATE TABLE {latest_table} AS
-                SELECT symbol, name, market_index, trade_date, open, close, high, low, volume,
+                SELECT symbol, name, sector, industry, market_index, trade_date, open, close, high, low, volume,
                     LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_price
                 FROM {table_name}
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1
@@ -474,6 +474,12 @@ async def health():
     }
 
 
+@app.get("/market-data")
+async def get_market_data():
+    """REST fallback for live market data — returns LATEST_MARKET_DATA snapshot."""
+    return LATEST_MARKET_DATA
+
+
 @app.post("/api/admin/refresh")
 async def webhook_refresh():
     """
@@ -516,7 +522,7 @@ async def get_summary(index: str = "sp500"):
     try:
         with db_lock:
             res = local_db.execute(f"""
-                SELECT symbol, name,
+                SELECT symbol, name, sector, industry,
                     CAST(close AS FLOAT) as last_price,
                     CAST(high AS FLOAT) as high,
                     CAST(low AS FLOAT) as low,

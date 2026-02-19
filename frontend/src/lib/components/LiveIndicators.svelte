@@ -4,7 +4,7 @@
 
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import { getWebSocketUrl } from '$lib/config.js';
+    import { getWebSocketUrl, API_BASE_URL } from '$lib/config.js';
     import { marketIndex, currentCurrency, INDEX_CONFIG, selectedSymbol, summaryData } from '$lib/stores.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
@@ -144,20 +144,55 @@
         }
         allSyms.forEach(s => { quotes[s] = { price: 0, pct: 0, diff: 0, live: false }; });
 
-        socket = new WebSocket(wsUrl);
-        socket.onmessage = (event) => {
+        function connectWs() {
+            socket = new WebSocket(wsUrl);
+            socket.onopen = () => { console.log("WS connected"); };
+            socket.onmessage = (event) => {
+                try {
+                    const update = JSON.parse(event.data);
+                    const now = Date.now();
+                    allSyms.forEach(s => {
+                        if (s === update.symbol || clean(s) === update.symbol) {
+                            quotes[s] = { price: update.price, pct: update.pct, diff: update.diff, live: update.live };
+                            lastUpdateTime[s] = now;
+                        }
+                    });
+                } catch (e) { console.error("WS Error", e); }
+            };
+            socket.onclose = () => {
+                // Auto-reconnect after 3 seconds
+                setTimeout(connectWs, 3000);
+            };
+            socket.onerror = (e) => {
+                console.error("WS Error:", e);
+                socket.close();
+            };
+        }
+
+        connectWs();
+
+        // Also poll REST endpoint every 60s as fallback for stale WS
+        const pollInterval = setInterval(async () => {
             try {
-                const update = JSON.parse(event.data);
-                const now = Date.now();
-                allSyms.forEach(s => {
-                    if (s === update.symbol || clean(s) === update.symbol) {
-                        quotes[s] = { price: update.price, pct: update.pct, diff: update.diff, live: update.live };
-                        lastUpdateTime[s] = now;
+                const res = await fetch(`${API_BASE_URL}/market-data`);
+                if (res.ok) {
+                    const data = await res.json();
+                    const now = Date.now();
+                    if (data && typeof data === 'object') {
+                        Object.values(data).forEach(update => {
+                            allSyms.forEach(s => {
+                                if (s === update.symbol || clean(s) === update.symbol) {
+                                    quotes[s] = { price: update.price, pct: update.pct, diff: update.diff, live: update.live };
+                                    lastUpdateTime[s] = now;
+                                }
+                            });
+                        });
                     }
-                });
-            } catch (e) { console.error("WS Error", e); }
-        };
-        socket.onerror = (e) => console.error("WS Connection Error:", e);
+                }
+            } catch (e) { /* silent fallback */ }
+        }, 60000);
+
+        return () => clearInterval(pollInterval);
     });
 
     onDestroy(() => socket?.close());

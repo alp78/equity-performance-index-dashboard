@@ -423,7 +423,7 @@
                         
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
-                            <span class="text-xs font-black ${candleUp ? 'text-green-400' : 'text-red-400'}">${c}${closePrice.toFixed(2)}</span>
+                            <span class="text-xs font-black" style="color: ${candleUp ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)'}">${c}${closePrice.toFixed(2)}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
@@ -558,7 +558,7 @@
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>
         <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
-        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-white/30 uppercase font-black tracking-widest">Volume</span></div>
+        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-[#a855f7]/60 uppercase font-black tracking-widest">Volume</span></div>
     </div>
 
     {#if selectMode}

@@ -80,10 +80,34 @@ export const INDEX_GROUPS = [
     },
 ];
 
-// --- GLOBAL STORES ---
+// --- GLOBAL STORES (persisted across browser refresh) ---
 
-export const selectedSymbol = writable('ASML.AS');
-export const marketIndex = writable('stoxx50');
+// Read stored values BEFORE creating stores
+const _storedIndex = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_index');
+        return (v && INDEX_CONFIG[v]) ? v : 'stoxx50';
+    } catch { return 'stoxx50'; }
+})() : 'stoxx50';
+
+const _storedSymbol = browser ? (() => {
+    try {
+        return localStorage.getItem('dash_symbol') || INDEX_CONFIG[_storedIndex]?.defaultSymbol || 'ASML.AS';
+    } catch { return 'ASML.AS'; }
+})() : 'ASML.AS';
+
+export const selectedSymbol = writable(_storedSymbol);
+export const marketIndex = writable(_storedIndex);
+
+// Persist on change (after initial creation)
+if (browser) {
+    marketIndex.subscribe(val => {
+        try { localStorage.setItem('dash_index', val); } catch {}
+    });
+    selectedSymbol.subscribe(val => {
+        try { localStorage.setItem('dash_symbol', val); } catch {}
+    });
+}
 
 export const currentCurrency = derived(marketIndex, ($idx) =>
     INDEX_CONFIG[$idx]?.currency || '$'

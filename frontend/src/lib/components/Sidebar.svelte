@@ -1,5 +1,5 @@
 <!--
-  Sidebar — Dropdown index selector with West/East groups
+  Sidebar — Sector-grouped stock list with collapsible sections
 -->
 
 <script>
@@ -7,9 +7,11 @@
     import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS } from '$lib/stores.js';
 
     let searchQuery = $state('');
-    let lastPriceDate = $state('—');
     let dropdownOpen = $state(false);
     let scrollContainer;
+
+    // Per-index open sectors state
+    let openSectors = $state(new Set());
 
     let tickers = $derived($summaryData.assets || []);
     let loading = $derived($summaryData.loading);
@@ -18,45 +20,103 @@
     let ccy = $derived($currentCurrency);
     let currentConfig = $derived(INDEX_CONFIG[currentIndex]);
 
-    let filteredTickers = $derived(
-        tickers
-            .filter(t =>
-                t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                (t.name && t.name.toLowerCase().includes(searchQuery.toLowerCase()))
-            )
-            .sort((a, b) => a.symbol.localeCompare(b.symbol))
-    );
+    const INDEX_FLAGS = {
+        stoxx50:   'fi fi-eu',
+        sp500:     'fi fi-us',
+        ftse100:   'fi fi-gb',
+        nikkei225: 'fi fi-jp',
+        csi300:    'fi fi-cn',
+        nifty50:   'fi fi-in',
+    };
 
-    $effect(() => {
-        if (tickers.length > 0) lastPriceDate = new Date().toLocaleDateString('en-GB');
-    });
+    // Build sector → industry → stocks hierarchy
+    let sectorTree = $derived((() => {
+        const filtered = tickers.filter(t =>
+            !searchQuery ||
+            t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            (t.name && t.name.toLowerCase().includes(searchQuery.toLowerCase()))
+        );
+        const sectorMap = {};
+        filtered.forEach(t => {
+            const sector = (t.sector && t.sector !== 0) ? t.sector : 'Other';
+            const industry = (t.industry && t.industry !== 0) ? t.industry : 'General';
+            if (!sectorMap[sector]) sectorMap[sector] = {};
+            if (!sectorMap[sector][industry]) sectorMap[sector][industry] = [];
+            sectorMap[sector][industry].push(t);
+        });
+        return Object.keys(sectorMap).sort().map(sector => ({
+            name: sector,
+            industries: Object.keys(sectorMap[sector]).sort().map(industry => ({
+                name: industry,
+                stocks: sectorMap[sector][industry].sort((a, b) => a.symbol.localeCompare(b.symbol)),
+            })),
+            stockCount: Object.values(sectorMap[sector]).flat().length,
+        }));
+    })());
 
-    // Scroll selected symbol to center of list instantly
+    let allExpanded = $derived(sectorTree.length > 0 && sectorTree.every(s => openSectors.has(s.name)));
+
+    // Open the sector for a given symbol using current tickers
+    function openSectorFor(symbol) {
+        const asset = tickers.find(t => t.symbol === symbol);
+        if (!asset) return;
+        const sectorName = (asset.sector && asset.sector !== 0) ? asset.sector : 'Other';
+        if (!openSectors.has(sectorName)) {
+            openSectors = new Set([...openSectors, sectorName]);
+        }
+    }
+
+    // Set sectors to exactly one sector for a symbol
+    function resetSectorsTo(symbol, tickerList) {
+        const asset = tickerList.find(t => t.symbol === symbol);
+        if (!asset) { openSectors = new Set(); return; }
+        const sectorName = (asset.sector && asset.sector !== 0) ? asset.sector : 'Other';
+        openSectors = new Set([sectorName]);
+    }
+
+    // Scroll to selected
     $effect(() => {
         const sym = $selectedSymbol;
         if (!scrollContainer || !sym) return;
-        // Small delay so DOM updates first
         setTimeout(() => {
             const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(sym)}"]`);
             if (el) {
-                const containerRect = scrollContainer.getBoundingClientRect();
-                const elRect = el.getBoundingClientRect();
-                const offset = elRect.top - containerRect.top - (containerRect.height / 2) + (elRect.height / 2);
-                scrollContainer.scrollTop += offset;
+                const cr = scrollContainer.getBoundingClientRect();
+                const er = el.getBoundingClientRect();
+                scrollContainer.scrollTop += er.top - cr.top - (cr.height / 2) + (er.height / 2);
             }
         }, 30);
     });
 
-    // Close dropdown on outside click
-    function handleClickOutside(e) {
-        if (dropdownOpen && !e.target.closest('.index-dropdown')) {
-            dropdownOpen = false;
+    function toggleSector(sector) {
+        const next = new Set(openSectors);
+        next.has(sector) ? next.delete(sector) : next.add(sector);
+        openSectors = next;
+        openSectorsPerIndex[currentIndex] = [...next];
+    }
+
+    function toggleAll() {
+        if (allExpanded) {
+            openSectors = new Set();
+        } else {
+            openSectors = new Set(sectorTree.map(s => s.name));
         }
     }
 
-    onMount(() => {
-        if (!$summaryData.loaded && !$summaryData.loading) loadSummaryData($marketIndex);
+    function handleClickOutside(e) {
+        if (dropdownOpen && !e.target.closest('.index-dropdown')) dropdownOpen = false;
+    }
+
+    onMount(async () => {
         document.addEventListener('click', handleClickOutside);
+        if (!$summaryData.loaded && !$summaryData.loading) {
+            const data = await loadSummaryData($marketIndex);
+            if (data && data.length > 0) {
+                resetSectorsTo($selectedSymbol, data);
+            }
+        } else if ($summaryData.assets.length > 0) {
+            resetSectorsTo($selectedSymbol, $summaryData.assets);
+        }
         return () => document.removeEventListener('click', handleClickOutside);
     });
 
@@ -67,17 +127,23 @@
     function selectTicker(symbol) {
         selectedSymbol.set(symbol);
         lastSymbolPerIndex[$marketIndex] = symbol;
+        openSectorFor(symbol);
     }
 
     async function switchIndex(key) {
         if (key === currentIndex) return;
         lastSymbolPerIndex[currentIndex] = $selectedSymbol;
+        openSectors = new Set(); // Clear immediately
         marketIndex.set(key);
         searchQuery = '';
         dropdownOpen = false;
-        await loadSummaryData(key);
-        const remembered = lastSymbolPerIndex[key];
-        selectedSymbol.set(remembered || INDEX_CONFIG[key]?.defaultSymbol || '');
+        const newTickers = await loadSummaryData(key);
+        const newSymbol = lastSymbolPerIndex[key] || INDEX_CONFIG[key]?.defaultSymbol || '';
+        selectedSymbol.set(newSymbol);
+        // Set sector AFTER we have the correct tickers
+        if (newTickers && newTickers.length > 0) {
+            resetSectorsTo(newSymbol, newTickers);
+        }
     }
 
     function formatVol(val) {
@@ -85,6 +151,11 @@
         if (val >= 1000000) return (val / 1000000).toFixed(1) + 'M';
         if (val >= 1000) return (val / 1000).toFixed(0) + 'K';
         return val.toString();
+    }
+
+    // Exported: open sector for a symbol (from top movers/leaders click)
+    export function openSectorForSymbol(symbol) {
+        openSectorFor(symbol);
     }
 </script>
 
@@ -95,37 +166,34 @@
         <!-- INDEX DROPDOWN -->
         <div class="relative index-dropdown">
             <button
-                onclick={() => { dropdownOpen = !dropdownOpen; }}
-                class="w-full flex items-center justify-between px-4 py-2.5 bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all"
+                onclick={() => dropdownOpen = !dropdownOpen}
+                class="w-full flex items-center justify-between bg-black/40 border border-bloom-muted/20 rounded-xl px-4 py-2.5 hover:border-bloom-accent/40 transition-all group"
             >
-                <div class="flex items-center gap-3">
-                    <span class="text-lg font-black text-bloom-accent">{currentConfig?.currency}</span>
-                    <div class="text-left">
-                        <div class="text-sm font-black text-white uppercase tracking-tight">{currentConfig?.shortLabel}</div>
-                        <div class="text-[10px] font-bold text-white/30 uppercase tracking-wider">{currentConfig?.region === 'west' ? 'Western Markets' : 'Eastern Markets'}</div>
-                    </div>
+                <div class="flex items-center gap-2.5">
+                    <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
+                    <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{currentConfig?.currency}</span>
+                    <span class="text-sm font-bold text-white">{currentConfig?.shortLabel}</span>
                 </div>
-                <svg class="w-4 h-4 text-white/40 transition-transform {dropdownOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-4 h-4 text-white/30 group-hover:text-bloom-accent transition-all {dropdownOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                 </svg>
             </button>
 
             {#if dropdownOpen}
-                <div class="absolute top-full left-0 right-0 mt-1 bg-[#16161e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden backdrop-blur-xl">
+                <div class="absolute top-full left-0 right-0 mt-1 bg-[#16161e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
                     {#each INDEX_GROUPS as group}
-                        <div class="px-3 pt-2.5 pb-1">
-                            <span class="text-[9px] font-black text-white/20 uppercase tracking-[0.3em]">{group.label}</span>
-                        </div>
+                        <div class="px-3 py-1.5 text-[9px] font-black text-white/20 uppercase tracking-widest border-b border-white/5">{group.label}</div>
                         {#each group.indices as idx}
                             <button
                                 onclick={() => switchIndex(idx.key)}
-                                class="w-full flex items-center gap-3 px-4 py-2 hover:bg-white/5 transition-all
-                                {currentIndex === idx.key ? 'bg-bloom-accent/10' : ''}"
+                                class="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-white/5 transition-all
+                                {idx.key === currentIndex ? 'bg-bloom-accent/10 border-l-2 border-bloom-accent' : ''}"
                             >
-                                <span class="text-sm font-black text-bloom-accent w-5">{idx.currency}</span>
-                                <span class="text-sm font-bold text-white">{idx.shortLabel}</span>
-                                {#if currentIndex === idx.key}
-                                    <div class="ml-auto w-1.5 h-1.5 rounded-full bg-bloom-accent"></div>
+                                <span class="{INDEX_FLAGS[idx.key] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
+                                <span class="text-[10px] font-bold text-bloom-accent w-4">{idx.currency}</span>
+                                <span class="text-sm font-bold text-white/80">{idx.shortLabel}</span>
+                                {#if idx.key === currentIndex}
+                                    <span class="ml-auto text-[8px] text-bloom-accent font-bold uppercase">Active</span>
                                 {/if}
                             </button>
                         {/each}
@@ -134,27 +202,27 @@
             {/if}
         </div>
 
-        <div class="flex justify-between items-end">
-            <div>
-                <h2 class="text-[10px] font-black text-bloom-accent uppercase tracking-[0.25em] mb-0.5">EQUITY PERFORMANCE</h2>
-                <div class="text-xl font-black text-white tracking-tighter uppercase">{currentConfig?.label || 'INDEX'}</div>
+        <!-- SEARCH + EXPAND/COLLAPSE -->
+        <div class="flex gap-2">
+            <div class="relative group flex-1">
+                <input type="text" bind:value={searchQuery} placeholder="Search symbol or name..."
+                    class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-2.5 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
+                />
+                <svg class="absolute left-3 top-3 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
             </div>
-            <div class="text-right">
-                <div class="text-[10px] font-bold text-bloom-text/40 uppercase tracking-widest">Updated</div>
-                <div class="text-xs font-mono font-bold text-bloom-accent">{lastPriceDate}</div>
-            </div>
-        </div>
-
-        <div class="relative group">
-            <input
-                type="text"
-                bind:value={searchQuery}
-                placeholder="Search symbol or company name..."
-                class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-2.5 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
-            />
-            <svg class="absolute left-3 top-3 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
+            <button onclick={toggleAll} title={allExpanded ? 'Collapse all' : 'Expand all'}
+                class="shrink-0 w-10 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
+            >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    {#if allExpanded}
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                    {:else}
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    {/if}
+                </svg>
+            </button>
         </div>
     </div>
 
@@ -172,57 +240,82 @@
                 </div>
                 <button onclick={() => loadSummaryData(currentIndex)} class="px-4 py-2 bg-bloom-accent/20 hover:bg-bloom-accent/30 border border-bloom-accent/50 rounded-lg text-white text-xs font-bold uppercase tracking-wider transition-all">Retry</button>
             </div>
+        {:else if searchQuery}
+            {#each sectorTree.flatMap(s => s.industries.flatMap(i => i.stocks)) as item}
+                {@render stockRow(item)}
+            {/each}
         {:else}
-            {#each filteredTickers as item}
-                <button
-                    data-symbol={item.symbol}
-                    onclick={() => selectTicker(item.symbol)}
-                    class="w-full px-3 py-3 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
-                    {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"
+            {#each sectorTree as sector}
+                <button onclick={() => toggleSector(sector.name)}
+                    class="w-full flex items-center justify-between px-4 py-3 bg-[#1a1a24] hover:bg-[#1e1e2a] border-b border-white/[0.06] border-l-[3px] border-l-bloom-accent/50 transition-all sticky top-0 z-10"
                 >
-                    {#if $selectedSymbol === item.symbol}
-                        <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
-                    {/if}
-
-                    <div class="w-[30%] text-left overflow-hidden pl-1">
-                        <div class="font-black text-white text-sm tracking-tight group-hover:text-bloom-accent transition-colors">{item.symbol}</div>
-                        <div class="text-[10px] font-bold text-bloom-text/30 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
+                    <div class="flex items-center gap-2.5">
+                        <svg class="w-3 h-3 text-white/40 transition-transform {openSectors.has(sector.name) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span class="text-[11px] font-black text-white uppercase tracking-widest">{sector.name}</span>
                     </div>
-
-                    <div class="w-[26%] text-right pr-2">
-                        <div class="text-[13px] font-mono font-black text-white leading-tight">
-                            {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                        </div>
-                        <div class="text-[11px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
-                            <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
-                            <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
-                        </div>
-                    </div>
-
-                    <div class="w-[27%] text-right font-mono text-[11px] leading-tight space-y-0.5">
-                        <div class="flex justify-end gap-1.5 text-white/40">
-                            <span class="font-bold">H</span>
-                            <span class="text-white/70 font-bold">{(item.high ?? 0).toFixed(2)}</span>
-                        </div>
-                        <div class="flex justify-end gap-1.5 text-white/40">
-                            <span class="font-bold">L</span>
-                            <span class="text-white/70 font-bold">{(item.low ?? 0).toFixed(2)}</span>
-                        </div>
-                    </div>
-
-                    <div class="w-[17%] text-right">
-                        <div class="text-[9px] font-black text-bloom-text/30 uppercase tracking-tighter">Vol</div>
-                        <div class="text-[11px] font-bold text-white/50">{formatVol(item.volume)}</div>
-                    </div>
+                    <span class="text-[10px] font-bold text-white/20 tabular-nums">{sector.stockCount}</span>
                 </button>
+
+                {#if openSectors.has(sector.name)}
+                    {#each sector.industries as industry}
+                        <div class="px-5 py-2 bg-white/[0.02] border-b border-white/[0.04] ml-1 border-l-[2px] border-l-white/[0.06]">
+                            <span class="text-[10px] font-bold text-white/45 uppercase tracking-wider">{industry.name}</span>
+                        </div>
+                        {#each industry.stocks as item}
+                            {@render stockRow(item)}
+                        {/each}
+                    {/each}
+                {/if}
             {/each}
         {/if}
     </div>
 </aside>
 
+{#snippet stockRow(item)}
+    <button
+        data-symbol={item.symbol}
+        onclick={() => selectTicker(item.symbol)}
+        class="w-full pl-6 pr-3 py-2.5 flex items-center border-b border-white/[0.03] hover:bg-white/[0.04] transition-all relative overflow-hidden group
+        {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10 !border-b-bloom-accent/20' : ''}"
+    >
+        {#if $selectedSymbol === item.symbol}
+            <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
+        {/if}
+        <div class="w-[28%] text-left overflow-hidden pl-1">
+            <div class="font-bold text-white/50 text-[13px] tracking-tight group-hover:text-bloom-accent transition-colors {$selectedSymbol === item.symbol ? '!text-white/80' : ''}">{item.symbol}</div>
+            <div class="text-[9px] font-medium text-white/20 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
+        </div>
+        <div class="w-[26%] text-right pr-2">
+            <div class="text-[13px] font-mono font-bold text-white/50 leading-tight {$selectedSymbol === item.symbol ? '!text-white/70' : ''}">
+                {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+            </div>
+            <div class="text-[12px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500/70' : 'text-red-500/70'}">
+                <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
+                <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
+            </div>
+        </div>
+        <div class="w-[28%] text-right font-mono text-[12px] leading-tight space-y-0.5">
+            <div class="flex justify-end gap-1.5 text-white/20">
+                <span class="font-bold">H</span>
+                <span class="text-white/40 font-bold">{(item.high ?? 0).toFixed(2)}</span>
+            </div>
+            <div class="flex justify-end gap-1.5 text-white/20">
+                <span class="font-bold">L</span>
+                <span class="text-white/40 font-bold">{(item.low ?? 0).toFixed(2)}</span>
+            </div>
+        </div>
+        <div class="w-[18%] text-right">
+            <div class="text-[9px] font-bold text-white/15 uppercase tracking-tighter">Vol</div>
+            <div class="text-[12px] font-bold text-white/35">{formatVol(item.volume)}</div>
+        </div>
+    </button>
+{/snippet}
+
 <style>
-    .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(168,85,247,0.3); }
+    .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 10px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.35); border-radius: 10px; min-height: 40px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(168,85,247,0.55); }
 </style>
