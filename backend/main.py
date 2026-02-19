@@ -117,11 +117,20 @@ manager = ConnectionManager()
 # DATA INGESTION — Per-index lazy loading from BigQuery → DuckDB
 # ============================================================================
 
+# Shared BigQuery client (reuse = faster connection pooling)
+_bq_client = None
+
+def get_bq_client():
+    global _bq_client
+    if _bq_client is None:
+        _bq_client = bigquery.Client(project=PROJECT_ID)
+    return _bq_client
+
+
 def _load_index_from_bq(index_key):
     """
     Load a single index from BigQuery into DuckDB. Thread-safe.
-    Called lazily on first access or on webhook refresh.
-    Returns row count or 0 on failure.
+    Optimized: simple SELECT from BQ (no window function), dedup done in DuckDB.
     """
     config = MARKET_INDICES.get(index_key)
     if not config or not config.get("table_id") or not PROJECT_ID:
@@ -129,27 +138,26 @@ def _load_index_from_bq(index_key):
 
     table_name = f"prices_{index_key}"
     latest_table = f"latest_{index_key}"
+    t0 = time.time()
 
     try:
-        bq_client = bigquery.Client(project=PROJECT_ID)
+        bq_client = get_bq_client()
+
+        # Simple flat SELECT — no window functions in BigQuery = much faster
         query = f"""
-            WITH RankedData AS (
-                SELECT symbol, name,
-                    CAST(trade_date AS DATE) as trade_date,
-                    CAST(open_price AS FLOAT64) as open,
-                    CAST(close_price AS FLOAT64) as close,
-                    CAST(high_price AS FLOAT64) as high,
-                    CAST(low_price AS FLOAT64) as low,
-                    CAST(volume AS INT) as volume,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY symbol, trade_date ORDER BY volume DESC
-                    ) as rn
-                FROM `{config['table_id']}`
-            )
-            SELECT symbol, name, trade_date, open, close, high, low, volume
-            FROM RankedData WHERE rn = 1
+            SELECT symbol, name,
+                CAST(trade_date AS DATE) as trade_date,
+                CAST(open_price AS FLOAT64) as open,
+                CAST(close_price AS FLOAT64) as close,
+                CAST(high_price AS FLOAT64) as high,
+                CAST(low_price AS FLOAT64) as low,
+                CAST(volume AS INT64) as volume
+            FROM `{config['table_id']}`
         """
         df = bq_client.query(query).to_dataframe()
+        t_bq = time.time()
+        print(f"  [{index_key}] BQ fetch: {t_bq - t0:.1f}s ({len(df)} raw rows)")
+
         if df.empty:
             return 0
 
@@ -159,10 +167,19 @@ def _load_index_from_bq(index_key):
         with db_lock:
             local_db.execute(f"DROP TABLE IF EXISTS {table_name}")
             local_db.register(f'temp_{index_key}', df)
-            local_db.execute(f"CREATE TABLE {table_name} AS SELECT * FROM temp_{index_key}")
+
+            # Dedup in DuckDB (sub-second vs seconds in BigQuery)
+            local_db.execute(f"""
+                CREATE TABLE {table_name} AS
+                SELECT symbol, name, trade_date, open, close, high, low, volume, market_index
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY symbol, trade_date ORDER BY volume DESC
+                    ) as rn FROM temp_{index_key}
+                ) WHERE rn = 1
+            """)
             local_db.execute(f"CREATE INDEX IF NOT EXISTS idx_{index_key} ON {table_name} (symbol, trade_date)")
 
-            # Latest prices table for sidebar
             local_db.execute(f"DROP TABLE IF EXISTS {latest_table}")
             local_db.execute(f"""
                 CREATE TABLE {latest_table} AS
@@ -172,15 +189,15 @@ def _load_index_from_bq(index_key):
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1
             """)
 
-            # Rebuild unified view for cross-index queries (metadata etc.)
             _rebuild_unified_view()
 
-        row_count = len(df)
-        print(f"  [{index_key}] Loaded {row_count} rows into DuckDB")
+        row_count = local_db.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        t_done = time.time()
+        print(f"  [{index_key}] DuckDB: {t_done - t_bq:.1f}s. Total: {t_done - t0:.1f}s ({row_count} rows)")
         return row_count
 
     except Exception as e:
-        print(f"  [{index_key}] BigQuery load error: {e}")
+        print(f"  [{index_key}] Load error: {e}")
         return 0
 
 
