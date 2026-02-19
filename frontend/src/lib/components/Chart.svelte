@@ -407,34 +407,42 @@
                 tooltip.innerHTML = `
                     <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[170px] gap-1.5 pointer-events-none">
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
+                        
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Open</span>
-                            <span class="text-xs font-black ${candleUp ? 'text-green-400' : 'text-red-400'}">${c}${openPrice.toFixed(2)}</span>
+                            <span class="text-xs text-white/70 font-black">${c}${openPrice.toFixed(2)}</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">High</span>
                             <span class="text-xs text-white/70 font-black">${c}${highPrice.toFixed(2)}</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Low</span>
                             <span class="text-xs text-white/70 font-black">${c}${lowPrice.toFixed(2)}</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
-                            <span class="text-xs text-white font-black">${c}${closePrice.toFixed(2)}</span>
+                            <span class="text-xs font-black ${candleUp ? 'text-green-400' : 'text-red-400'}">${c}${closePrice.toFixed(2)}</span>
                         </div>
+
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-white/40 uppercase font-bold">vs Live</span>
                             <span class="text-[10px] font-black ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-cyan-400/60 uppercase font-bold">MA 30</span>
                             <span class="text-xs text-cyan-400 font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-indigo-400/60 uppercase font-bold">MA 90</span>
                             <span class="text-xs text-indigo-400 font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
                         </div>
+                        
                         <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
                             <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
                             <span class="text-xs text-purple-400 font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
