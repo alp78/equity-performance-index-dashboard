@@ -5,12 +5,18 @@ Scheduled ETL job that keeps BigQuery up to date with the latest stock prices.
 
 Pipeline:  Yahoo Finance → Transform → GCS (audit trail) → BigQuery (warehouse)
 
-Runs once daily via Cloud Scheduler. Handles multiple market indices
-(S&P 500, EURO STOXX 50) in a single invocation — each index is processed
-independently so a failure in one doesn't block the others.
+Scheduling Strategy:
+  Two Cloud Scheduler jobs trigger this function at different times,
+  each targeting the index whose market has just closed:
 
-After loading new data, triggers a webhook to refresh the backend's
-in-memory cache (DuckDB) so the dashboard reflects changes immediately.
+    - 18:15 CET → POST { "index": "stoxx50" }   (EU markets close at 17:30 CET)
+    - 22:45 CET → POST { "index": "sp500" }      (US markets close at 16:00 EST / 22:00 CET)
+
+  If called without a body (or with { "index": "all" }), syncs all indices.
+
+  Each invocation retries up to 3 times with a 60-second delay if Yahoo
+  hasn't published the day's data yet (common on volatile days when
+  exchanges delay publishing final settlement prices).
 
 Environment variables:
   PROJECT_ID       — GCP project
@@ -27,6 +33,7 @@ from os import getenv
 import pandas as pd
 import yfinance as yf
 import requests
+import time
 from datetime import datetime, timedelta
 from io import StringIO
 from google.cloud import bigquery, storage
@@ -51,10 +58,13 @@ INDICES = {
     },
 }
 
+# Retry configuration for delayed data availability
+MAX_RETRIES = 3         # Number of attempts if Yahoo returns no data
+RETRY_DELAY_SEC = 60    # Wait between retries (60s = 1 minute)
+
 # Yahoo Finance exchange suffixes that must NOT be converted.
-# European tickers like DB1.DE or ASML.AS use a dot-based suffix to identify
-# the exchange. US tickers like BRK.B use dots for share classes, which Yahoo
-# expects as hyphens (BRK-B). This set lets us tell the two apart.
+# European tickers like DB1.DE use a dot suffix to identify the exchange.
+# US tickers like BRK.B use dots for share classes → converted to hyphens.
 EXCHANGE_SUFFIXES = {
     '.DE', '.PA', '.AS', '.BR', '.MI', '.MC', '.HE', '.VI',   # Europe
     '.L',  '.SW', '.ST', '.CO', '.OL',                         # UK, Swiss, Nordic
@@ -69,10 +79,8 @@ EXCHANGE_SUFFIXES = {
 
 def to_yf_ticker(db_ticker):
     """
-    Convert a database ticker to the format Yahoo Finance expects.
-    
-    European exchange suffixes (DB1.DE, MC.PA) are preserved as-is.
-    US share-class dots (BRK.B) are converted to hyphens (BRK-B).
+    Convert a database ticker to Yahoo Finance format.
+    European exchange suffixes are preserved; US share-class dots become hyphens.
     """
     for suffix in EXCHANGE_SUFFIXES:
         if db_ticker.upper().endswith(suffix.upper()):
@@ -91,14 +99,10 @@ def get_full_table_ref(table_id):
 
 def get_db_state(bq_client, table_ref):
     """
-    Query BigQuery to find out where we left off.
-    
-    Returns:
-      tickers  — list of symbols we track (e.g. ['AAPL', 'MSFT', ...])
-      max_date — the most recent trade date already in the table
-      name_map — dict of symbol → company name for attaching readable names
+    Query BigQuery to find where we left off.
+    Returns (tickers, max_date, name_map) for incremental loading.
     """
-    # Most recent date in the table (defaults to 2023-01-01 on first run)
+    # Most recent date (defaults to 2023-01-01 on first run)
     date_query = f"SELECT MAX(trade_date) as max_date FROM `{table_ref}`"
     result = list(bq_client.query(date_query).result())
     max_date = result[0].max_date if result and result[0].max_date else datetime(2023, 1, 1).date()
@@ -118,61 +122,73 @@ def get_db_state(bq_client, table_ref):
 
 
 # ============================================================================
-# STEP 2 — DOWNLOAD & TRANSFORM
+# STEP 2 — DOWNLOAD & TRANSFORM (with retry for delayed data)
 # ============================================================================
 
 def download_and_transform(tickers, name_map, start_date, today, last_date):
     """
-    Download price data from Yahoo Finance and transform it into flat records
-    ready for BigQuery insertion.
+    Download price data from Yahoo Finance with automatic retry.
     
-    Handles:
-      - Ticker format conversion (DB format → Yahoo format)
-      - Skipping dates that already exist in the database
-      - Graceful fallback when 'Open' is missing (uses 'Close' instead)
+    Yahoo sometimes delays publishing settlement prices by 10–30 minutes
+    after market close. The retry loop handles this gracefully.
     """
     if not tickers:
         return []
 
-    # Build DB ticker → Yahoo ticker mapping
     yf_map = {t: to_yf_ticker(t) for t in tickers}
     yf_tickers = list(yf_map.values())
 
     print(f"  Downloading {len(yf_tickers)} tickers from Yahoo Finance...")
     print(f"  Sample mappings: {dict(list(yf_map.items())[:5])}")
 
-    try:
-        data = yf.download(
-            yf_tickers,
-            start=start_date.strftime('%Y-%m-%d'),
-            end=(today + timedelta(days=1)).strftime('%Y-%m-%d'),
-            group_by='ticker',
-            auto_adjust=False,
-            threads=True,
-        )
-    except Exception as e:
-        print(f"  yfinance download failed: {e}")
+    # Retry loop: wait for Yahoo to have the data ready
+    data = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            data = yf.download(
+                yf_tickers,
+                start=start_date.strftime('%Y-%m-%d'),
+                end=(today + timedelta(days=1)).strftime('%Y-%m-%d'),
+                group_by='ticker',
+                auto_adjust=False,
+                threads=True,
+            )
+        except Exception as e:
+            print(f"  yfinance download failed (attempt {attempt}/{MAX_RETRIES}): {e}")
+            data = None
+
+        if data is not None and not data.empty:
+            # Check if today's data is actually present
+            actual_dates = data.index.strftime('%Y-%m-%d').unique()
+            if today.strftime('%Y-%m-%d') in actual_dates:
+                print(f"  Data confirmed for {today} on attempt {attempt}.")
+                break
+            else:
+                print(f"  Today's data not yet available (attempt {attempt}/{MAX_RETRIES}).")
+
+        if attempt < MAX_RETRIES:
+            print(f"  Retrying in {RETRY_DELAY_SEC}s...")
+            time.sleep(RETRY_DELAY_SEC)
+
+    if data is None or data.empty:
+        print("  No data after all retries (market closed or holiday).")
         return []
 
-    if data.empty:
-        print("  yfinance returned no data (market closed or holiday).")
-        return []
-
+    # Transform into flat records
     records = []
     is_multi_index = isinstance(data.columns, pd.MultiIndex)
     actual_dates = data.index.strftime('%Y-%m-%d').unique()
 
-    print(f"  Processing {len(actual_dates)} days of data for {len(tickers)} tickers...")
+    print(f"  Processing {len(actual_dates)} days for {len(tickers)} tickers...")
 
-    # Log which tickers Yahoo actually returned (helps debug missing data)
     if is_multi_index:
         returned_tickers = list(data.columns.get_level_values(0).unique())
-        print(f"  Yahoo returned data for {len(returned_tickers)} tickers: {returned_tickers[:10]}...")
+        print(f"  Yahoo returned {len(returned_tickers)} tickers: {returned_tickers[:10]}...")
 
     for date_str in actual_dates:
         current_data_date = datetime.strptime(date_str, '%Y-%m-%d').date()
 
-        # Safety: skip any date we already have (prevents duplicates)
+        # Skip dates we already have (idempotency guard)
         if current_data_date <= last_date:
             continue
 
@@ -180,7 +196,6 @@ def download_and_transform(tickers, name_map, start_date, today, last_date):
             try:
                 yf_ticker = yf_map[original_ticker]
 
-                # Extract this ticker's row for the current date
                 if is_multi_index:
                     if yf_ticker not in data.columns.levels[0]:
                         continue
@@ -188,11 +203,9 @@ def download_and_transform(tickers, name_map, start_date, today, last_date):
                 else:
                     ticker_data = data.loc[date_str]
 
-                # Skip if market was closed for this ticker on this day
                 if pd.isna(ticker_data['Close']):
                     continue
 
-                # Fallback: use Close as Open if Open is missing
                 raw_open = ticker_data.get('Open')
                 open_p = float(raw_open) if pd.notna(raw_open) else float(ticker_data['Close'])
                 company_name = name_map.get(original_ticker, original_ticker)
@@ -207,7 +220,6 @@ def download_and_transform(tickers, name_map, start_date, today, last_date):
                     "low_price":   float(ticker_data['Low']),
                     "volume":      int(ticker_data['Volume']),
                 })
-
             except Exception as e:
                 print(f"  Skipping {original_ticker} on {date_str}: {e}")
                 continue
@@ -220,14 +232,7 @@ def download_and_transform(tickers, name_map, start_date, today, last_date):
 # ============================================================================
 
 def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix, today):
-    """
-    Two-stage load:
-      1. GCS  — raw JSON saved as an audit trail (bronze layer)
-      2. BigQuery — appended as new rows (silver/gold layer)
-    
-    If BigQuery fails, the GCS file is still there for recovery or debugging.
-    """
-    # GCS: save raw JSON for auditability
+    """Two-stage load: GCS (audit trail) then BigQuery (warehouse)."""
     file_date_str = today.strftime('%Y%m%d')
     blob_name = f"sync/{gcs_prefix}_{file_date_str}.json"
 
@@ -236,7 +241,6 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     )
     print(f"  GCS: uploaded {blob_name}")
 
-    # BigQuery: append new records
     ndjson = "\n".join([json.dumps(r) for r in records])
     job_config = bigquery.LoadJobConfig(
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
@@ -244,11 +248,55 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     )
 
     bq_client.load_table_from_file(
-        StringIO(ndjson),
-        table_ref,
-        job_config=job_config,
+        StringIO(ndjson), table_ref, job_config=job_config,
     ).result()
     print(f"  BigQuery: loaded {len(records)} records into {table_ref}")
+
+
+# ============================================================================
+# SYNC LOGIC (per index)
+# ============================================================================
+
+def sync_index(bq_client, storage_client, index_key, config, today):
+    """
+    Run the full ETL pipeline for a single index.
+    Returns (record_count, status_message).
+    """
+    table_ref = get_full_table_ref(config["table_id"])
+    print(f"\n[{index_key.upper()}] Processing (table: {table_ref})...")
+
+    # 1. Check state
+    try:
+        tickers, last_date, name_map = get_db_state(bq_client, table_ref)
+        print(f"  Found {len(tickers)} tickers. Last DB date: {last_date}")
+    except Exception as e:
+        print(f"  CRITICAL: DB state error for {index_key}: {e}")
+        return 0, f"Error: {e}"
+
+    if not tickers:
+        print(f"  No tickers found for {index_key}.")
+        return 0, "No tickers"
+
+    # 2. Date range
+    start_date = last_date + timedelta(days=1)
+    if start_date > today:
+        print(f"  {index_key} is already up to date.")
+        return 0, "Up to date"
+
+    print(f"  Fetching data from {start_date} to {today}")
+
+    # 3. Download & transform (with retry)
+    records = download_and_transform(tickers, name_map, start_date, today, last_date)
+    if not records:
+        return 0, "No new data"
+
+    # 4. Load
+    try:
+        load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, index_key, today)
+        return len(records), f"Synced {len(records)} records"
+    except Exception as e:
+        print(f"  Load failed for {index_key}: {e}")
+        return 0, f"Load error: {e}"
 
 
 # ============================================================================
@@ -258,77 +306,47 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
 @functions_framework.http
 def sync_stocks(request):
     """
-    HTTP-triggered Cloud Function (called daily by Cloud Scheduler).
+    HTTP-triggered Cloud Function. Accepts an optional JSON body to target
+    a specific index:
     
-    For each configured index:
-      1. Checks where we left off in BigQuery
-      2. Downloads only the missing days from Yahoo Finance
-      3. Saves to GCS (audit) and BigQuery (warehouse)
+      POST { "index": "stoxx50" }  → sync only STOXX 50
+      POST { "index": "sp500" }    → sync only S&P 500
+      POST { "index": "all" }      → sync all indices (default)
+      POST (no body)               → sync all indices
     
-    After all indices are processed, fires a webhook to refresh the
-    backend's in-memory cache so the dashboard updates immediately.
-    
-    Idempotent: running twice on the same day is safe — it skips
-    dates that already exist.
+    Cloud Scheduler setup (two jobs):
+      - stoxx50-sync: 18:15 CET daily → body: { "index": "stoxx50" }
+      - sp500-sync:   22:45 CET daily → body: { "index": "sp500" }
     """
     bq_client = bigquery.Client()
     storage_client = storage.Client()
     today = datetime.now().date()
 
-    print("--- Starting Multi-Index Sync Job ---")
+    # Parse which index to sync from the request body
+    target_index = "all"
+    try:
+        body = request.get_json(silent=True) or {}
+        target_index = body.get("index", "all").lower()
+    except:
+        pass
+
+    # Determine which indices to process
+    if target_index in INDICES:
+        indices_to_sync = {target_index: INDICES[target_index]}
+    else:
+        indices_to_sync = INDICES
+
+    print(f"--- Starting Sync Job (target: {target_index}) ---")
 
     total_records = 0
     results = {}
 
-    for index_key, config in INDICES.items():
-        table_ref = get_full_table_ref(config["table_id"])
-        print(f"\n[{index_key.upper()}] Processing (table: {table_ref})...")
+    for index_key, config in indices_to_sync.items():
+        count, status = sync_index(bq_client, storage_client, index_key, config, today)
+        total_records += count
+        results[index_key] = status
 
-        # 1. Check where we left off
-        try:
-            tickers, last_date, name_map = get_db_state(bq_client, table_ref)
-            print(f"  Found {len(tickers)} tickers. Last DB date: {last_date}")
-        except Exception as e:
-            print(f"  CRITICAL: Error fetching DB state for {index_key}: {e}")
-            results[index_key] = f"Error: {e}"
-            continue
-
-        if not tickers:
-            print(f"  No tickers found for {index_key}.")
-            results[index_key] = "No tickers"
-            continue
-
-        # 2. Determine date range (day after last record → today)
-        start_date = last_date + timedelta(days=1)
-        if start_date > today:
-            print(f"  {index_key} is already up to date.")
-            results[index_key] = "Up to date"
-            continue
-
-        print(f"  Fetching data from {start_date} to {today}")
-
-        # 3. Download from Yahoo & transform
-        records = download_and_transform(tickers, name_map, start_date, today, last_date)
-
-        if not records:
-            print(f"  No new valid records for {index_key}.")
-            results[index_key] = "No new data"
-            continue
-
-        # 4. Load to GCS + BigQuery
-        try:
-            load_to_gcs_and_bq(
-                bq_client, storage_client, records,
-                table_ref, index_key, today,
-            )
-            total_records += len(records)
-            results[index_key] = f"Synced {len(records)} records"
-        except Exception as e:
-            print(f"  Load failed for {index_key}: {e}")
-            results[index_key] = f"Load error: {e}"
-            continue
-
-    # 5. Notify the backend to refresh its in-memory cache (single webhook for all indices)
+    # Notify the backend to refresh its DuckDB cache
     if total_records > 0:
         try:
             api_url = getenv("BACKEND_API_URL")
@@ -339,13 +357,10 @@ def sync_stocks(request):
             else:
                 print("\nWebhook skipped: BACKEND_API_URL not set.")
         except requests.exceptions.ReadTimeout:
-            # Expected: we sent the request successfully but didn't wait for the
-            # backend to finish reloading. That's fine — it runs in the background.
             print("Webhook sent (ReadTimeout ignored).")
         except Exception as e:
             print(f"Webhook warning: {e}")
 
-    # 6. Return summary
-    summary = f"Sync complete. Total: {total_records} records. Details: {json.dumps(results)}"
+    summary = f"Sync complete (target: {target_index}). Total: {total_records} records. Details: {json.dumps(results)}"
     print(f"\n--- {summary} ---")
     return summary, 200

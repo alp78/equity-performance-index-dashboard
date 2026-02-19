@@ -1,17 +1,14 @@
 <!--
   RankingPanel Component
   ======================
-  Displays the top 3 and bottom 3 performing stocks for the selected
-  index and time period, as horizontal bar charts.
-
-  Data flow:
-    - Receives `currentPeriod` as a prop from the parent page (e.g. '1y', '3mo')
-    - Reads `marketIndex` from the global store (e.g. 'sp500', 'stoxx50')
-    - Fetches rankings from the backend whenever either value changes
-    - Caches results in memory so switching back to a previous period is instant
-
-  The bar widths are normalized relative to the best/worst performer
-  in each section, so the top gainer always fills ~75% of the row.
+  Displays top 3 / bottom 3 performers as bar charts.
+  
+  Two modes:
+    - Period: currentPeriod = '1y' etc → /rankings endpoint
+    - Custom: customRange = { start, end } → /rankings/custom endpoint
+  
+  Custom range dates are shown next to "Top Movers" title.
+  Index label always shown on the second line.
 -->
 
 <script>
@@ -19,56 +16,55 @@
     import { API_BASE_URL } from '$lib/config.js';
     import { marketIndex } from '$lib/stores.js';
 
-    // --- PROPS ---
-    let { currentPeriod = '1y' } = $props();
+    let { currentPeriod = '1y', customRange = null } = $props();
 
-    // --- LOCAL STATE ---
     let localRankings = $state(null);
     let localLoading = $state(false);
     let currentIndex = $derived($marketIndex);
-
-    // In-memory cache: { "sp500_1y": {...}, "stoxx50_3mo": {...} }
-    // Prevents redundant API calls when toggling between periods
     let rankingCache = {};
-
-    // Tracks the in-flight request so we can cancel it if the user
-    // clicks a new period before the previous one finishes
     let abortController = null;
 
-    // Human-readable labels for the index badge
     const INDEX_LABELS = {
         sp500: 'S&P 500',
         stoxx50: 'EURO STOXX 50',
     };
 
-    // --- DATA FETCHING ---
-    async function load(period, index) {
+    function formatDateShort(dateStr) {
+        if (!dateStr) return '';
+        const d = new Date(dateStr + 'T00:00:00');
+        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    async function load(period, index, range) {
         if (!browser) return;
 
-        // Check cache first — instant if we've already fetched this combo
-        const cacheKey = `${index}_${period}`;
+        let url, cacheKey;
+        if (range) {
+            cacheKey = `${index}_custom_${range.start}_${range.end}`;
+            url = `${API_BASE_URL}/rankings/custom?start=${range.start}&end=${range.end}&index=${index}&t=${Date.now()}`;
+        } else if (period) {
+            cacheKey = `${index}_${period}`;
+            url = `${API_BASE_URL}/rankings?period=${period}&index=${index}&t=${Date.now()}`;
+        } else {
+            return;
+        }
+
         if (rankingCache[cacheKey]) {
             localRankings = rankingCache[cacheKey];
             return;
         }
 
-        // Cancel any in-flight request to prevent stale data overwriting fresh data
         if (abortController) abortController.abort();
         abortController = new AbortController();
-        const signal = abortController.signal;
 
         localLoading = true;
         try {
-            const res = await fetch(
-                `${API_BASE_URL}/rankings?period=${period}&index=${index}&t=${Date.now()}`,
-                { signal },
-            );
+            const res = await fetch(url, { signal: abortController.signal });
             if (!res.ok) throw new Error("API Error");
             const data = await res.json();
             localRankings = data;
             rankingCache[cacheKey] = data;
         } catch (err) {
-            // AbortError means *we* cancelled it on purpose — not a real error
             if (err.name !== 'AbortError') {
                 console.error("Ranking Load Error:", err);
                 localRankings = null;
@@ -78,14 +74,10 @@
         }
     }
 
-    // Re-fetch whenever the period or index changes
     $effect(() => {
-        load(currentPeriod, currentIndex);
+        load(currentPeriod, currentIndex, customRange);
     });
 
-    // --- BAR SCALING ---
-    // Finds the largest absolute value in a list so we can scale bars proportionally.
-    // Example: if the top gainer is +50%, its bar fills 75% of the row width.
     function getSubsetMax(items) {
         if (!items || items.length === 0) return 1;
         return Math.max(...items.map(i => Math.abs(i.value || 0)), 1);
@@ -94,11 +86,23 @@
 
 <div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-hidden shadow-2xl backdrop-blur-md">
 
-    <!-- Header: period label + index badge -->
+    <!-- Header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
-        <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
-            Period Performance ({currentPeriod.toUpperCase()})
-        </h3>
+        <div class="flex items-center gap-2">
+            <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
+                Top Movers
+            </h3>
+            {#if customRange}
+                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">
+                    {formatDateShort(customRange.start)} → {formatDateShort(customRange.end)}
+                </span>
+            {:else if currentPeriod}
+                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">
+                    {currentPeriod.toUpperCase()}
+                </span>
+            {/if}
+        </div>
+        <!-- Index label always visible -->
         <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
             {INDEX_LABELS[currentIndex] || currentIndex}
         </span>
@@ -111,8 +115,6 @@
             {@const botMax = getSubsetMax(data.bottom)}
 
             <div class="flex-1 flex flex-col min-h-0 gap-1">
-
-                <!-- TOP PERFORMERS: green bars growing left-to-right -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / topMax) * 75}
@@ -127,10 +129,8 @@
                     {/each}
                 </div>
 
-                <!-- Divider -->
                 <div class="flex-none h-px bg-white/10 mx-2"></div>
 
-                <!-- BOTTOM PERFORMERS: red bars growing right-to-left -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / botMax) * 75}
@@ -147,9 +147,7 @@
                     {/each}
                 </div>
             </div>
-
         {:else}
-            <!-- Loading spinner while waiting for data -->
             <div class="flex-1 flex items-center justify-center">
                 <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
@@ -159,10 +157,5 @@
 
 <style>
     div { user-select: none; }
-
-    /* Smooth animation for the bars growing/shrinking on data change */
-    .transition-all {
-        transition-property: all;
-        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-    }
+    .transition-all { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
 </style>

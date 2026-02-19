@@ -629,6 +629,128 @@ async def metadata(symbol: str):
         return {"symbol": symbol, "name": symbol}
 
 
+@app.get("/rankings/custom")
+async def get_custom_rankings(start: str, end: str, index: str = "sp500"):
+    """
+    Returns top 3 and bottom 3 performers between two arbitrary dates.
+    Used by the RankingPanel when the user selects a custom date range on the chart.
+    
+    Query params:
+      start — start date (YYYY-MM-DD)
+      end   — end date (YYYY-MM-DD)
+      index — market index key
+    """
+    if index not in MARKET_INDICES:
+        index = "sp500"
+    cache_key = f"rankings_custom_{start}_{end}_{index}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    try:
+        df = local_db.execute(f"""
+            WITH Filtered AS (
+                SELECT symbol, close, trade_date
+                FROM prices
+                WHERE market_index = '{index}'
+                  AND trade_date >= '{start}'
+                  AND trade_date <= '{end}'
+            ),
+            Ranked AS (
+                SELECT symbol,
+                    FIRST_VALUE(close) OVER (
+                        PARTITION BY symbol ORDER BY trade_date ASC
+                    ) as first_val,
+                    LAST_VALUE(close) OVER (
+                        PARTITION BY symbol ORDER BY trade_date ASC
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                    ) as last_val,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol ORDER BY trade_date DESC
+                    ) as rn
+                FROM Filtered
+            )
+            SELECT symbol,
+                ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
+            FROM Ranked
+            WHERE rn = 1
+            ORDER BY value DESC
+        """).df()
+
+        result = {
+            "selected": {
+                "top":    df.head(3).to_dict('records'),
+                "bottom": df.tail(3).sort_values('value').to_dict('records'),
+            }
+        }
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Custom Ranking Error: {e}")
+        return {"selected": {"top": [], "bottom": []}}
+
+
+@app.get("/rankings/custom")
+async def get_rankings_custom(start: str, end: str, index: str = "sp500"):
+    """
+    Returns top 3 and bottom 3 performers between two arbitrary dates.
+    Used by the brush selection feature on the chart.
+    
+    Example: /rankings/custom?start=2024-03-01&end=2024-06-15&index=sp500
+    """
+    if index not in MARKET_INDICES:
+        index = "sp500"
+    cache_key = f"rankings_custom_{start}_{end}_{index}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    try:
+        df = local_db.execute(f"""
+            WITH Filtered AS (
+                SELECT symbol, close, trade_date
+                FROM prices
+                WHERE market_index = '{index}'
+                  AND trade_date >= '{start}'
+                  AND trade_date <= '{end}'
+            ),
+            Ranked AS (
+                SELECT symbol,
+                    FIRST_VALUE(close) OVER (
+                        PARTITION BY symbol ORDER BY trade_date ASC
+                    ) as first_val,
+                    LAST_VALUE(close) OVER (
+                        PARTITION BY symbol ORDER BY trade_date ASC
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                    ) as last_val,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY symbol ORDER BY trade_date DESC
+                    ) as rn
+                FROM Filtered
+            )
+            SELECT symbol,
+                ((last_val - first_val) / NULLIF(first_val, 0)) * 100 as value
+            FROM Ranked
+            WHERE rn = 1
+            ORDER BY value DESC
+        """).df()
+
+        result = {
+            "selected": {
+                "top":    df.head(3).to_dict('records'),
+                "bottom": df.tail(3).sort_values('value').to_dict('records'),
+            },
+            "range": {"start": start, "end": end},
+        }
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Custom Ranking Error: {e}")
+        return {"selected": {"top": [], "bottom": []}, "range": {"start": start, "end": end}}
+
+
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
