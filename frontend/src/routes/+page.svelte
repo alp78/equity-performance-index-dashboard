@@ -3,7 +3,7 @@
 -->
 
 <script>
-    import { selectedSymbol, loadSummaryData, loadRankingsData, marketIndex } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, loadRankingsData, marketIndex, currentCurrency, INDEX_CONFIG } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Chart from '$lib/components/Chart.svelte';
@@ -30,15 +30,13 @@
     let currentPeriod = $state('1y');
     let isInitialLoading = $state(true);
 
-    // Track symbol→name mapping. Keyed by symbol so switching stocks
-    // doesn't flash a wrong name during the metadata fetch.
     let metadataCache = $state({});
     let currentSymbol = $derived($selectedSymbol);
+    let ccy = $derived($currentCurrency);
 
     let selectMode = $state(false);
     let customRange = $state(null);
 
-    // Resolve display name: check metadata cache first, then assets, then just symbol
     let displayName = $derived(() => {
         const cached = metadataCache[currentSymbol];
         if (cached) return cached;
@@ -78,10 +76,7 @@
             customRange = null;
             return;
         }
-        if (selectMode) {
-            selectMode = false;
-            return;
-        }
+        if (selectMode) { selectMode = false; return; }
         selectMode = true;
         customRange = null;
     }
@@ -97,22 +92,14 @@
             const summaryResult = await loadSummaryData($marketIndex);
             assets = summaryResult || [];
             await loadRankingsData('1y', $marketIndex);
-        } catch (e) {
-            console.error("Initial data fetch error:", e);
-        }
+        } catch (e) { console.error("Initial data fetch error:", e); }
     }
 
     async function fetchStockData(symbol) {
         if (!symbol) return;
-
-        // Fetch metadata — store in cache keyed by symbol
         fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
             .then(r => r.ok ? r.json() : null)
-            .then(data => {
-                if (data && data.name) {
-                    metadataCache[symbol] = data.name;
-                }
-            })
+            .then(data => { if (data && data.name) metadataCache[symbol] = data.name; })
             .catch(() => {});
 
         let retries = 2;
@@ -149,9 +136,7 @@
     $effect(() => {
         const period = currentPeriod;
         if (untrack(() => isInitialLoading)) return;
-        if (period) {
-            loadRankingsData(period, $marketIndex).catch(console.error);
-        }
+        if (period) loadRankingsData(period, $marketIndex).catch(console.error);
     });
 </script>
 
@@ -184,7 +169,6 @@
                     >
                         {selectMode ? '⊞ SELECTING...' : 'CUSTOM RANGE'}
                     </button>
-
                     {#if customRange}
                         <span class="text-[10px] font-bold text-orange-400/80 tabular-nums whitespace-nowrap pr-2">
                             {fmtDate(customRange.start)} → {fmtDate(customRange.end)}
@@ -200,16 +184,13 @@
                             {currentPeriod === p.toLowerCase()
                                 ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] scale-105'
                                 : 'text-white/40 hover:bg-white/5 hover:text-white'}"
-                        >
-                            {p}
-                        </button>
+                        >{p}</button>
                     {/each}
                 </div>
             </div>
         </header>
 
         <div class="flex-1 flex flex-col gap-6 min-h-0 min-w-0 z-0">
-
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
                 {selectMode ? 'ring-2 ring-orange-500/30' : ''}">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
@@ -227,6 +208,7 @@
                         {currentPeriod}
                         {selectMode}
                         {customRange}
+                        currency={ccy}
                         onResetPeriod={handleResetPeriod}
                         onRangeSelect={handleRangeSelect}
                     />

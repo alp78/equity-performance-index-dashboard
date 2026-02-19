@@ -1,9 +1,8 @@
 <!--
   Chart Component
   ===============
-  Candlestick + faint area overlay for trend visibility.
-  Red/green semi-transparent candles.
-  Price line sticks to top/bottom edge when off-screen (greyed out).
+  Candlestick + faint area overlay. Currency symbol passed as prop.
+  Sticky price label pins to top/bottom when off-screen.
 -->
 
 <script>
@@ -15,6 +14,7 @@
         currentPeriod = '1y',
         selectMode = false,
         customRange = null,
+        currency = '$',
         onResetPeriod = null,
         onRangeSelect = null,
     } = $props();
@@ -24,6 +24,7 @@
     let brushOverlay;
     let rangeLineStart;
     let rangeLineEnd;
+    let stickyLabel;
 
     let chart;
     let candleSeries, areaSeries, volumeSeries, ma30Series, ma90Series;
@@ -122,7 +123,6 @@
 
     function updateRangeLines() {
         if (!rangeLineStart || !rangeLineEnd || !chart) return;
-
         if (!customRange || !customRange.start || !customRange.end) {
             rangeLineStart.style.display = 'none';
             rangeLineEnd.style.display = 'none';
@@ -145,7 +145,6 @@
 
         rangeLineStart.style.display = (startX !== null && startX >= 0) ? 'block' : 'none';
         if (startX !== null) rangeLineStart.style.left = `${startX}px`;
-
         rangeLineEnd.style.display = (endX !== null && endX >= 0) ? 'block' : 'none';
         if (endX !== null) rangeLineEnd.style.left = `${endX}px`;
     }
@@ -155,7 +154,6 @@
     function handleWheel(event) {
         if (selectMode || !chart || processedData.length === 0) return;
         event.preventDefault();
-
         const timeScale = chart.timeScale();
         const range = timeScale.getVisibleLogicalRange();
         if (!range) return;
@@ -163,14 +161,12 @@
         const rangeSize = range.to - range.from;
         const zoomFactor = event.deltaY > 0 ? 0.15 : -0.15;
         const delta = rangeSize * zoomFactor;
-
         const rect = chartContainer.getBoundingClientRect();
         const cursorRatio = (event.clientX - rect.left) / rect.width;
 
         let newFrom = range.from - delta * cursorRatio;
         let newTo = range.to + delta * (1 - cursorRatio);
         if (newTo - newFrom < 3) return;
-
         const clamped = clampRange(newFrom, newTo);
         timeScale.setVisibleLogicalRange(clamped);
     }
@@ -205,7 +201,6 @@
     function handleMouseMove(event) {
         const rect = chartContainer.getBoundingClientRect();
         const x = event.clientX - rect.left;
-
         if (isBrushing && brushOverlay) {
             const left = Math.min(brushStartX, x);
             const width = Math.abs(x - brushStartX);
@@ -213,7 +208,6 @@
             brushOverlay.style.width = `${width}px`;
             return;
         }
-
         if (isDragging && dragStartRange) {
             const rangeSize = dragStartRange.to - dragStartRange.from;
             const pixelDelta = event.clientX - dragStartX;
@@ -233,7 +227,6 @@
             if (brushStartTime && endTime && brushStartTime !== endTime) {
                 const start = brushStartTime < endTime ? brushStartTime : endTime;
                 const end = brushStartTime < endTime ? endTime : brushStartTime;
-
                 const startIdx = processedData.findIndex(d => d.time >= start);
                 const endIdx = processedData.findIndex(d => d.time >= end);
                 if (startIdx >= 0 && endIdx >= 0) {
@@ -241,14 +234,11 @@
                     chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
                     setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
                 }
-
                 if (onRangeSelect) onRangeSelect({ start, end });
             }
-
             if (brushOverlay) brushOverlay.style.display = 'none';
             return;
         }
-
         if (isDragging) {
             isDragging = false;
             dragStartRange = null;
@@ -257,11 +247,8 @@
     }
 
     // --- PRICE LINE VISIBILITY ---
-    // The price line ALWAYS stays at lastClosePrice and never moves.
-    // lightweight-charts clips the axis label when off-screen, so we use
-    // an HTML label on the right edge that only appears when clipped.
-
-    let stickyLabel;
+    // Price line stays at lastClosePrice always. When off-screen,
+    // native axis label is hidden and HTML sticky label shown at edge.
 
     function updatePriceLineVisibility() {
         if (!chart || !candleSeries || lastClosePrice === 0 || !stickyLabel) return;
@@ -273,29 +260,21 @@
             const isVisible = (y !== null && y >= priceAreaTop && y <= priceAreaBottom);
 
             if (isVisible) {
-                // Native axis label is showing — hide HTML label
                 stickyLabel.style.display = 'none';
-                if (activePriceLine) {
-                    activePriceLine.applyOptions({ axisLabelVisible: true });
-                }
+                if (activePriceLine) activePriceLine.applyOptions({ axisLabelVisible: true });
             } else {
-                // Native label is clipped — show HTML label stuck to edge
-                if (activePriceLine) {
-                    activePriceLine.applyOptions({ axisLabelVisible: false });
-                }
+                if (activePriceLine) activePriceLine.applyOptions({ axisLabelVisible: false });
                 stickyLabel.style.display = 'block';
                 const priceText = lastClosePrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                stickyLabel.textContent = priceText;
 
                 if (y === null || y < priceAreaTop) {
-                    // Price above view — stick to top
                     stickyLabel.style.top = `${priceAreaTop}px`;
                     stickyLabel.style.bottom = 'auto';
                 } else {
-                    // Price below view — stick to bottom of price area
                     stickyLabel.style.top = `${priceAreaBottom - 14}px`;
                     stickyLabel.style.bottom = 'auto';
                 }
-                stickyLabel.textContent = priceText;
             }
         } catch(e) {}
     }
@@ -306,7 +285,6 @@
         if (!selectMode && brushOverlay) brushOverlay.style.display = 'none';
     });
 
-    // Update range lines when customRange changes
     $effect(() => {
         const _range = customRange;
         setTimeout(() => updateRangeLines(), 30);
@@ -355,7 +333,6 @@
         observer = new MutationObserver(nuke);
         observer.observe(chartContainer, { childList: true, subtree: true });
 
-        // --- CANDLE SERIES: red/green semi-transparent ---
         candleSeries = chart.addSeries(CandlestickSeries, {
             upColor: 'rgba(34, 197, 94, 0.6)',
             downColor: 'rgba(239, 68, 68, 0.6)',
@@ -367,7 +344,6 @@
             priceLineVisible: false,
         });
 
-        // --- AREA SERIES: faint purple trend overlay ---
         areaSeries = chart.addSeries(AreaSeries, {
             lineColor: 'rgba(168, 85, 247, 0.35)',
             topColor: 'rgba(168, 85, 247, 0.08)',
@@ -407,6 +383,7 @@
             const vData = param.seriesData.get(volumeSeries);
             const m30Data = param.seriesData.get(ma30Series);
             const m90Data = param.seriesData.get(ma90Series);
+            const c = currency;
 
             if (pData && processedData.length > 0) {
                 const closePrice = pData.close;
@@ -432,19 +409,19 @@
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Open</span>
-                            <span class="text-xs font-black ${candleUp ? 'text-green-400' : 'text-red-400'}">$${openPrice.toFixed(2)}</span>
+                            <span class="text-xs font-black ${candleUp ? 'text-green-400' : 'text-red-400'}">${c}${openPrice.toFixed(2)}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">High</span>
-                            <span class="text-xs text-white/70 font-black">$${highPrice.toFixed(2)}</span>
+                            <span class="text-xs text-white/70 font-black">${c}${highPrice.toFixed(2)}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Low</span>
-                            <span class="text-xs text-white/70 font-black">$${lowPrice.toFixed(2)}</span>
+                            <span class="text-xs text-white/70 font-black">${c}${lowPrice.toFixed(2)}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
-                            <span class="text-xs text-white font-black">$${closePrice.toFixed(2)}</span>
+                            <span class="text-xs text-white font-black">${c}${closePrice.toFixed(2)}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-white/40 uppercase font-bold">vs Live</span>
@@ -452,11 +429,11 @@
                         </div>
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-cyan-400/60 uppercase font-bold">MA 30</span>
-                            <span class="text-xs text-cyan-400 font-bold">${m30Data ? '$' + m30Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-xs text-cyan-400 font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-indigo-400/60 uppercase font-bold">MA 90</span>
-                            <span class="text-xs text-indigo-400 font-bold">${m90Data ? '$' + m90Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-xs text-indigo-400 font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
                         </div>
                         <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
                             <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
@@ -471,7 +448,6 @@
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
 
-        // Double-click: zoom to custom range or active period
         chartContainer.addEventListener('dblclick', () => {
             if (customRange && customRange.start && customRange.end) {
                 const startIdx = processedData.findIndex(d => d.time >= customRange.start);
@@ -510,30 +486,20 @@
             raw.forEach(item => uniqueMap.set(item.time, item));
             processedData = Array.from(uniqueMap.values()).sort((a, b) => new Date(a.time) - new Date(b.time));
 
-            // Candle data (OHLC)
             candleSeries.setData(processedData.map(d => ({
-                time: d.time,
-                open: d.open || d.close,
-                high: d.high || d.close,
-                low: d.low || d.close,
-                close: d.close,
+                time: d.time, open: d.open || d.close, high: d.high || d.close,
+                low: d.low || d.close, close: d.close,
             })));
-
-            // Faint area overlay (close only)
             areaSeries.setData(processedData.map(d => ({ time: d.time, value: d.close })));
-
-            // Moving averages
             ma30Series.setData(processedData.map(d => ({ time: d.time, value: d.ma30 })));
             ma90Series.setData(processedData.map(d => ({ time: d.time, value: d.ma90 })));
 
-            // Volume
             const maxVol = Math.max(...processedData.map(d => d.volume));
             volumeSeries.setData(processedData.map(d => ({
                 time: d.time, value: d.volume,
                 color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
             })));
 
-            // Price line at last close
             if (activePriceLine) { try { candleSeries.removePriceLine(activePriceLine); } catch(e) {} }
             lastClosePrice = processedData[processedData.length - 1].close;
             activePriceLine = candleSeries.createPriceLine({
@@ -544,7 +510,6 @@
             const dataKey = `${processedData[0]?.time}_${processedData.length}`;
             if (dataKey !== lastDataKey) {
                 lastDataKey = dataKey;
-
                 if (currentPeriod) {
                     applyPeriodRange(currentPeriod);
                 } else if (customRange && customRange.start && customRange.end) {
@@ -555,14 +520,9 @@
                         isProgrammaticRangeChange = true;
                         chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
                         setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
-                    } else {
-                        applyPeriodRange('1y');
-                    }
-                } else {
-                    applyPeriodRange('1y');
-                }
+                    } else { applyPeriodRange('1y'); }
+                } else { applyPeriodRange('1y'); }
             }
-
             setTimeout(() => updatePriceLineVisibility(), 100);
         }
     });
@@ -605,7 +565,6 @@
     <div bind:this={rangeLineStart} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);"></div>
     <div bind:this={rangeLineEnd} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);"></div>
     <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-75"></div>
-    <!-- Sticky price axis label: appears on right edge when native label is clipped -->
     <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[11px] font-mono font-bold tabular-nums text-white bg-white/20 px-1.5 py-0.5 rounded-l" style="backdrop-filter: blur(4px);"></div>
 </div>
 

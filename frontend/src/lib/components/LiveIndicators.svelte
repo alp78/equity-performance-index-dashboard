@@ -8,13 +8,27 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import { getWebSocketUrl } from '$lib/config.js';
-    import { marketIndex } from '$lib/stores.js';
+    import { marketIndex, currentCurrency, INDEX_CONFIG } from '$lib/stores.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
     let quotes = $state({});
     let socket;
     let currentIndex = $derived($marketIndex);
+    let indexCurrency = $derived($currentCurrency);
+
+    // Per-symbol currency for non-dynamic panels (Global Macro)
+    const SYMBOL_CURRENCY = {
+        'BINANCE:BTCUSDT': '$',
+        'FXCM:XAU/USD': '$',
+        'FXCM:EUR/USD': '',  // unitless ratio
+    };
+
+    // Resolve currency: dynamic panels use index currency, static panels use symbol map
+    function getCurrency(symbol) {
+        if (dynamicByIndex) return indexCurrency;
+        return SYMBOL_CURRENCY[symbol] ?? '$';
+    }
 
     // Gold trades nearly 23 hours (Sun 6pm–Fri 5pm ET on COMEX Globex).
     // Forex is 24/5 (Sun 5pm–Fri 5pm ET).
@@ -128,6 +142,7 @@
             {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0 }}
             {@const status = getStatus(symbol, data)}
             {@const hasData = data.price > 0}
+            {@const ccy = getCurrency(symbol)}
 
             <div class="flex items-center justify-between group py-1">
                 <div class="flex flex-col">
@@ -141,7 +156,7 @@
                 <div class="flex flex-col items-end">
                     <span class="text-base font-mono font-black text-white leading-none mb-1 tabular-nums">
                         {#if hasData}
-                            ${data.price.toLocaleString(undefined, {
+                            {ccy}{data.price.toLocaleString(undefined, {
                                 minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
                                 maximumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
                             })}

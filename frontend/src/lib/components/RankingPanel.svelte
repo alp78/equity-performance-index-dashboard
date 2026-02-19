@@ -14,7 +14,7 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { marketIndex } from '$lib/stores.js';
+    import { marketIndex, INDEX_CONFIG } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -23,11 +23,6 @@
     let currentIndex = $derived($marketIndex);
     let rankingCache = {};
     let abortController = null;
-
-    const INDEX_LABELS = {
-        sp500: 'S&P 500',
-        stoxx50: 'EURO STOXX 50',
-    };
 
     function formatDateShort(dateStr) {
         if (!dateStr) return '';
@@ -104,7 +99,7 @@
         </div>
         <!-- Index label always visible -->
         <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
-            {INDEX_LABELS[currentIndex] || currentIndex}
+            {INDEX_CONFIG[currentIndex]?.label || currentIndex}
         </span>
     </div>
 

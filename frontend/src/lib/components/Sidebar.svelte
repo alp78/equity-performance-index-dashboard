@@ -1,12 +1,12 @@
 <!--
   Sidebar Component
   =================
-  Compact ticker rows. Search works on both symbol and company name.
+  Compact ticker rows. Currency symbol from INDEX_CONFIG.
 -->
 
 <script>
     import { onMount } from 'svelte';
-    import { selectedSymbol, summaryData, loadSummaryData, marketIndex } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG } from '$lib/stores.js';
 
     let searchQuery = $state('');
     let lastPriceDate = $state('—');
@@ -15,6 +15,7 @@
     let loading = $derived($summaryData.loading);
     let error = $derived($summaryData.error);
     let currentIndex = $derived($marketIndex);
+    let ccy = $derived($currentCurrency);
 
     let filteredTickers = $derived(
         tickers
@@ -33,13 +34,15 @@
         if (!$summaryData.loaded && !$summaryData.loading) loadSummaryData($marketIndex);
     });
 
-    const INDEX_OPTIONS = [
-        { key: 'stoxx50', label: 'STOXX 50', short: 'STOXX' },
-        { key: 'sp500', label: 'S&P 500', short: 'S&P' },
-    ];
+    // Build index options from INDEX_CONFIG
+    const INDEX_OPTIONS = Object.entries(INDEX_CONFIG).map(([key, cfg]) => ({
+        key,
+        label: cfg.shortLabel,
+    }));
 
-    const INITIAL_DEFAULTS = { stoxx50: 'ASML.AS', sp500: 'NVDA' };
-    let lastSymbolPerIndex = { ...INITIAL_DEFAULTS };
+    let lastSymbolPerIndex = Object.fromEntries(
+        Object.entries(INDEX_CONFIG).map(([key, cfg]) => [key, cfg.defaultSymbol])
+    );
 
     function selectTicker(symbol) {
         selectedSymbol.set(symbol);
@@ -53,7 +56,7 @@
         searchQuery = '';
         await loadSummaryData(key);
         const remembered = lastSymbolPerIndex[key];
-        selectedSymbol.set(remembered || INITIAL_DEFAULTS[key] || '');
+        selectedSymbol.set(remembered || INDEX_CONFIG[key]?.defaultSymbol || '');
     }
 
     function formatVol(val) {
@@ -86,7 +89,7 @@
             <div>
                 <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-0.5">EQUITY PERFORMANCE INDEX</h2>
                 <div class="text-2xl font-black text-white tracking-tighter uppercase">
-                    {INDEX_OPTIONS.find(o => o.key === currentIndex)?.label || 'INDEX'}
+                    {INDEX_CONFIG[currentIndex]?.label || 'INDEX'}
                 </div>
             </div>
             <div class="text-right">
@@ -140,7 +143,7 @@
 
                     <div class="w-[25%] text-right pr-3">
                         <div class="text-[13px] font-mono font-black text-white leading-tight">
-                            ${(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                            {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                         </div>
                         <div class="text-[11px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
                             <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
