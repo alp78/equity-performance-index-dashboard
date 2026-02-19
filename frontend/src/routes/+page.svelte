@@ -29,16 +29,23 @@
     let assets = $state([]);
     let currentPeriod = $state('1y');
     let isInitialLoading = $state(true);
-    let currentMetadata = $state({ name: "" });
+
+    // Track symbol→name mapping. Keyed by symbol so switching stocks
+    // doesn't flash a wrong name during the metadata fetch.
+    let metadataCache = $state({});
+    let currentSymbol = $derived($selectedSymbol);
 
     let selectMode = $state(false);
     let customRange = $state(null);
 
-    let activeAsset = $derived(
-        currentMetadata.name
-        ? { name: currentMetadata.name, symbol: $selectedSymbol }
-        : (assets.find(a => a.symbol === $selectedSymbol) || { name: $selectedSymbol })
-    );
+    // Resolve display name: check metadata cache first, then assets, then just symbol
+    let displayName = $derived(() => {
+        const cached = metadataCache[currentSymbol];
+        if (cached) return cached;
+        const asset = assets.find(a => a.symbol === currentSymbol);
+        if (asset && asset.name && asset.name !== 0) return asset.name;
+        return '';
+    });
 
     function fmtDate(d) {
         if (!d) return '';
@@ -51,11 +58,8 @@
 
     function handleResetPeriod() {
         if (customRange) {
-            // Custom range is active — re-zoom to it, don't clear it
-            // Force Chart to re-apply by toggling currentPeriod
-            currentPeriod = null;
-            setTimeout(() => { currentPeriod = null; }, 10);
-            return;
+            customRange = null;
+            selectMode = false;
         }
         const p = currentPeriod || '1y';
         currentPeriod = null;
@@ -85,7 +89,7 @@
     function handleRangeSelect(range) {
         customRange = range;
         selectMode = false;
-        currentPeriod = null;  // Deselect period button
+        currentPeriod = null;
     }
 
     async function fetchInitialData() {
@@ -101,9 +105,14 @@
     async function fetchStockData(symbol) {
         if (!symbol) return;
 
+        // Fetch metadata — store in cache keyed by symbol
         fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 5000)
             .then(r => r.ok ? r.json() : null)
-            .then(data => { if (data && data.name) currentMetadata.name = data.name; })
+            .then(data => {
+                if (data && data.name) {
+                    metadataCache[symbol] = data.name;
+                }
+            })
             .catch(() => {});
 
         let retries = 2;
@@ -131,7 +140,6 @@
 
     $effect(() => {
         const sym = $selectedSymbol;
-        untrack(() => { currentMetadata.name = ""; });
         if (untrack(() => isInitialLoading)) return;
         fullStockData = [];
         selectMode = false;
@@ -157,14 +165,13 @@
 
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
-                <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSymbol}</h1>
+                <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
                 <span class="text-sm font-bold text-white/40 uppercase tracking-[0.2em] pl-1">
-                    { (activeAsset.name && activeAsset.name !== 0) ? activeAsset.name : $selectedSymbol }
+                    {displayName() || currentSymbol}
                 </span>
             </div>
 
             <div class="flex items-center gap-3">
-                <!-- Custom range button + date display -->
                 <div class="flex items-center gap-2 bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
                     <button
                         onclick={toggleCustomMode}
@@ -185,7 +192,6 @@
                     {/if}
                 </div>
 
-                <!-- Standard period buttons -->
                 <div class="flex bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
                     {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
                         <button
