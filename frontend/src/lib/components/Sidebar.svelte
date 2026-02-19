@@ -69,7 +69,7 @@
 
 <aside class="flex flex-col h-full bg-bloom-card border-r border-bloom-muted/10 relative z-20 shadow-2xl overflow-hidden">
 
-    <div class="p-5 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
+    <div class="p-4 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
 
         <div class="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/5">
             {#each INDEX_OPTIONS as opt}
@@ -129,19 +129,19 @@
             {#each filteredTickers as item}
                 <button
                     onclick={() => selectTicker(item.symbol)}
-                    class="w-full px-5 py-3 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
+                    class="w-full px-3 py-3 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
                     {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"
                 >
                     {#if $selectedSymbol === item.symbol}
                         <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
                     {/if}
 
-                    <div class="w-[32%] text-left overflow-hidden">
+                    <div class="w-[30%] text-left overflow-hidden pl-1">
                         <div class="font-black text-white text-sm tracking-tight group-hover:text-bloom-accent transition-colors">{item.symbol}</div>
-                        <div class="text-[10px] font-bold text-bloom-text/30 uppercase tracking-wide truncate pr-2">{item.name || 'Equity'}</div>
+                        <div class="text-[10px] font-bold text-bloom-text/30 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
                     </div>
 
-                    <div class="w-[25%] text-right pr-3">
+                    <div class="w-[26%] text-right pr-2">
                         <div class="text-[13px] font-mono font-black text-white leading-tight">
                             {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                         </div>
@@ -151,12 +151,12 @@
                         </div>
                     </div>
 
-                    <div class="w-[26%] text-right font-mono text-[11px] leading-tight space-y-0.5">
-                        <div class="flex justify-end gap-2 text-white/40">
+                    <div class="w-[27%] text-right font-mono text-[11px] leading-tight space-y-0.5">
+                        <div class="flex justify-end gap-1.5 text-white/40">
                             <span class="font-bold">H</span>
                             <span class="text-white/70 font-bold">{(item.high ?? 0).toFixed(2)}</span>
                         </div>
-                        <div class="flex justify-end gap-2 text-white/40">
+                        <div class="flex justify-end gap-1.5 text-white/40">
                             <span class="font-bold">L</span>
                             <span class="text-white/70 font-bold">{(item.low ?? 0).toFixed(2)}</span>
                         </div>

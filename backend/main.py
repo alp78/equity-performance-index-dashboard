@@ -38,7 +38,7 @@ PROJECT_ID = getenv("PROJECT_ID")
 # Each market index maps to its own BigQuery table.
 # To add a new index, just add an entry here — the rest of the code adapts automatically.
 MARKET_INDICES = {
-    "sp500":   {"table_id": f"{PROJECT_ID}.stock_exchange.stock_prices" if PROJECT_ID else None},
+    "sp500":   {"table_id": f"{PROJECT_ID}.stock_exchange.sp500_prices" if PROJECT_ID else None},
     "stoxx50": {"table_id": f"{PROJECT_ID}.stock_exchange.stoxx50_prices" if PROJECT_ID else None},
 }
 

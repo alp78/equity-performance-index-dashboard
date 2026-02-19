@@ -142,7 +142,7 @@
 
 <div class="flex h-screen w-screen bg-[#0d0d12] text-white overflow-hidden font-sans selection:bg-purple-500/30">
 
-    <div class="w-[480px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
+    <div class="w-[420px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
         <Sidebar />
     </div>
 

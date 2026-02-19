@@ -22,7 +22,7 @@ Environment variables:
   PROJECT_ID       — GCP project
   DATASET_ID       — BigQuery dataset
   BUCKET_NAME      — GCS bucket for raw JSON audit trail
-  SP500_TABLE_ID   — BigQuery table for S&P 500 (default: stock_prices)
+  SP500_TABLE_ID   — BigQuery table for S&P 500 (default: sp500_prices)
   STOXX50_TABLE_ID — BigQuery table for STOXX 50 (default: stoxx50_prices)
   BACKEND_API_URL  — Backend URL for the post-sync webhook (optional)
 """
@@ -51,7 +51,7 @@ BUCKET_NAME = getenv("BUCKET_NAME")
 # To add a new index, add an entry here — the sync logic adapts automatically.
 INDICES = {
     "sp500": {
-        "table_id": getenv("SP500_TABLE_ID", "stock_prices"),
+        "table_id": getenv("SP500_TABLE_ID", "sp500_prices"),
     },
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
@@ -100,43 +100,70 @@ def get_full_table_ref(table_id):
 def get_db_state(bq_client, table_ref):
     """
     Query BigQuery to find where we left off.
-    Returns (tickers, max_date, name_map) for incremental loading.
+    Returns (tickers, max_date, name_map, sector_map, industry_map) for incremental loading.
     """
     # Most recent date (defaults to 2023-01-01 on first run)
     date_query = f"SELECT MAX(trade_date) as max_date FROM `{table_ref}`"
     result = list(bq_client.query(date_query).result())
     max_date = result[0].max_date if result and result[0].max_date else datetime(2023, 1, 1).date()
 
-    # Symbol → company name mapping
-    name_query = f"""
-        SELECT symbol, MAX(name) as name
+    # Symbol → name, sector, industry mapping (latest non-null values)
+    meta_query = f"""
+        SELECT symbol,
+            MAX(name) as name,
+            MAX(sector) as sector,
+            MAX(industry) as industry
         FROM `{table_ref}`
         WHERE name IS NOT NULL AND name != '0'
         GROUP BY symbol
     """
-    name_results = bq_client.query(name_query).result()
-    name_map = {row.symbol: row.name for row in name_results}
-    tickers = list(name_map.keys())
+    meta_results = bq_client.query(meta_query).result()
+    name_map = {}
+    sector_map = {}
+    industry_map = {}
+    for row in meta_results:
+        name_map[row.symbol] = row.name
+        if row.sector and row.sector not in ('N/A', '0', ''):
+            sector_map[row.symbol] = row.sector
+        if row.industry and row.industry not in ('N/A', '0', ''):
+            industry_map[row.symbol] = row.industry
 
-    return tickers, max_date, name_map
+    tickers = list(name_map.keys())
+    return tickers, max_date, name_map, sector_map, industry_map
 
 
 # ============================================================================
 # STEP 2 — DOWNLOAD & TRANSFORM (with retry for delayed data)
 # ============================================================================
 
-def download_and_transform(tickers, name_map, start_date, today, last_date):
+def download_and_transform(tickers, name_map, sector_map, industry_map, start_date, today, last_date):
     """
     Download price data from Yahoo Finance with automatic retry.
-    
-    Yahoo sometimes delays publishing settlement prices by 10–30 minutes
-    after market close. The retry loop handles this gracefully.
+    Fetches sector/industry from yf.Ticker.info for any tickers missing them.
     """
     if not tickers:
         return []
 
     yf_map = {t: to_yf_ticker(t) for t in tickers}
     yf_tickers = list(yf_map.values())
+
+    # Fetch sector/industry for tickers that don't have them cached
+    missing_meta = [t for t in tickers if t not in sector_map or t not in industry_map]
+    if missing_meta:
+        print(f"  Fetching sector/industry for {len(missing_meta)} tickers...")
+        for ticker in missing_meta:
+            try:
+                yf_ticker = yf_map[ticker]
+                info = yf.Ticker(yf_ticker).info
+                s = info.get('sector', 'N/A')
+                i = info.get('industry', 'N/A')
+                if s and s not in ('N/A', ''):
+                    sector_map[ticker] = s
+                if i and i not in ('N/A', ''):
+                    industry_map[ticker] = i
+            except Exception as e:
+                print(f"    Could not fetch info for {ticker}: {e}")
+            time.sleep(0.1)  # Rate limit
 
     print(f"  Downloading {len(yf_tickers)} tickers from Yahoo Finance...")
     print(f"  Sample mappings: {dict(list(yf_map.items())[:5])}")
@@ -219,6 +246,8 @@ def download_and_transform(tickers, name_map, start_date, today, last_date):
                     "high_price":  float(ticker_data['High']),
                     "low_price":   float(ticker_data['Low']),
                     "volume":      int(ticker_data['Volume']),
+                    "sector":      sector_map.get(original_ticker, 'N/A'),
+                    "industry":    industry_map.get(original_ticker, 'N/A'),
                 })
             except Exception as e:
                 print(f"  Skipping {original_ticker} on {date_str}: {e}")
@@ -267,7 +296,7 @@ def sync_index(bq_client, storage_client, index_key, config, today):
 
     # 1. Check state
     try:
-        tickers, last_date, name_map = get_db_state(bq_client, table_ref)
+        tickers, last_date, name_map, sector_map, industry_map = get_db_state(bq_client, table_ref)
         print(f"  Found {len(tickers)} tickers. Last DB date: {last_date}")
     except Exception as e:
         print(f"  CRITICAL: DB state error for {index_key}: {e}")
@@ -286,7 +315,7 @@ def sync_index(bq_client, storage_client, index_key, config, today):
     print(f"  Fetching data from {start_date} to {today}")
 
     # 3. Download & transform (with retry)
-    records = download_and_transform(tickers, name_map, start_date, today, last_date)
+    records = download_and_transform(tickers, name_map, sector_map, industry_map, start_date, today, last_date)
     if not records:
         return 0, "No new data"
 
