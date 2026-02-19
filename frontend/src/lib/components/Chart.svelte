@@ -247,8 +247,6 @@
     }
 
     // --- PRICE LINE VISIBILITY ---
-    // Price line stays at lastClosePrice always. When off-screen,
-    // native axis label is hidden and HTML sticky label shown at edge.
 
     function updatePriceLineVisibility() {
         if (!chart || !candleSeries || lastClosePrice === 0 || !stickyLabel) return;
@@ -373,7 +371,7 @@
             borderVisible: false,
         });
 
-        // --- TOOLTIP ---
+        // --- TOOLTIP (user's updated version: close colored, open plain) ---
         chart.subscribeCrosshairMove((param) => {
             if (!tooltip || !param.time || !param.point || param.point.x < 0) {
                 if (tooltip) tooltip.style.display = 'none';

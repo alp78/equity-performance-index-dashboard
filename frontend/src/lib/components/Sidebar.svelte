@@ -1,21 +1,22 @@
 <!--
-  Sidebar Component
-  =================
-  Compact ticker rows. Currency symbol from INDEX_CONFIG.
+  Sidebar — Dropdown index selector with West/East groups
 -->
 
 <script>
     import { onMount } from 'svelte';
-    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS } from '$lib/stores.js';
 
     let searchQuery = $state('');
     let lastPriceDate = $state('—');
+    let dropdownOpen = $state(false);
+    let scrollContainer;
 
     let tickers = $derived($summaryData.assets || []);
     let loading = $derived($summaryData.loading);
     let error = $derived($summaryData.error);
     let currentIndex = $derived($marketIndex);
     let ccy = $derived($currentCurrency);
+    let currentConfig = $derived(INDEX_CONFIG[currentIndex]);
 
     let filteredTickers = $derived(
         tickers
@@ -30,15 +31,31 @@
         if (tickers.length > 0) lastPriceDate = new Date().toLocaleDateString('en-GB');
     });
 
-    onMount(() => {
-        if (!$summaryData.loaded && !$summaryData.loading) loadSummaryData($marketIndex);
+    // Scroll to selected symbol when it changes
+    $effect(() => {
+        const sym = $selectedSymbol;
+        if (!scrollContainer || !sym) return;
+        // Small delay so DOM updates first
+        setTimeout(() => {
+            const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(sym)}"]`);
+            if (el) {
+                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        }, 50);
     });
 
-    // Build index options from INDEX_CONFIG
-    const INDEX_OPTIONS = Object.entries(INDEX_CONFIG).map(([key, cfg]) => ({
-        key,
-        label: cfg.shortLabel,
-    }));
+    // Close dropdown on outside click
+    function handleClickOutside(e) {
+        if (dropdownOpen && !e.target.closest('.index-dropdown')) {
+            dropdownOpen = false;
+        }
+    }
+
+    onMount(() => {
+        if (!$summaryData.loaded && !$summaryData.loading) loadSummaryData($marketIndex);
+        document.addEventListener('click', handleClickOutside);
+        return () => document.removeEventListener('click', handleClickOutside);
+    });
 
     let lastSymbolPerIndex = Object.fromEntries(
         Object.entries(INDEX_CONFIG).map(([key, cfg]) => [key, cfg.defaultSymbol])
@@ -54,6 +71,7 @@
         lastSymbolPerIndex[currentIndex] = $selectedSymbol;
         marketIndex.set(key);
         searchQuery = '';
+        dropdownOpen = false;
         await loadSummaryData(key);
         const remembered = lastSymbolPerIndex[key];
         selectedSymbol.set(remembered || INDEX_CONFIG[key]?.defaultSymbol || '');
@@ -71,29 +89,55 @@
 
     <div class="p-4 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
 
-        <div class="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/5">
-            {#each INDEX_OPTIONS as opt}
-                <button
-                    onclick={() => switchIndex(opt.key)}
-                    class="flex-1 py-2 px-3 rounded-lg text-center transition-all duration-300 relative
-                    {currentIndex === opt.key
-                        ? 'bg-bloom-accent text-white shadow-[0_0_20px_rgba(168,85,247,0.4)] font-black'
-                        : 'text-white/40 hover:text-white/70 hover:bg-white/5 font-bold'}"
-                >
-                    <span class="text-xs uppercase tracking-widest">{opt.label}</span>
-                </button>
-            {/each}
+        <!-- INDEX DROPDOWN -->
+        <div class="relative index-dropdown">
+            <button
+                onclick={() => { dropdownOpen = !dropdownOpen; }}
+                class="w-full flex items-center justify-between px-4 py-2.5 bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all"
+            >
+                <div class="flex items-center gap-3">
+                    <span class="text-lg font-black text-bloom-accent">{currentConfig?.currency}</span>
+                    <div class="text-left">
+                        <div class="text-sm font-black text-white uppercase tracking-tight">{currentConfig?.shortLabel}</div>
+                        <div class="text-[10px] font-bold text-white/30 uppercase tracking-wider">{currentConfig?.region === 'west' ? 'Western Markets' : 'Eastern Markets'}</div>
+                    </div>
+                </div>
+                <svg class="w-4 h-4 text-white/40 transition-transform {dropdownOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+
+            {#if dropdownOpen}
+                <div class="absolute top-full left-0 right-0 mt-1 bg-[#16161e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden backdrop-blur-xl">
+                    {#each INDEX_GROUPS as group}
+                        <div class="px-3 pt-2.5 pb-1">
+                            <span class="text-[9px] font-black text-white/20 uppercase tracking-[0.3em]">{group.label}</span>
+                        </div>
+                        {#each group.indices as idx}
+                            <button
+                                onclick={() => switchIndex(idx.key)}
+                                class="w-full flex items-center gap-3 px-4 py-2 hover:bg-white/5 transition-all
+                                {currentIndex === idx.key ? 'bg-bloom-accent/10' : ''}"
+                            >
+                                <span class="text-sm font-black text-bloom-accent w-5">{idx.currency}</span>
+                                <span class="text-sm font-bold text-white">{idx.shortLabel}</span>
+                                {#if currentIndex === idx.key}
+                                    <div class="ml-auto w-1.5 h-1.5 rounded-full bg-bloom-accent"></div>
+                                {/if}
+                            </button>
+                        {/each}
+                    {/each}
+                </div>
+            {/if}
         </div>
 
         <div class="flex justify-between items-end">
             <div>
-                <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-0.5">EQUITY PERFORMANCE INDEX</h2>
-                <div class="text-2xl font-black text-white tracking-tighter uppercase">
-                    {INDEX_CONFIG[currentIndex]?.label || 'INDEX'}
-                </div>
+                <h2 class="text-[10px] font-black text-bloom-accent uppercase tracking-[0.25em] mb-0.5">EQUITY PERFORMANCE</h2>
+                <div class="text-xl font-black text-white tracking-tighter uppercase">{currentConfig?.label || 'INDEX'}</div>
             </div>
             <div class="text-right">
-                <div class="text-[10px] font-bold text-bloom-text/40 uppercase tracking-widest">Last Update</div>
+                <div class="text-[10px] font-bold text-bloom-text/40 uppercase tracking-widest">Updated</div>
                 <div class="text-xs font-mono font-bold text-bloom-accent">{lastPriceDate}</div>
             </div>
         </div>
@@ -111,7 +155,7 @@
         </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto custom-scrollbar">
+    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto custom-scrollbar">
         {#if loading}
             <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
                 <div class="w-6 h-6 border-2 border-bloom-accent border-t-transparent rounded-full animate-spin"></div>
@@ -128,6 +172,7 @@
         {:else}
             {#each filteredTickers as item}
                 <button
+                    data-symbol={item.symbol}
                     onclick={() => selectTicker(item.symbol)}
                     class="w-full px-3 py-3 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
                     {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"

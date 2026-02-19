@@ -1,27 +1,25 @@
 /**
  * Global Stores & Data Loaders
  * ============================
- * Central state management for the dashboard.
- *
- * INDEX_CONFIG is the single source of truth for index metadata.
- * To add a new index (e.g. Nikkei, CSI 300), just add an entry here —
- * all components read currency, label, and default symbol from this map.
+ * INDEX_CONFIG is the single source of truth for all indices.
+ * To add a new index, add an entry here — everything else adapts.
  */
 
-import { writable, derived, get } from 'svelte/store';
+import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
 import { API_BASE_URL } from '$lib/config.js';
 
 // --- INDEX CONFIGURATION ---
-// Modular: add new indices here. Every component reads from this.
 
 export const INDEX_CONFIG = {
+    // --- WEST ---
     stoxx50: {
         label: 'EURO STOXX 50',
         shortLabel: 'STOXX 50',
         currency: '€',
         currencyCode: 'EUR',
         defaultSymbol: 'ASML.AS',
+        region: 'west',
     },
     sp500: {
         label: 'S&P 500',
@@ -29,30 +27,64 @@ export const INDEX_CONFIG = {
         currency: '$',
         currencyCode: 'USD',
         defaultSymbol: 'NVDA',
+        region: 'west',
     },
-    // Future indices:
-    // nikkei: {
-    //     label: 'Nikkei 225',
-    //     shortLabel: 'Nikkei',
-    //     currency: '¥',
-    //     currencyCode: 'JPY',
-    //     defaultSymbol: '7203.T',
-    // },
-    // csi300: {
-    //     label: 'CSI 300',
-    //     shortLabel: 'CSI 300',
-    //     currency: '¥',
-    //     currencyCode: 'CNY',
-    //     defaultSymbol: '600519.SS',
-    // },
+    ftse100: {
+        label: 'FTSE 100',
+        shortLabel: 'FTSE 100',
+        currency: '£',
+        currencyCode: 'GBP',
+        defaultSymbol: 'SHEL.L',
+        region: 'west',
+    },
+    // --- EAST ---
+    nikkei225: {
+        label: 'Nikkei 225',
+        shortLabel: 'Nikkei 225',
+        currency: '¥',
+        currencyCode: 'JPY',
+        defaultSymbol: '7203.T',
+        region: 'east',
+    },
+    csi300: {
+        label: 'CSI 300',
+        shortLabel: 'CSI 300',
+        currency: '¥',
+        currencyCode: 'CNY',
+        defaultSymbol: '600519.SS',
+        region: 'east',
+    },
+    nifty50: {
+        label: 'NIFTY 50',
+        shortLabel: 'NIFTY 50',
+        currency: '₹',
+        currencyCode: 'INR',
+        defaultSymbol: 'RELIANCE.NS',
+        region: 'east',
+    },
 };
+
+// Grouped for dropdown
+export const INDEX_GROUPS = [
+    {
+        label: 'West',
+        indices: Object.entries(INDEX_CONFIG)
+            .filter(([, v]) => v.region === 'west')
+            .map(([key, v]) => ({ key, ...v })),
+    },
+    {
+        label: 'East',
+        indices: Object.entries(INDEX_CONFIG)
+            .filter(([, v]) => v.region === 'east')
+            .map(([key, v]) => ({ key, ...v })),
+    },
+];
 
 // --- GLOBAL STORES ---
 
 export const selectedSymbol = writable('ASML.AS');
 export const marketIndex = writable('stoxx50');
 
-// Derived: current currency symbol (reactive, updates when index changes)
 export const currentCurrency = derived(marketIndex, ($idx) =>
     INDEX_CONFIG[$idx]?.currency || '$'
 );
