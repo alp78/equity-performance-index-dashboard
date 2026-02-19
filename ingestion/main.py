@@ -1,18 +1,8 @@
 """
 Cloud Function — Daily Price Sync (Multi-Index)
 ================================================
-Resilient sync with per-symbol gap detection.
-
-On every run:
-  1. For each index, check which symbols are missing data per-symbol
-  2. Download and load ONLY the missing data
-  3. Always checks ALL indices for gaps (catches previous failures)
-  4. Per-symbol retry: individual ticker failures don't block others
-
-POST body:
-  { "index": "sp500" }       → sync only S&P 500
-  { "index": "all" }         → sync all indices that need data
-  { "index": "all_force" }   → same as "all"
+Resilient sync with per-symbol gap detection and 
+market-specific holiday/calendar awareness.
 """
 
 import functions_framework
@@ -21,6 +11,7 @@ from os import getenv
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
+import exchange_calendars as xcals
 import json
 import time
 import requests
@@ -34,30 +25,31 @@ PROJECT_ID  = getenv("PROJECT_ID")
 DATASET_ID  = getenv("DATASET_ID")
 BUCKET_NAME = getenv("BUCKET_NAME")
 
+# Mapped each index to its exchange calendar ISO code
 INDICES = {
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
-        "sync_after_utc": 17,
+        "cal": "XFRA",  # Frankfurt Stock Exchange
     },
     "sp500": {
         "table_id": getenv("SP500_TABLE_ID", "sp500_prices"),
-        "sync_after_utc": 21,
+        "cal": "XNYS",  # New York Stock Exchange
     },
     "ftse100": {
         "table_id": getenv("FTSE100_TABLE_ID", "ftse100_prices"),
-        "sync_after_utc": 17,
+        "cal": "XLON",  # London Stock Exchange
     },
     "nikkei225": {
         "table_id": getenv("NIKKEI225_TABLE_ID", "nikkei225_prices"),
-        "sync_after_utc": 7,
+        "cal": "XTKS",  # Tokyo Stock Exchange
     },
     "csi300": {
         "table_id": getenv("CSI300_TABLE_ID", "csi300_prices"),
-        "sync_after_utc": 8,
+        "cal": "XSHG",  # Shanghai Stock Exchange
     },
     "nifty50": {
         "table_id": getenv("NIFTY50_TABLE_ID", "nifty50_prices"),
-        "sync_after_utc": 11,
+        "cal": "XNSE",  # National Stock Exchange of India
     },
 }
 
@@ -81,36 +73,36 @@ def to_yf_ticker(db_ticker):
 def get_full_table_ref(short_table_id):
     return f"{PROJECT_ID}.{DATASET_ID}.{short_table_id}"
 
-def is_weekend(d):
-    return d.weekday() >= 5
-
-def last_trading_day(d):
-    """Most recent weekday on or before d."""
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
-
-
 # ============================================================================
-# STEP 1 — PER-SYMBOL GAP DETECTION (including interior gaps)
+# CALENDAR HELPERS
 # ============================================================================
 
-def get_trading_days(start_date, end_date):
-    """Generate all weekdays between start and end (inclusive)."""
+def get_expected_last_trading_day(cal, d):
+    """Most recent valid trading session on or before date d."""
+    d_str = d.strftime('%Y-%m-%d')
+    if cal.is_session(d_str):
+        return d
+    return cal.previous_session(d_str).date()
+
+def get_valid_trading_days(cal, start_date, end_date):
+    """Generate all exact trading days between start and end (inclusive)."""
     days = []
     d = start_date
     while d <= end_date:
-        if d.weekday() < 5:
+        if cal.is_session(d.strftime('%Y-%m-%d')):
             days.append(d)
         d += timedelta(days=1)
     return days
 
-def get_db_state_detailed(bq_client, table_ref, today):
+# ============================================================================
+# STEP 1 — PER-SYMBOL GAP DETECTION
+# ============================================================================
+
+def get_db_state_detailed(bq_client, table_ref, today, cal):
     """
     Returns per-symbol metadata + per-symbol set of missing trading days.
-    Checks the last 10 trading days for interior gaps.
+    Checks the last ~10 trading days for interior gaps using exact exchange calendars.
     """
-    # Get metadata
     meta_query = f"""
         SELECT 
             symbol,
@@ -144,8 +136,8 @@ def get_db_state_detailed(bq_client, table_ref, today):
     if not tickers:
         return tickers, global_last_date, name_map, sector_map, industry_map, {}, set()
 
-    # Check last 10 trading days for interior gaps
-    lookback_start = last_trading_day(today) - timedelta(days=16)  # ~10 trading days with buffer
+    # Look back 16 calendar days, then snap to the nearest valid prior session
+    lookback_start = get_expected_last_trading_day(cal, today - timedelta(days=16))
     gap_query = f"""
         SELECT symbol, CAST(trade_date AS DATE) as td
         FROM `{table_ref}`
@@ -153,31 +145,18 @@ def get_db_state_detailed(bq_client, table_ref, today):
     """
     gap_rows = list(bq_client.query(gap_query).result())
 
-    # Build set of (symbol, date) pairs that exist
     existing = set()
     for row in gap_rows:
         d = row.td.date() if hasattr(row.td, 'date') else row.td
         existing.add((row.symbol, d))
 
-    # Expected trading days in the lookback window
-    expected_days = get_trading_days(lookback_start, last_trading_day(today))
+    # We no longer need the 50% majority rule. The calendar gives us exact expected days.
+    expected_days = get_valid_trading_days(cal, lookback_start, get_expected_last_trading_day(cal, today))
 
-    # For each symbol, find which expected days are missing
-    # Use the majority: if >80% of symbols have data for a day, it's a real trading day
-    day_coverage = {}
-    for d in expected_days:
-        count = sum(1 for s in tickers if (s, d) in existing)
-        day_coverage[d] = count
-
-    # A day is a valid trading day if at least 50% of symbols have data
-    threshold = len(tickers) * 0.5
-    valid_trading_days = [d for d, c in day_coverage.items() if c >= threshold]
-
-    # Find per-symbol missing dates (only for valid trading days)
     symbol_missing_dates = {}
     all_gap_dates = set()
     for sym in tickers:
-        missing = [d for d in valid_trading_days if (sym, d) not in existing]
+        missing = [d for d in expected_days if (sym, d) not in existing]
         if missing:
             symbol_missing_dates[sym] = missing
             all_gap_dates.update(missing)
@@ -201,7 +180,6 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
     yf_map = {t: to_yf_ticker(t) for t in tickers}
     yf_tickers = list(yf_map.values())
 
-    # Fetch missing sector/industry
     missing_meta = [t for t in tickers if t not in sector_map or t not in industry_map]
     if missing_meta:
         logger.info(f"  Fetching metadata for {len(missing_meta)} tickers...")
@@ -218,18 +196,15 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
     start_str = start_date.strftime('%Y-%m-%d')
     end_str = (end_date + timedelta(days=1)).strftime('%Y-%m-%d')
 
-    # Try bulk download first
     logger.info(f"  Bulk download: {len(yf_tickers)} tickers ({start_date} → {end_date})...")
     data = _try_download(yf_tickers, start_str, end_str)
 
-    # Check how many tickers actually returned data
     bulk_symbols = set()
     if data is not None and not data.empty:
         is_multi = isinstance(data.columns, pd.MultiIndex)
         if is_multi:
             bulk_symbols = set(data.columns.get_level_values(0).unique())
 
-    # If bulk got less than 30% of tickers, fall back to batch download
     if len(bulk_symbols) < len(yf_tickers) * 0.3 and len(yf_tickers) > 10:
         logger.warning(f"  Bulk got {len(bulk_symbols)}/{len(yf_tickers)} tickers. Falling back to batches...")
         data = _batch_download(yf_tickers, start_str, end_str, batch_size=30)
@@ -241,7 +216,6 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
 
 
 def _try_download(yf_tickers, start_str, end_str):
-    """Single bulk download attempt with retries."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             data = yf.download(
@@ -260,7 +234,6 @@ def _try_download(yf_tickers, start_str, end_str):
 
 
 def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
-    """Download in small batches, merge results. For markets where bulk fails (e.g. China)."""
     all_frames = []
     for i in range(0, len(yf_tickers), batch_size):
         batch = yf_tickers[i:i + batch_size]
@@ -275,15 +248,13 @@ def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
                 logger.info(f"    Got {data.shape}")
         except Exception as e:
             logger.warning(f"    Batch failed: {e}")
-        time.sleep(2)  # Be gentle between batches
+        time.sleep(2)
 
     if not all_frames:
         return None
 
-    # Merge: concat along columns (each batch has same date index, different ticker columns)
     try:
         merged = pd.concat(all_frames, axis=1)
-        # Remove duplicate columns if any
         merged = merged.loc[:, ~merged.columns.duplicated()]
         logger.info(f"  Merged {len(all_frames)} batches: {merged.shape}")
         return merged
@@ -293,7 +264,6 @@ def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
 
 
 def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, symbol_last_dates):
-    """Extract records from downloaded data."""
     records = []
     failed_tickers = []
     is_multi = isinstance(data.columns, pd.MultiIndex)
@@ -337,7 +307,7 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
                     "sector":      sector_map.get(original_ticker, 'N/A'),
                     "industry":    industry_map.get(original_ticker, 'N/A'),
                 })
-            except Exception as e:
+            except Exception:
                 if original_ticker not in failed_tickers:
                     failed_tickers.append(original_ticker)
                 continue
@@ -375,11 +345,14 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
 
 def sync_index(bq_client, storage_client, index_key, config, today):
     table_ref = get_full_table_ref(config["table_id"])
-    logger.info(f"\n[{index_key.upper()}] Checking {table_ref}...")
+    cal_name = config.get("cal", "XNYS")
+    cal = xcals.get_calendar(cal_name)
+
+    logger.info(f"\n[{index_key.upper()}] Checking {table_ref} (Calendar: {cal_name})...")
 
     try:
         tickers, global_last, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates = \
-            get_db_state_detailed(bq_client, table_ref, today)
+            get_db_state_detailed(bq_client, table_ref, today, cal)
         logger.info(f"  {len(tickers)} tickers, global last: {global_last}")
     except Exception as e:
         logger.critical(f"  DB error for {index_key}: {e}")
@@ -388,23 +361,20 @@ def sync_index(bq_client, storage_client, index_key, config, today):
     if not tickers:
         return 0, "No tickers"
 
-    expected = last_trading_day(today)
+    # Use the exchange calendar to get the exact required date
+    expected = get_expected_last_trading_day(cal, today)
 
-    # Trailing gaps: symbols whose MAX(trade_date) < expected
     trailing_behind = {s: d for s, d in symbol_last_dates.items() if d < expected}
-
-    # Combine: any symbol with interior gaps OR trailing gaps needs data
     all_gap_symbols = set(symbol_missing_dates.keys()) | set(trailing_behind.keys())
 
     if not all_gap_symbols:
         logger.info(f"  All {len(tickers)} symbols up to date ({expected}), no interior gaps")
         return 0, "Up to date"
 
-    # Find the earliest date we need to fetch from
-    earliest_needed = expected  # default
+    earliest_needed = expected
     if trailing_behind:
         earliest_trailing = min(trailing_behind.values())
-        earliest_needed = min(earliest_needed, earliest_trailing + timedelta(days=1))
+        earliest_needed = min(earliest_needed, get_expected_last_trading_day(cal, earliest_trailing + timedelta(days=1)))
     if symbol_missing_dates:
         all_missing = [d for dates in symbol_missing_dates.values() for d in dates]
         if all_missing:
@@ -414,22 +384,16 @@ def sync_index(bq_client, storage_client, index_key, config, today):
                 f"Trailing: {len(trailing_behind)}, Interior gaps: {len(symbol_missing_dates)}. "
                 f"Fetching from {earliest_needed}")
 
-    # Build a combined "already have" map for download_and_transform
-    # For interior gap filling, we can't use symbol_last_dates (it would skip gap dates)
-    # Instead, pass an empty dict so ALL dates get processed, then deduplicate via BQ WRITE_APPEND
-    # Actually better: build per-symbol earliest-gap date
     symbol_effective_start = {}
     for sym in tickers:
         missing = symbol_missing_dates.get(sym, [])
         trailing = symbol_last_dates.get(sym, datetime(2023, 1, 1).date())
         if missing:
-            # Start from earliest missing date - 1 day (so it's included)
             sym_earliest = min(missing) - timedelta(days=1)
             symbol_effective_start[sym] = sym_earliest
         elif sym in trailing_behind:
             symbol_effective_start[sym] = trailing
         else:
-            # Up to date — set to today so everything gets skipped
             symbol_effective_start[sym] = expected
 
     records = download_and_transform(
@@ -462,17 +426,13 @@ def sync_index(bq_client, storage_client, index_key, config, today):
 
 @functions_framework.http
 def sync_stocks(request):
-    """
-    Every run checks ALL targeted indices for per-symbol data gaps.
-    No market-hours gating — gaps from any previous failure are caught.
-    """
     bq_client = bigquery.Client()
     storage_client = storage.Client()
     now_utc = datetime.utcnow()
     today = now_utc.date()
 
-    if is_weekend(today):
-        return f"Weekend — skipping. UTC: {now_utc.isoformat()}", 200
+    # Note: Global is_weekend check removed. The function now relies on 
+    # the individual exchange calendars to dictate valid operations.
 
     target_index = "all"
     try:
@@ -499,7 +459,6 @@ def sync_stocks(request):
         if count > 0:
             synced_indices.append(index_key)
 
-    # Notify backend
     if synced_indices:
         api_url = getenv("BACKEND_API_URL")
         if api_url:
