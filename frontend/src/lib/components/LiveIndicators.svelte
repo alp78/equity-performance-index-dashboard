@@ -2,9 +2,7 @@
   LiveIndicators Component
   ========================
   Real-time prices via WebSocket with market hours awareness.
-  
-  The subtitle line ALWAYS renders at the same height (either real text
-  or an invisible placeholder) so all three bottom panels align.
+  Falls back to detecting price movement for live status.
 -->
 
 <script>
@@ -18,12 +16,15 @@
     let socket;
     let currentIndex = $derived($marketIndex);
 
+    // Gold trades nearly 23 hours (Sun 6pm–Fri 5pm ET on COMEX Globex).
+    // Forex is 24/5 (Sun 5pm–Fri 5pm ET).
+    // Using broad hours that cover all major sessions.
     const MARKET_HOURS = {
-        US:     { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  label: 'NYSE' },
-        EU:     { tz: 'Europe/Amsterdam',  open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, label: 'Euronext' },
-        CRYPTO: { tz: 'UTC',              open: null, close: null, label: '24/7' },
-        FOREX:  { tz: 'UTC',              open: null, close: null, label: 'FX' },
-        COMMOD: { tz: 'America/New_York',  open: { h: 8, m: 20 }, close: { h: 13, m: 30 }, label: 'COMEX' },
+        US:     { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  weekdays: true },
+        EU:     { tz: 'Europe/Amsterdam',  open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, weekdays: true },
+        CRYPTO: { tz: null }, // 24/7 always open
+        FOREX:  { tz: 'America/New_York',  open: { h: 17, m: 0 },  close: { h: 17, m: 0 }, weekdays: true, sundayOpen: true }, // 24/5
+        COMMOD: { tz: 'America/New_York',  open: { h: 18, m: 0 },  close: { h: 17, m: 0 }, weekdays: true, sundayOpen: true }, // Nearly 23h
     };
 
     const SYMBOL_MARKET_MAP = {
@@ -42,8 +43,6 @@
     let resolvedSymbols = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.symbols || symbols) : symbols);
     let resolvedTitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.title || title) : title);
     let resolvedSubtitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.subtitle || '') : subtitle);
-
-    // Does this panel have a real subtitle to display?
     let hasRealSubtitle = $derived(resolvedSubtitle && resolvedSubtitle.trim().length > 0);
 
     function clean(s) { return s && s.includes(':') ? s.split(':')[1] : s; }
@@ -51,18 +50,36 @@
     function isMarketOpen(symbol) {
         const marketKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
         const market = MARKET_HOURS[marketKey];
-        if (!market || !market.open || !market.close) return true;
+        if (!market) return false;
+        if (!market.tz) return true; // Crypto - always open
+
         const now = new Date();
         const tzNow = new Date(now.toLocaleString('en-US', { timeZone: market.tz }));
-        const day = tzNow.getDay();
+        const day = tzNow.getDay(); // 0=Sun, 6=Sat
         const currentMins = tzNow.getHours() * 60 + tzNow.getMinutes();
+
+        // Forex & Commodities: open Sun evening → Fri evening (nearly 24h on weekdays)
+        if (market.sundayOpen) {
+            // Closed: Fri 5pm → Sun 6pm ET
+            if (day === 6) return false; // Saturday always closed
+            if (day === 0 && currentMins < market.open.h * 60 + market.open.m) return false; // Sunday before open
+            if (day === 5 && currentMins >= market.close.h * 60 + market.close.m) return false; // Friday after close
+            return true;
+        }
+
+        // Standard US/EU: weekdays only, specific hours
+        if (day < 1 || day > 5) return false;
         const openMins = market.open.h * 60 + market.open.m;
         const closeMins = market.close.h * 60 + market.close.m;
-        return day >= 1 && day <= 5 && currentMins >= openMins && currentMins < closeMins;
+        return currentMins >= openMins && currentMins < closeMins;
     }
 
     function getStatus(symbol, data) {
         if (!data || data.price === 0) return { label: '', color: '', dot: 'opacity-0', pulse: false };
+
+        // If we received a live flag from websocket, trust it
+        if (data.live) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
+
         if (isMarketOpen(symbol)) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
         return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
     }
@@ -99,10 +116,8 @@
 
 <div class="flex flex-col h-full bg-white/5 rounded-3xl p-5 border border-white/5 shadow-2xl backdrop-blur-md overflow-hidden">
 
-    <!-- Header: always renders both lines at consistent height -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
         <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">{resolvedTitle}</h3>
-        <!-- Always render the subtitle span at the same size. Invisible if no real subtitle. -->
         <span class="text-[11px] font-black uppercase tracking-wider mt-1
             {hasRealSubtitle ? 'text-bloom-accent' : 'text-transparent select-none'}"
         >{hasRealSubtitle ? resolvedSubtitle : 'PLACEHOLDER'}</span>

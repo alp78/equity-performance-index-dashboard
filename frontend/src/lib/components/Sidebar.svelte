@@ -1,8 +1,7 @@
 <!--
   Sidebar Component
   =================
-  Left panel: index tabs, search, scrollable ticker list.
-  Remembers last selected symbol per index.
+  Compact ticker rows. Search works on both symbol and company name.
 -->
 
 <script>
@@ -39,33 +38,20 @@
         { key: 'sp500', label: 'S&P 500', short: 'S&P' },
     ];
 
-    const INITIAL_DEFAULTS = {
-        stoxx50: 'ASML.AS',
-        sp500: 'NVDA',
-    };
-
-    // Track last selected symbol per index.
-    // Manually updated only when the user clicks a ticker — NOT via reactive $effect,
-    // which would overwrite the new index's memory during the switch.
+    const INITIAL_DEFAULTS = { stoxx50: 'ASML.AS', sp500: 'NVDA' };
     let lastSymbolPerIndex = { ...INITIAL_DEFAULTS };
 
     function selectTicker(symbol) {
         selectedSymbol.set(symbol);
-        // Remember this selection for the current index
         lastSymbolPerIndex[$marketIndex] = symbol;
     }
 
     async function switchIndex(key) {
         if (key === currentIndex) return;
-
-        // Save current symbol for the OLD index before switching
         lastSymbolPerIndex[currentIndex] = $selectedSymbol;
-
         marketIndex.set(key);
         searchQuery = '';
         await loadSummaryData(key);
-
-        // Restore the remembered symbol for the NEW index
         const remembered = lastSymbolPerIndex[key];
         selectedSymbol.set(remembered || INITIAL_DEFAULTS[key] || '');
     }
@@ -80,13 +66,13 @@
 
 <aside class="flex flex-col h-full bg-bloom-card border-r border-bloom-muted/10 relative z-20 shadow-2xl overflow-hidden">
 
-    <div class="p-6 space-y-4 bg-gradient-to-b from-white/5 to-transparent">
+    <div class="p-5 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
 
         <div class="flex gap-2 p-1 bg-black/40 rounded-xl border border-white/5">
             {#each INDEX_OPTIONS as opt}
                 <button
                     onclick={() => switchIndex(opt.key)}
-                    class="flex-1 py-2.5 px-3 rounded-lg text-center transition-all duration-300 relative
+                    class="flex-1 py-2 px-3 rounded-lg text-center transition-all duration-300 relative
                     {currentIndex === opt.key
                         ? 'bg-bloom-accent text-white shadow-[0_0_20px_rgba(168,85,247,0.4)] font-black'
                         : 'text-white/40 hover:text-white/70 hover:bg-white/5 font-bold'}"
@@ -98,8 +84,8 @@
 
         <div class="flex justify-between items-end">
             <div>
-                <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-1">EQUITY PERFORMANCE INDEX</h2>
-                <div class="text-3xl font-black text-white tracking-tighter uppercase">
+                <h2 class="text-xs font-black text-bloom-accent uppercase tracking-[0.3em] mb-0.5">EQUITY PERFORMANCE INDEX</h2>
+                <div class="text-2xl font-black text-white tracking-tighter uppercase">
                     {INDEX_OPTIONS.find(o => o.key === currentIndex)?.label || 'INDEX'}
                 </div>
             </div>
@@ -113,10 +99,10 @@
             <input
                 type="text"
                 bind:value={searchQuery}
-                placeholder="Search symbol or name..."
-                class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-3 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
+                placeholder="Search symbol or company name..."
+                class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-2.5 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
             />
-            <svg class="absolute left-3 top-3.5 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="absolute left-3 top-3 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
         </div>
@@ -140,42 +126,42 @@
             {#each filteredTickers as item}
                 <button
                     onclick={() => selectTicker(item.symbol)}
-                    class="w-full px-6 py-5 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
+                    class="w-full px-5 py-3 flex items-center border-b border-white/5 hover:bg-white/5 transition-all relative overflow-hidden group
                     {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10' : ''}"
                 >
                     {#if $selectedSymbol === item.symbol}
                         <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
                     {/if}
 
-                    <div class="w-[35%] text-left overflow-hidden">
-                        <div class="font-black text-white text-base tracking-tight group-hover:text-bloom-accent transition-colors">{item.symbol}</div>
-                        <div class="text-[11px] font-bold text-bloom-text/40 uppercase tracking-wide truncate pr-2">{item.name || 'Equity'}</div>
+                    <div class="w-[32%] text-left overflow-hidden">
+                        <div class="font-black text-white text-sm tracking-tight group-hover:text-bloom-accent transition-colors">{item.symbol}</div>
+                        <div class="text-[10px] font-bold text-bloom-text/30 uppercase tracking-wide truncate pr-2">{item.name || 'Equity'}</div>
                     </div>
 
-                    <div class="w-[25%] text-right pr-4">
-                        <div class="text-sm font-mono font-black text-white leading-tight">
+                    <div class="w-[25%] text-right pr-3">
+                        <div class="text-[13px] font-mono font-black text-white leading-tight">
                             ${(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
                         </div>
-                        <div class="text-[10px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                        <div class="text-[11px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
                             <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
                             <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
                         </div>
                     </div>
 
-                    <div class="w-[25%] text-right font-mono text-[10px] leading-tight space-y-1">
+                    <div class="w-[26%] text-right font-mono text-[11px] leading-tight space-y-0.5">
                         <div class="flex justify-end gap-2 text-white/40">
                             <span class="font-bold">H</span>
-                            <span class="text-white font-bold">{(item.high ?? 0).toFixed(2)}</span>
+                            <span class="text-white/70 font-bold">{(item.high ?? 0).toFixed(2)}</span>
                         </div>
                         <div class="flex justify-end gap-2 text-white/40">
                             <span class="font-bold">L</span>
-                            <span class="text-white font-bold">{(item.low ?? 0).toFixed(2)}</span>
+                            <span class="text-white/70 font-bold">{(item.low ?? 0).toFixed(2)}</span>
                         </div>
                     </div>
 
-                    <div class="w-[15%] text-right">
+                    <div class="w-[17%] text-right">
                         <div class="text-[9px] font-black text-bloom-text/30 uppercase tracking-tighter">Vol</div>
-                        <div class="text-[10px] font-bold text-white/60">{formatVol(item.volume)}</div>
+                        <div class="text-[11px] font-bold text-white/50">{formatVol(item.volume)}</div>
                     </div>
                 </button>
             {/each}
