@@ -4,7 +4,7 @@
 
 <script>
     import { onMount } from 'svelte';
-    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest } from '$lib/stores.js';
 
     let searchQuery = $state('');
     let dropdownOpen = $state(false);
@@ -72,22 +72,20 @@
         openSectors = new Set([sectorName]);
     }
 
-    // When selectedSymbol changes (from any source): open its sector + scroll to it
-    let lastEffectSymbol = '';
+    // External focus request (from TopMovers/MarketLeaders): open sector + scroll
+    // Uses a seq counter so re-clicking same symbol still triggers
+    let lastFocusSeq = 0;
     $effect(() => {
-        const sym = $selectedSymbol;
-        if (!sym || tickers.length === 0) return;
+        const req = $focusSymbolRequest;
+        if (!req.symbol || req.seq === lastFocusSeq) return;
+        lastFocusSeq = req.seq;
 
-        // Only open sector when symbol actually changes (not on re-renders)
-        if (sym !== lastEffectSymbol) {
-            lastEffectSymbol = sym;
-            openSectorFor(sym);
-        }
+        if (tickers.length === 0) return;
+        openSectorFor(req.symbol);
 
-        // Always scroll to the symbol
         if (!scrollContainer) return;
         setTimeout(() => {
-            const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(sym)}"]`);
+            const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(req.symbol)}"]`);
             if (el) {
                 const cr = scrollContainer.getBoundingClientRect();
                 const er = el.getBoundingClientRect();
@@ -164,14 +162,18 @@
 
         <!-- INDEX DROPDOWN -->
         <div class="relative index-dropdown">
+            <!-- Dashboard Title -->
+            <div class="text-[12px] font-black text-white/25 uppercase tracking-[0.3em] mb-2.5">Global Exchange Monitor</div>
+
             <button
                 onclick={() => dropdownOpen = !dropdownOpen}
-                class="w-full flex items-center justify-between bg-black/40 border border-bloom-muted/20 rounded-xl px-4 py-2.5 hover:border-bloom-accent/40 transition-all group"
+                class="w-full flex items-center justify-between bg-black/40 border border-bloom-muted/20 rounded-xl px-4 py-3 hover:border-bloom-accent/40 transition-all group"
             >
-                <div class="flex items-center gap-2.5">
-                    <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
-                    <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{currentConfig?.currency}</span>
-                    <span class="text-sm font-bold text-white">{currentConfig?.shortLabel}</span>
+                <div class="flex items-center gap-3">
+                    <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.4rem;"></span>
+                    <span class="text-base font-black text-white/85">{currentConfig?.shortLabel}</span>
+                    <span class="text-[12px] font-bold text-bloom-accent uppercase ml-1">{currentConfig?.currencyCode}</span>
+                    <span class="text-[18px] font-black text-bloom-accent/50">{currentConfig?.currency}</span>
                 </div>
                 <svg class="w-4 h-4 text-white/30 group-hover:text-bloom-accent transition-all {dropdownOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
@@ -179,21 +181,26 @@
             </button>
 
             {#if dropdownOpen}
-                <div class="absolute top-full left-0 right-0 mt-1 bg-[#16161e] border border-white/10 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div class="absolute top-full left-0 right-0 mt-2 bg-[#16161e] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
                     {#each INDEX_GROUPS as group}
-                        <div class="px-3 py-1.5 text-[9px] font-black text-white/20 uppercase tracking-widest border-b border-white/5">{group.label}</div>
+                        <div class="px-4 py-2 text-[9px] font-black text-white/20 uppercase tracking-widest border-b border-white/5">{group.label}</div>
                         {#each group.indices as idx}
                             <button
                                 onclick={() => switchIndex(idx.key)}
-                                class="w-full flex items-center gap-2.5 px-4 py-2.5 hover:bg-white/5 transition-all
-                                {idx.key === currentIndex ? 'bg-bloom-accent/10 border-l-2 border-bloom-accent' : ''}"
+                                class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all
+                                {idx.key === currentIndex ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
                             >
-                                <span class="{INDEX_FLAGS[idx.key] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
-                                <span class="text-[10px] font-bold text-bloom-accent w-4">{idx.currency}</span>
-                                <span class="text-sm font-bold text-white/80">{idx.shortLabel}</span>
-                                {#if idx.key === currentIndex}
-                                    <span class="ml-auto text-[8px] text-bloom-accent font-bold uppercase">Active</span>
-                                {/if}
+                                <div class="flex items-center gap-3">
+                                    <span class="{INDEX_FLAGS[idx.key] || ''} fis rounded-sm" style="font-size: 1.3rem;"></span>
+                                    <span class="text-[15px] font-bold text-white/80">{idx.shortLabel}</span>
+                                </div>
+                                <div class="flex items-center gap-2 pr-2">
+                                    <span class="text-[11px] font-bold text-bloom-accent/70">{idx.currencyCode}</span>
+                                    <span class="text-[14px] font-black text-bloom-accent/50">{idx.currency}</span>
+                                    {#if idx.key === currentIndex}
+                                        <span class="ml-1 w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
+                                    {/if}
+                                </div>
                             </button>
                         {/each}
                     {/each}
@@ -257,7 +264,7 @@
                         </svg>
                         <span class="text-[11px] font-black text-white/80 uppercase tracking-widest">{sector.name}</span>
                     </div>
-                    <span class="text-[10px] font-bold text-white/20 tabular-nums">{sector.stockCount}</span>
+                    <span class="text-[12px] font-bold text-white/25 tabular-nums">{sector.stockCount}</span>
                 </button>
 
                 {#if openSectors.has(sector.name)}
@@ -279,6 +286,7 @@
     <button
         data-symbol={item.symbol}
         onclick={() => selectTicker(item.symbol)}
+        title="{item.symbol}{item.name ? ' — ' + item.name : ''}"
         class="w-full pl-6 pr-3 py-2.5 flex items-center border-b border-white/[0.03] hover:bg-white/[0.04] transition-all relative overflow-hidden group
         {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10 !border-b-bloom-accent/20' : ''}"
     >

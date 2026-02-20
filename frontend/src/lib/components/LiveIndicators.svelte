@@ -5,7 +5,7 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import { getWebSocketUrl, API_BASE_URL } from '$lib/config.js';
-    import { marketIndex, currentCurrency, INDEX_CONFIG, selectedSymbol, summaryData } from '$lib/stores.js';
+    import { marketIndex, currentCurrency, INDEX_CONFIG, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
@@ -67,9 +67,10 @@
     };
 
     function selectLeaderSymbol(symbol) {
-        if (!dynamicByIndex) return; // Don't navigate for Global Macro
+        if (!dynamicByIndex) return;
         const sidebarSymbol = LEADER_TO_SIDEBAR[symbol] || symbol;
         selectedSymbol.set(sidebarSymbol);
+        requestFocusSymbol(sidebarSymbol);
     }
 
     function getLeaderName(symbol) {

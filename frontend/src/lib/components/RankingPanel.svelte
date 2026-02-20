@@ -14,7 +14,7 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { marketIndex, INDEX_CONFIG, selectedSymbol, summaryData } from '$lib/stores.js';
+    import { marketIndex, INDEX_CONFIG, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -31,6 +31,7 @@
 
     function selectSymbol(symbol) {
         selectedSymbol.set(symbol);
+        requestFocusSymbol(symbol);
     }
 
     function formatDateShort(dateStr) {

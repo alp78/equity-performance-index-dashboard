@@ -196,3 +196,10 @@ export async function loadRankingsData(period = '1y', index = 'stoxx50') {
         });
     }
 }
+
+// Focus request — triggers sidebar scroll+open even if symbol hasn't changed
+// Increment counter to force reactivity on re-click of same symbol
+export const focusSymbolRequest = writable({ symbol: '', seq: 0 });
+export function requestFocusSymbol(symbol) {
+    focusSymbolRequest.update(v => ({ symbol, seq: v.seq + 1 }));
+}
