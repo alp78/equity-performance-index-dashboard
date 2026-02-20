@@ -64,6 +64,20 @@ export const INDEX_CONFIG = {
     },
 };
 
+// Index ticker → index key mapping
+export const INDEX_TICKER_MAP = {
+    '^GSPC':      'sp500',
+    '^STOXX50E':  'stoxx50',
+    '^FTSE':      'ftse100',
+    '^N225':      'nikkei225',
+    '000300.SS':  'csi300',
+    '^NSEI':      'nifty50',
+};
+
+export const INDEX_KEY_TO_TICKER = Object.fromEntries(
+    Object.entries(INDEX_TICKER_MAP).map(([ticker, key]) => [key, ticker])
+);
+
 // Grouped for dropdown
 export const INDEX_GROUPS = [
     {
@@ -86,7 +100,7 @@ export const INDEX_GROUPS = [
 const _storedIndex = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_index');
-        return (v && INDEX_CONFIG[v]) ? v : 'stoxx50';
+        return (v && (INDEX_CONFIG[v] || v === 'overview')) ? v : 'stoxx50';
     } catch { return 'stoxx50'; }
 })() : 'stoxx50';
 
@@ -99,6 +113,19 @@ const _storedSymbol = browser ? (() => {
 export const selectedSymbol = writable(_storedSymbol);
 export const marketIndex = writable(_storedIndex);
 
+// Overview mode: which index tickers are selected for comparison
+const _storedOverviewIndices = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_overview_indices');
+        return v ? JSON.parse(v) : ['^GSPC', '^STOXX50E'];
+    } catch { return ['^GSPC', '^STOXX50E']; }
+})() : ['^GSPC', '^STOXX50E'];
+
+export const overviewSelectedIndices = writable(_storedOverviewIndices);
+
+// Derived: are we in overview mode?
+export const isOverviewMode = derived(marketIndex, ($idx) => $idx === 'overview');
+
 // Persist on change (after initial creation)
 if (browser) {
     marketIndex.subscribe(val => {
@@ -107,10 +134,13 @@ if (browser) {
     selectedSymbol.subscribe(val => {
         try { localStorage.setItem('dash_symbol', val); } catch {}
     });
+    overviewSelectedIndices.subscribe(val => {
+        try { localStorage.setItem('dash_overview_indices', JSON.stringify(val)); } catch {}
+    });
 }
 
 export const currentCurrency = derived(marketIndex, ($idx) =>
-    INDEX_CONFIG[$idx]?.currency || '$'
+    $idx === 'overview' ? '%' : (INDEX_CONFIG[$idx]?.currency || '$')
 );
 
 export const summaryData = writable({
@@ -126,6 +156,13 @@ export const rankingsData = writable({
     loaded: false,
     loading: false,
     error: null,
+});
+
+// Index overview summary data (separate from stock summary)
+export const indexOverviewData = writable({
+    assets: [],
+    loaded: false,
+    loading: false,
 });
 
 // --- FETCH HELPER ---
@@ -178,6 +215,20 @@ export async function loadSummaryData(index = 'stoxx50') {
         }
     }
     summaryData.set({ assets: [], loaded: true, loading: false, error: null });
+}
+
+export async function loadIndexOverviewData() {
+    if (!browser) return;
+    indexOverviewData.update(s => ({ ...s, loading: true }));
+    try {
+        const data = await fetchWithRetry(
+            `${API_BASE_URL}/index-prices/summary?t=${Date.now()}`
+        );
+        indexOverviewData.set({ assets: data || [], loaded: true, loading: false });
+        return data;
+    } catch (error) {
+        indexOverviewData.set({ assets: [], loaded: false, loading: false });
+    }
 }
 
 export async function loadRankingsData(period = '1y', index = 'stoxx50') {

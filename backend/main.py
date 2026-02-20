@@ -55,6 +55,21 @@ DISPLAY_SYMBOL_MAP = {
     "EURUSD=X":  "FXCM:EUR/USD",
 }
 
+# Index-level prices table (the indices themselves: ^GSPC, ^STOXX50E, etc.)
+INDEX_PRICES_TABLE = f"{PROJECT_ID}.stock_exchange.index_prices" if PROJECT_ID else None
+INDEX_PRICES_LOADED = False
+
+# Map index keys to their Yahoo ticker symbols
+INDEX_KEY_TO_TICKER = {
+    "sp500":     "^GSPC",
+    "stoxx50":   "^STOXX50E",
+    "ftse100":   "^FTSE",
+    "nikkei225": "^N225",
+    "csi300":    "000300.SS",
+    "nifty50":   "^NSEI",
+}
+INDEX_TICKER_TO_KEY = {v: k for k, v in INDEX_KEY_TO_TICKER.items()}
+
 # ============================================================================
 # CACHE LAYER — Per-index lazy loading with non-blocking refresh
 # ============================================================================
@@ -215,6 +230,75 @@ def _rebuild_unified_view():
     latest_unions = " UNION ALL ".join([f"SELECT * FROM latest_{k}" for k in loaded_indices])
     local_db.execute("DROP VIEW IF EXISTS latest_prices")
     local_db.execute(f"CREATE VIEW latest_prices AS {latest_unions}")
+
+
+def _load_index_prices_from_bq():
+    """Load index_prices table from BigQuery into DuckDB."""
+    global INDEX_PRICES_LOADED
+    if not INDEX_PRICES_TABLE or not PROJECT_ID:
+        return 0
+
+    t0 = time.time()
+    try:
+        bq_client = get_bq_client()
+        query = f"""
+            SELECT symbol, name, currency, exchange,
+                CAST(trade_date AS DATE) as trade_date,
+                CAST(open_price AS FLOAT64) as open,
+                CAST(close_price AS FLOAT64) as close,
+                CAST(high_price AS FLOAT64) as high,
+                CAST(low_price AS FLOAT64) as low,
+                CAST(volume AS INT64) as volume
+            FROM `{INDEX_PRICES_TABLE}`
+        """
+        df = bq_client.query(query).to_dataframe()
+        t_bq = time.time()
+        print(f"  [index_prices] BQ fetch: {t_bq - t0:.1f}s ({len(df)} raw rows)")
+
+        if df.empty:
+            return 0
+
+        df['trade_date'] = pd.to_datetime(df['trade_date'])
+
+        with db_lock:
+            local_db.execute("DROP TABLE IF EXISTS index_prices")
+            local_db.register('temp_index_prices', df)
+
+            local_db.execute("""
+                CREATE TABLE index_prices AS
+                SELECT symbol, name, currency, exchange, trade_date, open, close, high, low, volume
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY symbol, trade_date ORDER BY volume DESC
+                    ) as rn FROM temp_index_prices
+                ) WHERE rn = 1
+            """)
+            local_db.execute("CREATE INDEX IF NOT EXISTS idx_index_prices ON index_prices (symbol, trade_date)")
+
+            local_db.execute("DROP TABLE IF EXISTS latest_index_prices")
+            local_db.execute("""
+                CREATE TABLE latest_index_prices AS
+                SELECT symbol, name, currency, exchange, trade_date, open, close, high, low, volume,
+                    LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_price
+                FROM index_prices
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) = 1
+            """)
+
+        row_count = local_db.execute("SELECT COUNT(*) FROM index_prices").fetchone()[0]
+        max_dates = local_db.execute("""
+            SELECT symbol, MAX(trade_date) as max_date, MIN(trade_date) as min_date, COUNT(*) as cnt
+            FROM index_prices GROUP BY symbol ORDER BY symbol
+        """).fetchall()
+        t_done = time.time()
+        print(f"  [index_prices] DuckDB: {t_done - t_bq:.1f}s. Total: {t_done - t0:.1f}s ({row_count} rows)")
+        for sym, max_d, min_d, cnt in max_dates:
+            print(f"    {sym}: {min_d} → {max_d} ({cnt} rows)")
+        INDEX_PRICES_LOADED = True
+        return row_count
+
+    except Exception as e:
+        print(f"  [index_prices] Load error: {e}")
+        return 0
 
 
 def ensure_index_loaded(index_key):
@@ -443,6 +527,15 @@ async def preload_all_indices():
         except Exception as e:
             print(f"  Background preload error {idx}: {e}")
         await asyncio.sleep(1)  # Breathing room between BigQuery calls
+
+    # Phase 4: Load index-level prices
+    try:
+        loop = asyncio.get_event_loop()
+        row_count = await loop.run_in_executor(None, _load_index_prices_from_bq)
+        print(f"  Index prices loaded: {row_count} rows")
+    except Exception as e:
+        print(f"  Index prices load error: {e}")
+
     print(f"All indices preloaded")
 
 
@@ -524,10 +617,572 @@ async def webhook_refresh():
 @app.post("/api/admin/refresh/{index_key}")
 async def webhook_refresh_index(index_key: str):
     """Refresh a single index (called by per-market cloud function)."""
+    if index_key == "index_prices":
+        loop = asyncio.get_event_loop()
+        asyncio.create_task(loop.run_in_executor(None, _load_index_prices_from_bq))
+        return {"status": "accepted", "message": "Refreshing index_prices"}
     if index_key not in MARKET_INDICES:
         return {"status": "error", "message": f"Unknown index: {index_key}"}
     asyncio.create_task(refresh_single_index(index_key))
     return {"status": "accepted", "message": f"Refreshing {index_key}"}
+
+
+# ============================================================================
+# INDEX OVERVIEW ENDPOINTS
+# ============================================================================
+
+@app.get("/index-prices/debug")
+async def get_index_prices_debug():
+    """Debug: show date ranges per symbol in index_prices."""
+    if not INDEX_PRICES_LOADED:
+        return {"loaded": False}
+    try:
+        with db_lock:
+            rows = local_db.execute("""
+                SELECT symbol,
+                    MIN(trade_date)::VARCHAR as min_date,
+                    MAX(trade_date)::VARCHAR as max_date,
+                    COUNT(*) as row_count
+                FROM index_prices GROUP BY symbol ORDER BY symbol
+            """).fetchall()
+        return {
+            "loaded": True,
+            "symbols": [
+                {"symbol": r[0], "min_date": r[1], "max_date": r[2], "rows": r[3]}
+                for r in rows
+            ]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/index-prices/summary")
+async def get_index_prices_summary():
+    """Summary of all 6 index tickers — latest price, daily change, etc."""
+    if not INDEX_PRICES_LOADED:
+        return []
+
+    cache_key = "index_prices_summary"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    try:
+        with db_lock:
+            res = local_db.execute("""
+                SELECT symbol, name, currency, exchange, trade_date,
+                    CAST(open AS FLOAT) as open,
+                    CAST(close AS FLOAT) as last_price,
+                    CAST(high AS FLOAT) as high,
+                    CAST(low AS FLOAT) as low,
+                    CAST(volume AS BIGINT) as volume,
+                    CAST(((close - prev_price) / NULLIF(prev_price, 0)) * 100 AS FLOAT) as daily_change_pct
+                FROM latest_index_prices
+                ORDER BY symbol
+            """).df().fillna(0).to_dict(orient='records')
+        set_cached_response(cache_key, res)
+        return res
+    except Exception as e:
+        print(f"Index prices summary error: {e}")
+        return []
+
+
+@app.get("/index-prices/data")
+async def get_index_prices_data(symbols: str = "", period: str = "1y"):
+    """
+    Multi-symbol index price data for comparison chart.
+    Returns normalized % change from first visible date.
+    symbols: comma-separated list of index tickers (e.g. "^GSPC,^STOXX50E")
+    """
+    if not INDEX_PRICES_LOADED:
+        return {"series": []}
+
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        return {"series": []}
+
+    cache_key = f"index_prices_data_{','.join(sorted(symbol_list))}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+
+    try:
+        placeholders = ",".join(["?" for _ in symbol_list])
+        with db_lock:
+            if period.lower() == "max":
+                df = local_db.execute(f"""
+                    SELECT symbol, strftime(trade_date, '%Y-%m-%d') as time,
+                        CAST(close AS FLOAT) as close,
+                        CAST(volume AS BIGINT) as volume
+                    FROM index_prices
+                    WHERE symbol IN ({placeholders})
+                    ORDER BY symbol, trade_date ASC
+                """, symbol_list).df()
+            else:
+                days = intervals.get(period.lower(), 365)
+                df = local_db.execute(f"""
+                    SELECT symbol, strftime(trade_date, '%Y-%m-%d') as time,
+                        CAST(close AS FLOAT) as close,
+                        CAST(volume AS BIGINT) as volume
+                    FROM index_prices
+                    WHERE symbol IN ({placeholders})
+                        AND trade_date >= CURRENT_DATE - INTERVAL '{days} days'
+                    ORDER BY symbol, trade_date ASC
+                """, symbol_list).df()
+
+        if df.empty:
+            result = {"series": []}
+            set_cached_response(cache_key, result)
+            return result
+
+        # Build per-symbol series with normalized % change
+        series = []
+        for sym in symbol_list:
+            sym_df = df[df['symbol'] == sym]
+            if sym_df.empty:
+                continue
+
+            closes = sym_df['close'].values
+            times = sym_df['time'].values
+            volumes = sym_df['volume'].values
+            base = closes[0] if closes[0] != 0 else 1
+
+            # Return raw close, normalized % change, and volume
+            points = []
+            for i in range(len(closes)):
+                points.append({
+                    "time": str(times[i]),
+                    "close": float(closes[i]),
+                    "pct": float(((closes[i] - base) / base) * 100),
+                    "volume": int(volumes[i]) if not pd.isna(volumes[i]) else 0,
+                })
+
+            # Get display info
+            ticker_key = INDEX_TICKER_TO_KEY.get(sym, sym)
+            series.append({
+                "symbol": sym,
+                "indexKey": ticker_key,
+                "points": points,
+            })
+
+        result = {"series": series}
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Index prices data error: {e}")
+        return {"series": []}
+
+
+@app.get("/index-prices/stats")
+async def get_index_prices_stats(period: str = "1y", start: str = "", end: str = ""):
+    """
+    Index performance stats for the overview table.
+    Returns per-index: period return, YTD return, 52w high/low, volatility, current price.
+    Supports period or custom date range via start/end.
+    """
+    if not INDEX_PRICES_LOADED:
+        return []
+
+    use_custom = bool(start and end)
+    cache_key = f"index_stats_{start}_{end}" if use_custom else f"index_stats_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+
+    try:
+        with db_lock:
+            # Get all symbols
+            symbols = local_db.execute("SELECT DISTINCT symbol FROM index_prices").fetchall()
+            symbols = [s[0] for s in symbols]
+
+            results = []
+            for sym in symbols:
+                # Current / latest data
+                latest = local_db.execute("""
+                    SELECT close, trade_date, name, currency, exchange
+                    FROM index_prices WHERE symbol = ?
+                    ORDER BY trade_date DESC LIMIT 1
+                """, [sym]).fetchone()
+                if not latest:
+                    continue
+
+                current_price = float(latest[0])
+                latest_date = latest[1]
+                name = latest[2]
+                currency = latest[3]
+                exchange = latest[4] or ''
+
+                # Previous day close for daily change
+                prev = local_db.execute("""
+                    SELECT close FROM index_prices
+                    WHERE symbol = ? AND trade_date < ?
+                    ORDER BY trade_date DESC LIMIT 1
+                """, [sym, latest_date]).fetchone()
+                daily_change = float(((current_price - prev[0]) / prev[0]) * 100) if prev and prev[0] else 0
+
+                # Period return
+                if use_custom:
+                    period_start = local_db.execute("""
+                        SELECT close FROM index_prices
+                        WHERE symbol = ? AND trade_date >= ?
+                        ORDER BY trade_date ASC LIMIT 1
+                    """, [sym, start]).fetchone()
+                else:
+                    days = intervals.get(period.lower(), 365)
+                    period_start = local_db.execute(f"""
+                        SELECT close FROM index_prices
+                        WHERE symbol = ? AND trade_date >= (
+                            SELECT MAX(trade_date) - INTERVAL '{days} days' FROM index_prices WHERE symbol = ?
+                        )
+                        ORDER BY trade_date ASC LIMIT 1
+                    """, [sym, sym]).fetchone()
+
+                period_return = float(((current_price - period_start[0]) / period_start[0]) * 100) if period_start and period_start[0] else 0
+
+                # YTD return
+                ytd_start = local_db.execute("""
+                    SELECT close FROM index_prices
+                    WHERE symbol = ? AND trade_date >= DATE_TRUNC('year', CURRENT_DATE)
+                    ORDER BY trade_date ASC LIMIT 1
+                """, [sym]).fetchone()
+                ytd_return = float(((current_price - ytd_start[0]) / ytd_start[0]) * 100) if ytd_start and ytd_start[0] else 0
+
+                # 52-week high/low
+                range_52w = local_db.execute("""
+                    SELECT MIN(low) as low_52w, MAX(high) as high_52w
+                    FROM index_prices
+                    WHERE symbol = ? AND trade_date >= (
+                        SELECT MAX(trade_date) - INTERVAL '365 days' FROM index_prices WHERE symbol = ?
+                    )
+                """, [sym, sym]).fetchone()
+                low_52w = float(range_52w[0]) if range_52w and range_52w[0] else current_price
+                high_52w = float(range_52w[1]) if range_52w and range_52w[1] else current_price
+
+                # Volatility (annualized std dev of daily returns over selected period)
+                if use_custom:
+                    vol_query = f"""
+                        SELECT STDDEV(daily_ret) * SQRT(252) as volatility FROM (
+                            SELECT (close / LAG(close) OVER (ORDER BY trade_date) - 1) as daily_ret
+                            FROM index_prices
+                            WHERE symbol = ? AND trade_date >= '{start}' AND trade_date <= '{end}'
+                        ) WHERE daily_ret IS NOT NULL
+                    """
+                    vol_row = local_db.execute(vol_query, [sym]).fetchone()
+                else:
+                    days = intervals.get(period.lower(), 365)
+                    vol_query = f"""
+                        SELECT STDDEV(daily_ret) * SQRT(252) as volatility FROM (
+                            SELECT (close / LAG(close) OVER (ORDER BY trade_date) - 1) as daily_ret
+                            FROM index_prices
+                            WHERE symbol = ? AND trade_date >= (
+                                SELECT MAX(trade_date) - INTERVAL '{days} days' FROM index_prices WHERE symbol = ?
+                            )
+                        ) WHERE daily_ret IS NOT NULL
+                    """
+                    vol_row = local_db.execute(vol_query, [sym, sym]).fetchone()
+                volatility = float(vol_row[0] * 100) if vol_row and vol_row[0] else 0
+
+                results.append({
+                    "symbol": sym,
+                    "name": name,
+                    "currency": currency,
+                    "exchange": exchange,
+                    "current_price": round(current_price, 2),
+                    "daily_change_pct": round(daily_change, 2),
+                    "period_return_pct": round(period_return, 2),
+                    "ytd_return_pct": round(ytd_return, 2),
+                    "high_52w": round(high_52w, 2),
+                    "low_52w": round(low_52w, 2),
+                    "volatility_pct": round(volatility, 2),
+                })
+
+        set_cached_response(cache_key, results)
+        return results
+
+    except Exception as e:
+        print(f"Index stats error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+@app.get("/index-prices/single/{symbol:path}")
+async def get_index_price_single(symbol: str, period: str = "max"):
+    """Single index OHLCV data — same format as /data/{symbol} for chart compatibility."""
+    if not INDEX_PRICES_LOADED:
+        return []
+
+    symbol = unquote(symbol)
+    cache_key = f"index_price_single_{symbol}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+
+    try:
+        with db_lock:
+            if period.lower() == "max":
+                df = local_db.execute("""
+                    SELECT strftime(trade_date, '%Y-%m-%d') as time, open, close, high, low, volume,
+                        AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
+                        AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
+                    FROM index_prices WHERE symbol = ? ORDER BY trade_date ASC
+                """, [symbol]).df()
+            else:
+                days = intervals.get(period.lower(), 365)
+                df = local_db.execute(f"""
+                    SELECT strftime(trade_date, '%Y-%m-%d') as time, open, close, high, low, volume,
+                        AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) as ma30,
+                        AVG(close) OVER (ORDER BY trade_date ROWS BETWEEN 89 PRECEDING AND CURRENT ROW) as ma90
+                    FROM index_prices WHERE symbol = ?
+                        AND trade_date >= CURRENT_DATE - INTERVAL '{days} days'
+                    ORDER BY trade_date ASC
+                """, [symbol]).df()
+
+        result = df.fillna(0).to_dict(orient='records')
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Index price single error ({symbol}): {e}")
+        return []
+
+
+@app.get("/index-prices/top-sectors")
+async def get_top_sectors(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+    """
+    Top/bottom sectors by avg % change across selected indices.
+    indices: comma-separated index keys (e.g. "sp500,stoxx50")
+    Supports custom date range via start/end params.
+    """
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list:
+        index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
+    if not index_list:
+        return {"top": [], "bottom": []}
+
+    use_custom = bool(start and end)
+    cache_key = f"top_sectors_{','.join(sorted(index_list))}_{start}_{end}" if use_custom else f"top_sectors_{','.join(sorted(index_list))}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+    days = intervals.get(period.lower(), 365)
+
+    try:
+        tables = []
+        for idx in index_list:
+            if not ensure_index_loaded(idx):
+                continue
+            tables.append(f"prices_{idx}")
+
+        if not tables:
+            return {"top": [], "bottom": []}
+
+        union = " UNION ALL ".join([f"SELECT symbol, sector, close, trade_date FROM {t}" for t in tables])
+
+        with db_lock:
+            if use_custom:
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    Filtered AS (
+                        SELECT symbol, sector, close, trade_date
+                        FROM AllData
+                        WHERE trade_date >= '{start}' AND trade_date <= '{end}'
+                          AND sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
+                    ),
+                    PerSymbol AS (
+                        SELECT symbol, sector,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM Filtered
+                    )
+                    SELECT sector, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+            elif period.lower() == "max":
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    PerSymbol AS (
+                        SELECT symbol, sector,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM AllData
+                        WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
+                    )
+                    SELECT sector, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+            else:
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    MaxDate AS (SELECT MAX(trade_date) as md FROM AllData),
+                    Filtered AS (
+                        SELECT a.symbol, a.sector, a.close, a.trade_date
+                        FROM AllData a, MaxDate m
+                        WHERE a.trade_date >= m.md - INTERVAL '{days} days'
+                          AND a.sector IS NOT NULL AND a.sector NOT IN ('N/A', '0', '')
+                    ),
+                    PerSymbol AS (
+                        SELECT symbol, sector,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM Filtered
+                    )
+                    SELECT sector, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+
+        if df.empty:
+            result = {"top": [], "bottom": []}
+        else:
+            result = {
+                "top": df.head(5).to_dict('records'),
+                "bottom": df.tail(5).sort_values('value').to_dict('records'),
+            }
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Top sectors error: {e}")
+        return {"top": [], "bottom": []}
+
+
+@app.get("/index-prices/top-industries")
+async def get_top_industries(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+    """
+    Top/bottom industries by avg % change across selected indices.
+    Supports custom date range via start/end params.
+    """
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list:
+        index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
+    if not index_list:
+        return {"top": [], "bottom": []}
+
+    use_custom = bool(start and end)
+    cache_key = f"top_industries_{','.join(sorted(index_list))}_{start}_{end}" if use_custom else f"top_industries_{','.join(sorted(index_list))}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+    days = intervals.get(period.lower(), 365)
+
+    try:
+        tables = []
+        for idx in index_list:
+            if not ensure_index_loaded(idx):
+                continue
+            tables.append(f"prices_{idx}")
+
+        if not tables:
+            return {"top": [], "bottom": []}
+
+        union = " UNION ALL ".join([f"SELECT symbol, industry, close, trade_date FROM {t}" for t in tables])
+
+        with db_lock:
+            if use_custom:
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    Filtered AS (
+                        SELECT symbol, industry, close, trade_date
+                        FROM AllData
+                        WHERE trade_date >= '{start}' AND trade_date <= '{end}'
+                          AND industry IS NOT NULL AND industry NOT IN ('N/A', '0', '')
+                    ),
+                    PerSymbol AS (
+                        SELECT symbol, industry,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM Filtered
+                    )
+                    SELECT industry, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY industry HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+            elif period.lower() == "max":
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    PerSymbol AS (
+                        SELECT symbol, industry,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM AllData
+                        WHERE industry IS NOT NULL AND industry NOT IN ('N/A', '0', '')
+                    )
+                    SELECT industry, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY industry HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+            else:
+                df = local_db.execute(f"""
+                    WITH AllData AS ({union}),
+                    MaxDate AS (SELECT MAX(trade_date) as md FROM AllData),
+                    Filtered AS (
+                        SELECT a.symbol, a.industry, a.close, a.trade_date
+                        FROM AllData a, MaxDate m
+                        WHERE a.trade_date >= m.md - INTERVAL '{days} days'
+                          AND a.industry IS NOT NULL AND a.industry NOT IN ('N/A', '0', '')
+                    ),
+                    PerSymbol AS (
+                        SELECT symbol, industry,
+                            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                            LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                            ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                        FROM Filtered
+                    )
+                    SELECT industry, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
+                        COUNT(DISTINCT symbol) as stock_count
+                    FROM PerSymbol WHERE rn = 1
+                    GROUP BY industry HAVING COUNT(DISTINCT symbol) >= 2
+                    ORDER BY value DESC
+                """).df()
+
+        if df.empty:
+            result = {"top": [], "bottom": []}
+        else:
+            result = {
+                "top": df.head(5).to_dict('records'),
+                "bottom": df.tail(5).sort_values('value').to_dict('records'),
+            }
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Top industries error: {e}")
+        return {"top": [], "bottom": []}
 
 
 @app.get("/summary")

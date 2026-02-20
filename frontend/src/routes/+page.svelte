@@ -1,17 +1,18 @@
 <script>
-    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, overviewSelectedIndices, INDEX_TICKER_MAP, loadIndexOverviewData } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Chart from '$lib/components/Chart.svelte';
     import RankingPanel from '$lib/components/RankingPanel.svelte';
+    import IndexPerformanceTable from '$lib/components/IndexPerformanceTable.svelte';
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
     import { onMount, untrack } from 'svelte';
 
-    async function fetchWithTimeout(url, timeout = 10000) {
+    async function fetchWithTimeout(url, timeout = 10000, opts = {}) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
         try {
-            const response = await fetch(url, { signal: controller.signal });
+            const response = await fetch(url, { ...opts, signal: controller.signal });
             clearTimeout(timeoutId);
             return response;
         } catch (error) {
@@ -22,8 +23,27 @@
     }
 
     let fullStockData = $state([]);
+    let allComparisonData = $state(null); // Full data for all 6 indices
+    let comparisonData = $state(null);  // Filtered to selected indices
+
+    // Derive filtered comparison data from selection
+    $effect(() => {
+        const selected = $overviewSelectedIndices;
+        const all = allComparisonData;
+        if (!all || !all.series) {
+            comparisonData = null;
+            return;
+        }
+        const filtered = all.series.filter(s => selected.includes(s.symbol));
+        if (filtered.length === 0) {
+            comparisonData = null;
+        } else {
+            comparisonData = { series: filtered };
+        }
+    });
     let isInitialLoading = $state(true);
     let isIndexSwitching = $state(false);
+    let inOverview = $derived($isOverviewMode);
 
     // Read from localStorage synchronously to prevent button flashing on load
     let initialPeriod = '1y';
@@ -156,43 +176,72 @@
         isIndexSwitching = false;
     }
 
+    async function fetchComparisonData() {
+        // Always fetch all 6 indices — filtering happens client-side
+        const allTickers = Object.keys(INDEX_TICKER_MAP);
+        try {
+            const res = await fetchWithTimeout(
+                `${API_BASE_URL}/index-prices/data?symbols=${encodeURIComponent(allTickers.join(','))}&period=max&t=${Date.now()}`,
+                15000,
+                { headers: { 'Cache-Control': 'no-cache' } }
+            );
+            if (res.ok) {
+                allComparisonData = await res.json();
+            }
+        } catch (e) {
+            console.error('Failed to fetch comparison data:', e);
+        }
+    }
+
     onMount(async () => {
         lastFetchedIndex = $marketIndex;
         lastFetchedSymbol = $selectedSymbol;
 
         // Keep-alive: ping backend every 4 minutes to prevent Cloud Run container recycling.
-        // With --min-instances 1, this keeps DuckDB cache, LATEST_MARKET_DATA, and the
-        // feeder coroutine alive permanently. Cost: ~0 (health endpoint is instant).
         const keepAlive = setInterval(() => {
             fetch(`${API_BASE_URL}/health`).catch(() => {});
         }, 4 * 60 * 1000);
 
-        // Load sidebar data (with retry)
-        await loadSummaryData($marketIndex);
-
-        // Load chart data
-        await fetchStockData($selectedSymbol);
-        isInitialLoading = false;
+        if ($isOverviewMode) {
+            await loadIndexOverviewData();
+            await fetchComparisonData();
+            isInitialLoading = false;
+        } else {
+            await loadSummaryData($marketIndex);
+            await fetchStockData($selectedSymbol);
+            isInitialLoading = false;
+        }
 
         return () => clearInterval(keepAlive);
     });
 
-    // React to INDEX changes
+    // React to INDEX changes (including overview)
     $effect(() => {
         const idx = $marketIndex;
         if (idx === lastFetchedIndex) return;
         lastFetchedIndex = idx;
-        fullStockData = [];
-        isIndexSwitching = true;
-        displayNameText = '';
-        // Force symbol re-fetch by clearing the guard
-        lastFetchedSymbol = '';
+
+        if (idx === 'overview') {
+            fullStockData = [];
+            displayNameText = '';
+            loadIndexOverviewData();
+            fetchComparisonData();
+            isInitialLoading = false;
+            isIndexSwitching = false;
+        } else {
+            fullStockData = [];
+            allComparisonData = null;
+            comparisonData = null;
+            isIndexSwitching = true;
+            displayNameText = '';
+            lastFetchedSymbol = '';
+        }
     });
 
-    // React to SYMBOL changes
+    // React to SYMBOL changes (stock mode only)
     $effect(() => {
         const sym = $selectedSymbol;
-        if (!sym) return;
+        if (!sym || $isOverviewMode) return;
         if (sym === lastFetchedSymbol) return;
         lastFetchedSymbol = sym;
         displayNameText = metadataCache[sym] || '';
@@ -200,11 +249,9 @@
         selectMode = false;
         fetchStockData(sym);
     });
-
-    $effect(() => {
-        const period = currentPeriod;
-        // Don't block on isInitialLoading — RankingPanel handles its own loading
-    });
+    // Index selection changes are handled by the $effect that derives
+    // comparisonData from allComparisonData + overviewSelectedIndices.
+    // No re-fetch needed.
 </script>
 
 <div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30">
@@ -217,10 +264,17 @@
 
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
-                <h1 class="text-5xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
-                <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
-                    {displayName || 'Loading...'}
-                </span>
+                {#if inOverview}
+                    <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">INDEX COMPARISON</h1>
+                    <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 text-white/30">
+                        {$overviewSelectedIndices.length} indices selected · Normalized % change
+                    </span>
+                {:else}
+                    <h1 class="text-5xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
+                    <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
+                        {displayName || 'Loading...'}
+                    </span>
+                {/if}
             </div>
 
             <div class="flex items-center gap-3">
@@ -261,45 +315,77 @@
             <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
                 {selectMode ? 'ring-2 ring-orange-500/30' : ''}">
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                {#if (isInitialLoading || isIndexSwitching) && fullStockData.length === 0}
-                    <div class="absolute inset-0 flex items-center justify-center z-10">
-                        <div class="flex flex-col items-center space-y-3 opacity-30">
-                            <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                            <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
+                {#if inOverview}
+                    <!-- Comparison chart -->
+                    {#if comparisonData && comparisonData.series && comparisonData.series.length > 0}
+                        <div class="flex-1 min-h-0 min-w-0">
+                            <Chart
+                                data={[]}
+                                {currentPeriod}
+                                {selectMode}
+                                {customRange}
+                                currency="%"
+                                compareData={comparisonData}
+                                onResetPeriod={handleResetPeriod}
+                                onRangeSelect={handleRangeSelect}
+                            />
                         </div>
-                    </div>
-                {:else if fullStockData.length === 0}
-                    <div class="absolute inset-0 flex items-center justify-center z-10">
-                        <div class="flex flex-col items-center space-y-3 opacity-30">
-                            <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                            <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Data</span>
+                    {:else}
+                        <div class="absolute inset-0 flex items-center justify-center z-10">
+                            <div class="flex flex-col items-center space-y-3 opacity-30">
+                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Comparison</span>
+                            </div>
                         </div>
+                    {/if}
+                {:else}
+                    {#if (isInitialLoading || isIndexSwitching) && fullStockData.length === 0}
+                        <div class="absolute inset-0 flex items-center justify-center z-10">
+                            <div class="flex flex-col items-center space-y-3 opacity-30">
+                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
+                            </div>
+                        </div>
+                    {:else if fullStockData.length === 0}
+                        <div class="absolute inset-0 flex items-center justify-center z-10">
+                            <div class="flex flex-col items-center space-y-3 opacity-30">
+                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Data</span>
+                            </div>
+                        </div>
+                    {/if}
+                    <div class="flex-1 min-h-0 min-w-0 chart-no-animate" style="transition: none !important;">
+                        <Chart
+                            data={fullStockData}
+                            {currentPeriod}
+                            {selectMode}
+                            {customRange}
+                            currency={ccy}
+                            onResetPeriod={handleResetPeriod}
+                            onRangeSelect={handleRangeSelect}
+                        />
                     </div>
                 {/if}
-                <div class="flex-1 min-h-0 min-w-0 chart-no-animate" style="transition: none !important;">
-                    <Chart
-                        data={fullStockData}
-                        {currentPeriod}
-                        {selectMode}
-                        {customRange}
-                        currency={ccy}
-                        onResetPeriod={handleResetPeriod}
-                        onRangeSelect={handleRangeSelect}
-                    />
-                </div>
             </section>
 
-            <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
-                <div class="col-span-4 min-h-0 flex flex-col">
-                    <RankingPanel {currentPeriod} {customRange} />
+            {#if inOverview}
+                <!-- Overview: Index Performance Table -->
+                <div class="flex-1 min-h-0">
+                    <IndexPerformanceTable {currentPeriod} {customRange} />
                 </div>
-                <div class="col-span-4 min-h-0">
-                    <LiveIndicators title="MARKET LEADERS" symbols={['NVDA', 'AAPL', 'MSFT']} dynamicByIndex={true} />
+            {:else}
+                <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
+                    <div class="col-span-4 min-h-0 flex flex-col">
+                        <RankingPanel {currentPeriod} {customRange} />
+                    </div>
+                    <div class="col-span-4 min-h-0">
+                        <LiveIndicators title="MARKET LEADERS" symbols={['NVDA', 'AAPL', 'MSFT']} dynamicByIndex={true} />
+                    </div>
+                    <div class="col-span-4 min-h-0">
+                        <LiveIndicators title="GLOBAL MACRO" subtitle=" " symbols={['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD']} />
+                    </div>
                 </div>
-                <div class="col-span-4 min-h-0">
-                    <LiveIndicators title="GLOBAL MACRO" subtitle=" " symbols={['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD']} />
-                </div>
-            </div>
+            {/if}
         </div>
     </main>
 </div>

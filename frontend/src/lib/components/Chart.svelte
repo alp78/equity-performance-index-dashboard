@@ -17,6 +17,7 @@
         currency = '$',
         onResetPeriod = null,
         onRangeSelect = null,
+        compareData = null,
     } = $props();
 
     let chartContainer;
@@ -28,6 +29,7 @@
 
     let chart;
     let candleSeries, areaSeries, volumeSeries, ma30Series, ma90Series;
+    let comparisonSeries = []; // Array of { symbol, series } for comparison mode
     let observer;
 
     let processedData = [];
@@ -88,18 +90,28 @@
         cutoff.setDate(cutoff.getDate() - days);
         const cutoffStr = cutoff.toISOString().split('T')[0];
 
-        const startIdx = processedData.findIndex(d => d.time >= cutoffStr);
-        if (startIdx < 0) {
-            timeScale.fitContent();
-            setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
-            return;
+        // Use time-based range (works correctly with multiple series that have different time points)
+        if (comparisonSeries.length > 0) {
+            timeScale.setVisibleRange({ from: cutoffStr, to: processedData[processedData.length - 1].time });
+        } else {
+            // Stock mode: logical indices match processedData perfectly
+            const startIdx = processedData.findIndex(d => d.time >= cutoffStr);
+            if (startIdx < 0) {
+                timeScale.fitContent();
+                setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+                return;
+            }
+            timeScale.setVisibleLogicalRange({ from: startIdx, to: processedData.length - 1 + 3 });
         }
-
-        timeScale.setVisibleLogicalRange({ from: startIdx, to: processedData.length - 1 + 3 });
         setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
     }
 
     function clampRange(from, to) {
+        // In comparison mode, let the chart handle its own bounds
+        // because logical indices don't map 1:1 to processedData
+        if (comparisonSeries.length > 0) {
+            return { from, to };
+        }
         const minIdx = 0;
         const maxIdx = processedData.length - 1 + 3;
         let newFrom = from, newTo = to;
@@ -110,11 +122,36 @@
         return { from: newFrom, to: newTo };
     }
 
+    // Merged time axis for comparison mode (all unique dates from all series, sorted)
+    let mergedTimeAxis = [];
+
+    function buildMergedTimeAxis(cData) {
+        if (!cData || !cData.series || cData.series.length === 0) {
+            mergedTimeAxis = [];
+            return;
+        }
+        const timeSet = new Set();
+        for (const s of cData.series) {
+            for (const p of s.points) timeSet.add(p.time);
+        }
+        mergedTimeAxis = Array.from(timeSet).sort();
+    }
+
     function xToDate(x) {
         if (!chart) return null;
-        const logical = chart.timeScale().coordinateToLogical(x);
+        const timeScale = chart.timeScale();
+        const logical = timeScale.coordinateToLogical(x);
         if (logical === null) return null;
         const idx = Math.round(logical);
+
+        // In comparison mode, use the merged time axis (matches chart's internal bar indices)
+        if (comparisonSeries.length > 0 && mergedTimeAxis.length > 0) {
+            if (idx < 0) return mergedTimeAxis[0];
+            if (idx >= mergedTimeAxis.length) return mergedTimeAxis[mergedTimeAxis.length - 1];
+            return mergedTimeAxis[idx];
+        }
+
+        // Stock mode: processedData indices match 1:1
         if (idx < 0 || idx >= processedData.length) return null;
         return processedData[idx].time;
     }
@@ -130,8 +167,13 @@
         }
 
         const timeScale = chart.timeScale();
-        const startEntry = processedData.find(d => d.time >= customRange.start);
-        const endEntries = processedData.filter(d => d.time <= customRange.end);
+        // Use mergedTimeAxis in comparison mode for accurate time lookup
+        const timeSource = (comparisonSeries.length > 0 && mergedTimeAxis.length > 0)
+            ? mergedTimeAxis.map(t => ({ time: t }))
+            : processedData;
+
+        const startEntry = timeSource.find(d => d.time >= customRange.start);
+        const endEntries = timeSource.filter(d => d.time <= customRange.end);
         const endEntry = endEntries.length > 0 ? endEntries[endEntries.length - 1] : null;
 
         if (!startEntry || !endEntry) {
@@ -227,12 +269,22 @@
             if (brushStartTime && endTime && brushStartTime !== endTime) {
                 const start = brushStartTime < endTime ? brushStartTime : endTime;
                 const end = brushStartTime < endTime ? endTime : brushStartTime;
-                const startIdx = processedData.findIndex(d => d.time >= start);
-                const endIdx = processedData.findIndex(d => d.time >= end);
-                if (startIdx >= 0 && endIdx >= 0) {
+
+                if (comparisonSeries.length > 0) {
+                    // Comparison mode: use time-based range
                     isProgrammaticRangeChange = true;
-                    chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
+                    chart.timeScale().setVisibleRange({ from: start, to: end });
                     setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+                } else {
+                    // Stock mode: use logical indices
+                    const startIdx = processedData.findIndex(d => d.time >= start);
+                    const endEntries = processedData.filter(d => d.time <= end);
+                    const endIdx = endEntries.length > 0 ? processedData.indexOf(endEntries[endEntries.length - 1]) : -1;
+                    if (startIdx >= 0 && endIdx >= 0) {
+                        isProgrammaticRangeChange = true;
+                        chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
+                        setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+                    }
                 }
                 if (onRangeSelect) onRangeSelect({ start, end });
             }
@@ -371,12 +423,69 @@
             borderVisible: false,
         });
 
-        // --- TOOLTIP (user's updated version: close colored, open plain) ---
+        // --- TOOLTIP ---
         chart.subscribeCrosshairMove((param) => {
             if (!tooltip || !param.time || !param.point || param.point.x < 0) {
                 if (tooltip) tooltip.style.display = 'none';
                 return;
             }
+
+            // --- COMPARISON MODE TOOLTIP ---
+            if (comparisonSeries.length > 0) {
+                let rows = '';
+                for (const cs of comparisonSeries) {
+                    const sData = param.seriesData.get(cs.series);
+                    if (!sData) continue;
+                    const color = COMPARE_COLORS[cs.symbol] || '#8b5cf6';
+                    const name = COMPARE_NAMES[cs.symbol] || cs.symbol;
+                    const pct = sData.value;
+                    const sign = pct >= 0 ? '+' : '';
+                    const pctColor = pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)';
+                    // Find raw close from compareData
+                    let rawClose = '';
+                    if (compareData && compareData.series) {
+                        const s = compareData.series.find(s => s.symbol === cs.symbol);
+                        if (s) {
+                            const pt = s.points.find(p => p.time === param.time);
+                            if (pt) rawClose = pt.close.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+                        }
+                    }
+                    rows += `
+                        <div class="flex items-center gap-2">
+                            <div style="width:8px;height:3px;border-radius:2px;background:${color};flex-shrink:0"></div>
+                            <span class="text-[9px] uppercase font-bold" style="color:${color};min-width:55px">${name}</span>
+                            <span class="text-[11px] font-black tabular-nums ml-auto" style="color:${pctColor}">${sign}${pct.toFixed(2)}%</span>
+                        </div>
+                        ${rawClose ? `<div class="flex justify-end"><span class="text-[9px] text-white/30 font-mono tabular-nums">${rawClose}</span></div>` : ''}
+                    `;
+                }
+
+                // Aggregated volume
+                const vData = param.seriesData.get(volumeSeries);
+                const volRow = vData ? `
+                    <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
+                        <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
+                        <span class="text-xs text-purple-400 font-bold">${formatVolume(vData.value)}</span>
+                    </div>` : '';
+
+                tooltip.style.display = 'flex';
+                const tooltipWidth = 200, tooltipHeight = 60 + comparisonSeries.length * 50;
+                let left = param.point.x + 20, top = param.point.y + 20;
+                if (left + tooltipWidth > chartContainer.clientWidth) left = param.point.x - tooltipWidth - 20;
+                if (top + tooltipHeight > chartContainer.clientHeight) top = param.point.y - tooltipHeight - 20;
+                tooltip.style.left = `${left}px`;
+                tooltip.style.top = `${top}px`;
+
+                tooltip.innerHTML = `
+                    <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[180px] gap-1.5 pointer-events-none">
+                        <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
+                        ${rows}
+                        ${volRow}
+                    </div>`;
+                return;
+            }
+
+            // --- STOCK MODE TOOLTIP ---
             const pData = param.seriesData.get(candleSeries);
             const vData = param.seriesData.get(volumeSeries);
             const m30Data = param.seriesData.get(ma30Series);
@@ -456,14 +565,18 @@
 
         chartContainer.addEventListener('dblclick', () => {
             if (customRange && customRange.start && customRange.end) {
-                const startIdx = processedData.findIndex(d => d.time >= customRange.start);
-                const endEntries = processedData.filter(d => d.time <= customRange.end);
-                const endIdx = endEntries.length > 0 ? processedData.indexOf(endEntries[endEntries.length - 1]) : -1;
-                if (startIdx >= 0 && endIdx >= 0) {
-                    isProgrammaticRangeChange = true;
-                    chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
-                    setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+                isProgrammaticRangeChange = true;
+                if (comparisonSeries.length > 0) {
+                    chart.timeScale().setVisibleRange({ from: customRange.start, to: customRange.end });
+                } else {
+                    const startIdx = processedData.findIndex(d => d.time >= customRange.start);
+                    const endEntries = processedData.filter(d => d.time <= customRange.end);
+                    const endIdx = endEntries.length > 0 ? processedData.indexOf(endEntries[endEntries.length - 1]) : -1;
+                    if (startIdx >= 0 && endIdx >= 0) {
+                        chart.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
+                    }
                 }
+                setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
                 return;
             }
             if (onResetPeriod) onResetPeriod();
@@ -541,6 +654,222 @@
         }
     });
 
+    // --- REACTIVE: COMPARISON DATA ---
+    const COMPARE_COLORS = {
+        '^GSPC':     '#e2e8f0',
+        '^STOXX50E': '#2563eb',
+        '^FTSE':     '#ec4899',
+        '^N225':     '#f59e0b',
+        '000300.SS': '#ef4444',
+        '^NSEI':     '#22c55e',
+    };
+    const COMPARE_NAMES = {
+        '^GSPC':     'S&P 500',
+        '^STOXX50E': 'STOXX 50',
+        '^FTSE':     'FTSE 100',
+        '^N225':     'Nikkei 225',
+        '000300.SS': 'CSI 300',
+        '^NSEI':     'Nifty 50',
+    };
+
+    let _lastCompareSymbols = '';
+
+    function setComparisonVolume(cData) {
+        // Aggregate volume across all selected indices per date
+        const volMap = new Map();
+        for (const s of cData.series) {
+            for (const p of s.points) {
+                volMap.set(p.time, (volMap.get(p.time) || 0) + (p.volume || 0));
+            }
+        }
+        const volData = Array.from(volMap.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]));
+        const maxVol = Math.max(...volData.map(d => d[1]), 1);
+        volumeSeries.setData(volData.map(([time, vol]) => ({
+            time,
+            value: vol,
+            color: vol > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
+        })));
+    }
+
+    function renderComparisonFull(cData) {
+        if (!chart) return;
+
+        // Hide stock-mode series (except volumeSeries — reused for aggregated volume)
+        if (candleSeries) {
+            try {
+                candleSeries.setData([]);
+                areaSeries.setData([]);
+                ma30Series.setData([]);
+                ma90Series.setData([]);
+                if (activePriceLine) {
+                    try { candleSeries.removePriceLine(activePriceLine); } catch(e) {}
+                    activePriceLine = null;
+                }
+            } catch(e) {}
+        }
+
+        // Remove old comparison series
+        comparisonSeries.forEach(cs => {
+            try { chart.removeSeries(cs.series); } catch(e) {}
+        });
+        comparisonSeries = [];
+
+        // Create all series
+        cData.series.forEach((s) => {
+            const color = COMPARE_COLORS[s.symbol] || '#8b5cf6';
+            const name = COMPARE_NAMES[s.symbol] || s.symbol;
+            const lineSeries = chart.addSeries(LineSeries, {
+                color: color,
+                lineWidth: 2,
+                title: '',
+                lastValueVisible: false,
+                priceLineVisible: false,
+                priceFormat: { type: 'custom', formatter: (p) => p.toFixed(1) + '%' },
+                crosshairMarkerVisible: true,
+                crosshairMarkerRadius: 4,
+            });
+            lineSeries.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
+
+            const lastPct = s.points[s.points.length - 1]?.pct ?? 0;
+            lineSeries.createPriceLine({
+                price: lastPct, color: color, lineWidth: 0,
+                lineStyle: LineStyle.Solid, axisLabelVisible: true,
+                title: name, lineVisible: false,
+            });
+
+            comparisonSeries.push({ symbol: s.symbol, series: lineSeries });
+        });
+
+        // Zero line
+        if (comparisonSeries.length > 0) {
+            try {
+                comparisonSeries[0].series.createPriceLine({
+                    price: 0, color: 'rgba(255,255,255,0.15)', lineWidth: 1,
+                    lineStyle: LineStyle.Dashed, axisLabelVisible: false,
+                });
+            } catch(e) {}
+        }
+
+        // Populate processedData from longest series
+        let longest = cData.series[0].points;
+        for (const s of cData.series) {
+            if (s.points.length > longest.length) longest = s.points;
+        }
+        processedData = longest.map(p => ({ time: p.time, close: p.pct }));
+
+        // Build merged time axis for correct xToDate mapping
+        buildMergedTimeAxis(cData);
+
+        // Set aggregated volume histogram
+        setComparisonVolume(cData);
+
+        // Apply saved period or custom range (same as stock mode on refresh)
+        if (currentPeriod) {
+            applyPeriodRange(currentPeriod);
+        } else if (customRange && customRange.start && customRange.end) {
+            chart.timeScale().setVisibleRange({ from: customRange.start, to: customRange.end });
+        } else {
+            applyPeriodRange('1y');
+        }
+    }
+
+    function updateComparisonSeries(cData) {
+        if (!chart) return;
+
+        // Save the current visible TIME range before any modifications
+        let savedFrom = null, savedTo = null;
+        try {
+            const vr = chart.timeScale().getVisibleRange();
+            if (vr) { savedFrom = vr.from; savedTo = vr.to; }
+        } catch(e) {}
+
+        const currentSymbols = new Set(comparisonSeries.map(cs => cs.symbol));
+        const newSymbols = new Set(cData.series.map(s => s.symbol));
+
+        // Remove series that are no longer selected
+        const toRemove = comparisonSeries.filter(cs => !newSymbols.has(cs.symbol));
+        toRemove.forEach(cs => {
+            try { chart.removeSeries(cs.series); } catch(e) {}
+        });
+        comparisonSeries = comparisonSeries.filter(cs => newSymbols.has(cs.symbol));
+
+        // Add new series
+        cData.series.forEach((s) => {
+            if (currentSymbols.has(s.symbol)) return; // already shown
+            const color = COMPARE_COLORS[s.symbol] || '#8b5cf6';
+            const name = COMPARE_NAMES[s.symbol] || s.symbol;
+            const lineSeries = chart.addSeries(LineSeries, {
+                color: color,
+                lineWidth: 2,
+                title: '',
+                lastValueVisible: false,
+                priceLineVisible: false,
+                priceFormat: { type: 'custom', formatter: (p) => p.toFixed(1) + '%' },
+                crosshairMarkerVisible: true,
+                crosshairMarkerRadius: 4,
+            });
+            lineSeries.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
+
+            const lastPct = s.points[s.points.length - 1]?.pct ?? 0;
+            lineSeries.createPriceLine({
+                price: lastPct, color: color, lineWidth: 0,
+                lineStyle: LineStyle.Solid, axisLabelVisible: true,
+                title: name, lineVisible: false,
+            });
+
+            comparisonSeries.push({ symbol: s.symbol, series: lineSeries });
+        });
+
+        // Update processedData from longest series (in case it changed)
+        let longest = cData.series[0].points;
+        for (const s of cData.series) {
+            if (s.points.length > longest.length) longest = s.points;
+        }
+        processedData = longest.map(p => ({ time: p.time, close: p.pct }));
+
+        // Rebuild merged time axis
+        buildMergedTimeAxis(cData);
+
+        // Update aggregated volume
+        setComparisonVolume(cData);
+
+        // Restore the exact same visible time range to prevent drift
+        if (savedFrom && savedTo) {
+            isProgrammaticRangeChange = true;
+            chart.timeScale().setVisibleRange({ from: savedFrom, to: savedTo });
+            setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+        }
+    }
+
+    $effect(() => {
+        const cData = compareData;
+        if (!cData || !cData.series || cData.series.length === 0) {
+            if (chart) {
+                comparisonSeries.forEach(cs => {
+                    try { chart.removeSeries(cs.series); } catch(e) {}
+                });
+            }
+            comparisonSeries = [];
+            mergedTimeAxis = [];
+            _lastCompareSymbols = '';
+            return;
+        }
+
+        const newSymbols = cData.series.map(s => s.symbol).sort().join(',');
+        if (newSymbols === _lastCompareSymbols) return; // Same symbols, skip
+
+        const isFirstLoad = _lastCompareSymbols === '';
+        _lastCompareSymbols = newSymbols;
+
+        if (isFirstLoad) {
+            renderComparisonFull(cData);
+        } else {
+            // Toggle: only add/remove the changed series, don't touch the view
+            updateComparisonSeries(cData);
+        }
+    });
+
     onDestroy(() => {
         chartContainer?.removeEventListener('wheel', handleWheel);
         chartContainer?.removeEventListener('mousedown', handleMouseDown);
@@ -553,13 +882,26 @@
 
 <div bind:this={chartContainer} class="w-full h-full min-h-[500px] relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="transition: none !important; cursor: crosshair;">
 
-    <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
-        <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-green-500/60 rounded-[1px]"></div><div class="w-2 h-3 bg-red-500/60 rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest ml-1">OHLC</span></div>
-        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
-        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>
-        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
-        <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-[#a855f7]/60 uppercase font-black tracking-widest">Volume</span></div>
-    </div>
+    {#if compareData && compareData.series && compareData.series.length > 0}
+        <!-- Comparison mode legend -->
+        <div class="absolute top-4 left-6 z-[110] flex gap-4 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
+            {#each compareData.series as s}
+                <div class="flex items-center gap-1.5">
+                    <div class="w-4 h-[2px] rounded-full" style="background: {COMPARE_COLORS[s.symbol] || '#8b5cf6'}"></div>
+                    <span class="text-[9px] uppercase font-black tracking-widest" style="color: {COMPARE_COLORS[s.symbol] || '#8b5cf6'}">{COMPARE_NAMES[s.symbol] || s.symbol}</span>
+                </div>
+            {/each}
+        </div>
+    {:else}
+        <!-- Stock mode legend -->
+        <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
+            <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-green-500/60 rounded-[1px]"></div><div class="w-2 h-3 bg-red-500/60 rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest ml-1">OHLC</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-[#a855f7]/60 uppercase font-black tracking-widest">Volume</span></div>
+        </div>
+    {/if}
 
     {#if selectMode}
         <div class="absolute top-4 right-6 z-[110] px-3 py-1.5 bg-orange-500/20 border border-orange-500/40 rounded-lg pointer-events-none">

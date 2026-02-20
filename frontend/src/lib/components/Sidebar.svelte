@@ -4,7 +4,7 @@
 
 <script>
     import { onMount } from 'svelte';
-    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest, isOverviewMode, overviewSelectedIndices, loadIndexOverviewData, indexOverviewData, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER } from '$lib/stores.js';
 
     let searchQuery = $state('');
     let dropdownOpen = $state(false);
@@ -18,7 +18,8 @@
     let error = $derived($summaryData.error);
     let currentIndex = $derived($marketIndex);
     let ccy = $derived($currentCurrency);
-    let currentConfig = $derived(INDEX_CONFIG[currentIndex]);
+    let currentConfig = $derived($isOverviewMode ? { shortLabel: 'INDEX OVERVIEW', currencyCode: '%', currency: '' } : INDEX_CONFIG[currentIndex]);
+    let inOverview = $derived($isOverviewMode);
 
     const INDEX_FLAGS = {
         stoxx50:   'fi fi-eu',
@@ -28,6 +29,35 @@
         csi300:    'fi fi-cn',
         nifty50:   'fi fi-in',
     };
+
+    // Overview mode: color palette for index lines
+    const INDEX_COLORS = {
+        '^GSPC':     '#e2e8f0', // white/slate
+        '^STOXX50E': '#2563eb', // deep blue
+        '^FTSE':     '#ec4899', // pink
+        '^N225':     '#f59e0b', // amber
+        '000300.SS': '#ef4444', // red
+        '^NSEI':     '#22c55e', // green
+    };
+
+    let overviewAssets = $derived($indexOverviewData.assets || []);
+
+    function toggleOverviewIndex(ticker) {
+        overviewSelectedIndices.update(list => {
+            if (list.includes(ticker)) {
+                return list.length > 1 ? list.filter(t => t !== ticker) : list; // Keep at least 1
+            }
+            return [...list, ticker];
+        });
+    }
+
+    function switchToOverview() {
+        marketIndex.set('overview');
+        dropdownOpen = false;
+        searchQuery = '';
+        openSectors = new Set();
+        loadIndexOverviewData();
+    }
 
     // Build sector → industry → stocks hierarchy
     let sectorTree = $derived((() => {
@@ -170,10 +200,18 @@
                 class="w-full flex items-center justify-between bg-black/40 border border-bloom-muted/20 rounded-xl px-4 py-3 hover:border-bloom-accent/40 transition-all group"
             >
                 <div class="flex items-center gap-3">
-                    <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.4rem;"></span>
-                    <span class="text-base font-black text-white/85">{currentConfig?.shortLabel}</span>
-                    <span class="text-[12px] font-bold text-bloom-accent uppercase ml-1">{currentConfig?.currencyCode}</span>
-                    <span class="text-[18px] font-black text-bloom-accent/50">{currentConfig?.currency}</span>
+                    {#if inOverview}
+                        <svg class="w-6 h-6 text-bloom-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke-width="1.5"/>
+                            <path stroke-width="1.5" d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+                        </svg>
+                        <span class="text-base font-black text-white/85">INDEX OVERVIEW</span>
+                    {:else}
+                        <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.4rem;"></span>
+                        <span class="text-base font-black text-white/85">{currentConfig?.shortLabel}</span>
+                        <span class="text-[14px] font-bold text-cyan-400 uppercase ml-1">{currentConfig?.currencyCode}</span>
+                        <span class="text-[20px] font-black text-cyan-400/60">{currentConfig?.currency}</span>
+                    {/if}
                 </div>
                 <svg class="w-4 h-4 text-white/30 group-hover:text-bloom-accent transition-all {dropdownOpen ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
@@ -182,22 +220,40 @@
 
             {#if dropdownOpen}
                 <div class="absolute top-full left-0 right-0 mt-2 bg-[#16161e] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
+                    <!-- INDEX OVERVIEW option -->
+                    <button
+                        onclick={switchToOverview}
+                        class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all border-b border-white/10
+                        {inOverview ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
+                    >
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5 text-bloom-accent/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10" stroke-width="1.5"/>
+                                <path stroke-width="1.5" d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
+                            </svg>
+                            <span class="text-[15px] font-bold text-white/80">INDEX OVERVIEW</span>
+                        </div>
+                        {#if inOverview}
+                            <span class="w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
+                        {/if}
+                    </button>
+
                     {#each INDEX_GROUPS as group}
                         <div class="px-4 py-2 text-[9px] font-black text-white/20 uppercase tracking-widest border-b border-white/5">{group.label}</div>
                         {#each group.indices as idx}
                             <button
                                 onclick={() => switchIndex(idx.key)}
                                 class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all
-                                {idx.key === currentIndex ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
+                                {idx.key === currentIndex && !inOverview ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
                             >
                                 <div class="flex items-center gap-3">
                                     <span class="{INDEX_FLAGS[idx.key] || ''} fis rounded-sm" style="font-size: 1.3rem;"></span>
                                     <span class="text-[15px] font-bold text-white/80">{idx.shortLabel}</span>
                                 </div>
                                 <div class="flex items-center gap-2 pr-2">
-                                    <span class="text-[11px] font-bold text-bloom-accent/70">{idx.currencyCode}</span>
-                                    <span class="text-[14px] font-black text-bloom-accent/50">{idx.currency}</span>
-                                    {#if idx.key === currentIndex}
+                                    <span class="text-[13px] font-bold text-cyan-400/80">{idx.currencyCode}</span>
+                                    <span class="text-[16px] font-black text-cyan-400/60">{idx.currency}</span>
+                                    {#if idx.key === currentIndex && !inOverview}
                                         <span class="ml-1 w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
                                     {/if}
                                 </div>
@@ -208,35 +264,82 @@
             {/if}
         </div>
 
-        <!-- SEARCH + EXPAND/COLLAPSE -->
-        <div class="flex gap-2">
-            <div class="relative group flex-1">
-                <input type="text" bind:value={searchQuery} placeholder="Search symbol or name..."
-                    class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-2.5 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
-                />
-                <svg class="absolute left-3 top-3 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
+        <!-- SEARCH + EXPAND/COLLAPSE (hidden in overview mode) -->
+        {#if !inOverview}
+            <div class="flex gap-2">
+                <div class="relative group flex-1">
+                    <input type="text" bind:value={searchQuery} placeholder="Search symbol or name..."
+                        class="w-full bg-black/40 border border-bloom-muted/20 rounded-xl py-2.5 px-4 pl-10 text-sm font-bold text-white placeholder:text-bloom-text/20 focus:outline-none focus:border-bloom-accent/50 focus:ring-4 focus:ring-bloom-accent/10 transition-all"
+                    />
+                    <svg class="absolute left-3 top-3 w-4 h-4 text-bloom-text/20 group-focus-within:text-bloom-accent transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+                <button onclick={() => { openSectors = new Set(sectorTree.map(s => s.name)); }} title="Expand all"
+                    class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
+                >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </button>
+                <button onclick={() => { openSectors = new Set(); }} title="Collapse all"
+                    class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
+                >
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                    </svg>
+                </button>
             </div>
-            <button onclick={() => { openSectors = new Set(sectorTree.map(s => s.name)); }} title="Expand all"
-                class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
-            >
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-            </button>
-            <button onclick={() => { openSectors = new Set(); }} title="Collapse all"
-                class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
-            >
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                </svg>
-            </button>
-        </div>
+        {/if}
     </div>
 
     <div bind:this={scrollContainer} class="flex-1 overflow-y-auto custom-scrollbar">
-        {#if loading}
+        {#if inOverview}
+            <!-- INDEX OVERVIEW: checkboxes for comparison -->
+            <div class="p-4 space-y-2">
+                <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-3">Select indices to compare</div>
+                {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
+                    {@const ticker = INDEX_KEY_TO_TICKER[key]}
+                    {@const asset = overviewAssets.find(a => a.symbol === ticker)}
+                    {@const isSelected = $overviewSelectedIndices.includes(ticker)}
+                    {@const color = INDEX_COLORS[ticker] || '#8b5cf6'}
+                    <button
+                        onclick={() => toggleOverviewIndex(ticker)}
+                        class="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all
+                        {isSelected ? 'bg-white/[0.06] border border-white/10' : 'bg-transparent border border-transparent hover:bg-white/[0.03]'}"
+                    >
+                        <!-- Color indicator / checkbox -->
+                        <div class="w-4 h-4 rounded-sm border-2 flex items-center justify-center shrink-0 transition-all"
+                            style="border-color: {color}; background: {isSelected ? color : 'transparent'}">
+                            {#if isSelected}
+                                <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                                </svg>
+                            {/if}
+                        </div>
+
+                        <!-- Flag + name -->
+                        <span class="{INDEX_FLAGS[key] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
+                        <div class="flex-1 text-left">
+                            <div class="text-[13px] font-bold text-white/70">{cfg.shortLabel}</div>
+                        </div>
+
+                        <!-- Price + change -->
+                        {#if asset}
+                            <div class="text-right">
+                                <div class="text-[13px] font-mono font-bold text-white/60 tabular-nums">
+                                    {(asset.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})}
+                                </div>
+                                <div class="text-[11px] font-bold tabular-nums {(asset.daily_change_pct ?? 0) >= 0 ? 'text-green-500/70' : 'text-red-500/70'}">
+                                    {(asset.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}
+                                    {Math.abs(asset.daily_change_pct ?? 0).toFixed(2)}%
+                                </div>
+                            </div>
+                        {/if}
+                    </button>
+                {/each}
+            </div>
+        {:else if loading}
             <div class="flex flex-col items-center justify-center h-40 space-y-3 opacity-30">
                 <div class="w-6 h-6 border-2 border-bloom-accent border-t-transparent rounded-full animate-spin"></div>
                 <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Tape</span>
