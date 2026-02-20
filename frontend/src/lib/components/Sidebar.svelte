@@ -163,7 +163,7 @@
         <!-- INDEX DROPDOWN -->
         <div class="relative index-dropdown">
             <!-- Dashboard Title -->
-            <div class="text-[12px] font-black text-white/25 uppercase tracking-[0.3em] mb-2.5">Global Exchange Monitor</div>
+            <div class="text-[20px] font-black text-white/25 uppercase tracking-[0.1em] mb-2.5 text-center">Global Exchange Monitor</div>
 
             <button
                 onclick={() => dropdownOpen = !dropdownOpen}
@@ -288,37 +288,37 @@
         onclick={() => selectTicker(item.symbol)}
         title="{item.symbol}{item.name ? ' — ' + item.name : ''}"
         class="w-full pl-6 pr-3 py-2.5 flex items-center border-b border-white/[0.03] hover:bg-white/[0.04] transition-all relative overflow-hidden group
-        {$selectedSymbol === item.symbol ? 'bg-bloom-accent/10 !border-b-bloom-accent/20' : ''}"
+        {$selectedSymbol === item.symbol ? 'bg-orange-500/20 !border-b-orange-500/50' : ''}"
     >
         {#if $selectedSymbol === item.symbol}
-            <div class="absolute left-0 top-0 bottom-0 w-1 bg-bloom-accent shadow-[0_0_15px_rgba(168,85,247,0.5)]"></div>
+            <div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.5)]"></div>
         {/if}
         <div class="w-[28%] text-left overflow-hidden pl-1">
-            <div class="font-bold text-white/50 text-[13px] tracking-tight group-hover:text-bloom-accent transition-colors {$selectedSymbol === item.symbol ? '!text-white/80' : ''}">{item.symbol}</div>
-            <div class="text-[9px] font-medium text-white/20 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
+            <div class="font-bold text-white/80 text-sm tracking-tight group-hover:text-bloom-accent transition-colors {$selectedSymbol === item.symbol ? '!text-white/80' : ''}">{item.symbol}</div>
+            <div class="text-[10px] font-medium text-white/50 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
         </div>
         <div class="w-[26%] text-right pr-2">
-            <div class="text-[13px] font-mono font-bold text-white/50 leading-tight {$selectedSymbol === item.symbol ? '!text-white/70' : ''}">
+            <div class="text-[14px] font-mono font-bold text-white/80 leading-tight {$selectedSymbol === item.symbol ? '!text-white/70' : ''}">
                 {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
             </div>
-            <div class="text-[12px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500/70' : 'text-red-500/70'}">
+            <div class="text-[12px] font-bold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-green-500/80' : 'text-red-500/80'}">
                 <span>{(item.daily_change_pct ?? 0) >= 0 ? '▲' : '▼'}</span>
                 <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
             </div>
         </div>
-        <div class="w-[28%] text-right font-mono text-[12px] leading-tight space-y-0.5">
+        <div class="w-[28%] text-right font-mono text-[13px] leading-tight space-y-0.5">
             <div class="flex justify-end gap-1.5 text-white/20">
                 <span class="font-bold">H</span>
-                <span class="text-white/40 font-bold">{(item.high ?? 0).toFixed(2)}</span>
+                <span class="text-white/60 font-bold">{(item.high ?? 0).toFixed(2)}</span>
             </div>
             <div class="flex justify-end gap-1.5 text-white/20">
                 <span class="font-bold">L</span>
-                <span class="text-white/40 font-bold">{(item.low ?? 0).toFixed(2)}</span>
+                <span class="text-white/60 font-bold">{(item.low ?? 0).toFixed(2)}</span>
             </div>
         </div>
         <div class="w-[18%] text-right">
-            <div class="text-[9px] font-bold text-white/15 uppercase tracking-tighter">Vol</div>
-            <div class="text-[12px] font-bold text-white/35">{formatVol(item.volume)}</div>
+            <div class="text-[10px] font-bold text-white/30 uppercase tracking-tighter">Vol</div>
+            <div class="text-[12px] font-bold text-white/50">{formatVol(item.volume)}</div>
         </div>
     </button>
 {/snippet}

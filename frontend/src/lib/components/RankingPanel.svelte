@@ -153,7 +153,7 @@
             {@const topMax = getSubsetMax(data.top)}
             {@const botMax = getSubsetMax(data.bottom)}
 
-            <div class="flex-1 flex flex-col min-h-0 gap-1 px-5">
+            <div class="flex-1 flex flex-col min-h-0 gap-1">
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / topMax) * 80}
@@ -161,7 +161,7 @@
                             <button
                                 onclick={() => selectSymbol(item.symbol)}
                                 title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
-                                class="w-20 text-[11px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                class="w-20 text-[14px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
                             >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
                                 <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
@@ -181,7 +181,7 @@
                             <button
                                 onclick={() => selectSymbol(item.symbol)}
                                 title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
-                                class="w-20 text-[11px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                class="w-20 text-[14px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
                             >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
                                 <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">

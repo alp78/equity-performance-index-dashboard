@@ -1,7 +1,3 @@
-<!--
-  Main Dashboard Page
--->
-
 <script>
     import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
@@ -26,9 +22,31 @@
     }
 
     let fullStockData = $state([]);
-    let currentPeriod = $state('1y');
     let isInitialLoading = $state(true);
     let isIndexSwitching = $state(false);
+
+    // Read from localStorage synchronously to prevent button flashing on load
+    let initialPeriod = '1y';
+    let initialRange = null;
+
+    if (typeof window !== 'undefined') {
+        const savedPeriod = localStorage.getItem('chart_period');
+        const savedRange = localStorage.getItem('chart_custom_range');
+        if (savedRange) {
+            try {
+                initialRange = JSON.parse(savedRange);
+                initialPeriod = null;
+            } catch (e) {
+                if (savedPeriod) initialPeriod = savedPeriod;
+            }
+        } else if (savedPeriod) {
+            initialPeriod = savedPeriod;
+        }
+    }
+
+    let currentPeriod = $state(initialPeriod);
+    let customRange = $state(initialRange);
+    let selectMode = $state(false);
 
     // Name cache: plain object, not reactive
     let metadataCache = {};
@@ -41,9 +59,6 @@
     let ccy = $derived($currentCurrency);
     // Track assets from the summary store — updates when index switches
     let assets = $derived($summaryData.assets || []);
-
-    let selectMode = $state(false);
-    let customRange = $state(null);
 
     // Display name: metadata → assets → empty (NOT symbol fallback — that's the h1's job)
     let displayName = $derived((() => {
@@ -64,15 +79,18 @@
 
     function handleResetPeriod() {
         if (customRange) { customRange = null; selectMode = false; }
-        const p = currentPeriod || '1y';
+        const p = localStorage.getItem('chart_period') || '1y';
         currentPeriod = null;
         setTimeout(() => { currentPeriod = p; }, 10);
+        localStorage.removeItem('chart_custom_range');
     }
 
     function setPeriod(p) {
         currentPeriod = p;
         customRange = null;
         selectMode = false;
+        localStorage.setItem('chart_period', p);
+        localStorage.removeItem('chart_custom_range');
     }
 
     function toggleCustomMode() {
@@ -86,6 +104,8 @@
         customRange = range;
         selectMode = false;
         currentPeriod = null;
+        localStorage.setItem('chart_custom_range', JSON.stringify(range));
+        localStorage.removeItem('chart_period');
     }
 
     async function fetchStockData(symbol) {
@@ -140,12 +160,21 @@
         lastFetchedIndex = $marketIndex;
         lastFetchedSymbol = $selectedSymbol;
 
+        // Keep-alive: ping backend every 4 minutes to prevent Cloud Run container recycling.
+        // With --min-instances 1, this keeps DuckDB cache, LATEST_MARKET_DATA, and the
+        // feeder coroutine alive permanently. Cost: ~0 (health endpoint is instant).
+        const keepAlive = setInterval(() => {
+            fetch(`${API_BASE_URL}/health`).catch(() => {});
+        }, 4 * 60 * 1000);
+
         // Load sidebar data (with retry)
         await loadSummaryData($marketIndex);
 
         // Load chart data
         await fetchStockData($selectedSymbol);
         isInitialLoading = false;
+
+        return () => clearInterval(keepAlive);
     });
 
     // React to INDEX changes
@@ -178,7 +207,7 @@
     });
 </script>
 
-<div class="flex h-screen w-screen bg-[#0d0d12] text-white overflow-hidden font-sans selection:bg-purple-500/30">
+<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30">
 
     <div class="w-[460px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
         <Sidebar />
@@ -188,7 +217,7 @@
 
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
-                <h1 class="text-5xl font-black text-white uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
+                <h1 class="text-5xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
                 <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
                     {displayName || 'Loading...'}
                 </span>
