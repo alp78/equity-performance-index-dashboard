@@ -1,8 +1,12 @@
 """
-Cloud Function — Daily Price Sync (Multi-Index)
-================================================
-Resilient sync with per-symbol gap detection and 
+Cloud Function — Daily Price Sync (Multi-Index + Index Prices)
+==============================================================
+Resilient sync with per-symbol gap detection and
 market-specific holiday/calendar awareness.
+
+Syncs two types of data:
+  1. Stock prices per index (stoxx50_prices, sp500_prices, etc.)
+  2. Index-level prices (index_prices table — ^GSPC, ^STOXX50E, etc.)
 """
 
 import functions_framework
@@ -25,6 +29,7 @@ PROJECT_ID  = getenv("PROJECT_ID")
 DATASET_ID  = getenv("DATASET_ID")
 BUCKET_NAME = getenv("BUCKET_NAME")
 
+# --- Stock index configs (per-stock prices) ---
 INDICES = {
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
@@ -54,8 +59,20 @@ INDICES = {
     "nifty50": {
         "table_id": getenv("NIFTY50_TABLE_ID", "nifty50_prices"),
         "sync_after_utc": 11,
-        "cal": "XBOM",  # Bombay Stock Exchange handles the Indian trading calendar
+        "cal": "XBOM",
     },
+}
+
+# --- Index-level price tickers (the indices themselves) ---
+INDEX_PRICE_TABLE = getenv("INDEX_PRICE_TABLE_ID", "index_prices")
+
+INDEX_TICKERS = {
+    "^GSPC":      {"name": "S&P 500",       "currency": "USD", "exchange": "SNP",  "cal": "XNYS"},
+    "^STOXX50E":  {"name": "EURO STOXX 50", "currency": "EUR", "exchange": "XETR", "cal": "XFRA"},
+    "^FTSE":      {"name": "FTSE 100",      "currency": "GBP", "exchange": "LSE",  "cal": "XLON"},
+    "^N225":      {"name": "Nikkei 225",    "currency": "JPY", "exchange": "TKS",  "cal": "XTKS"},
+    "000300.SS":  {"name": "CSI 300",       "currency": "CNY", "exchange": "SHG",  "cal": "XSHG"},
+    "^NSEI":      {"name": "Nifty 50",      "currency": "INR", "exchange": "NSE",  "cal": "XBOM"},
 }
 
 MAX_RETRIES = 3
@@ -99,7 +116,7 @@ def get_valid_trading_days(cal, start_date, end_date):
     return days
 
 # ============================================================================
-# STEP 1 — PER-SYMBOL GAP DETECTION
+# STEP 1 — PER-SYMBOL GAP DETECTION (stocks)
 # ============================================================================
 
 def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
@@ -166,7 +183,7 @@ def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
     return tickers, global_last_date, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates
 
 # ============================================================================
-# STEP 2 — DOWNLOAD & TRANSFORM
+# STEP 2 — DOWNLOAD & TRANSFORM (stocks)
 # ============================================================================
 
 def download_and_transform(tickers, name_map, sector_map, industry_map,
@@ -335,7 +352,7 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     logger.info(f"  BigQuery: {len(records)} records → {table_ref}")
 
 # ============================================================================
-# SYNC LOGIC
+# SYNC LOGIC — Stock prices
 # ============================================================================
 
 def sync_index(bq_client, storage_client, index_key, config, now_utc):
@@ -345,7 +362,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
 
     effective_today = now_utc.date()
     sync_hour = config.get("sync_after_utc", 0)
-    
+
     if now_utc.hour < sync_hour:
         effective_today -= timedelta(days=1)
         logger.info(f"[{index_key.upper()}] Pre-close sync. Adjusting effective date to {effective_today}")
@@ -422,6 +439,209 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         logger.critical(f"  Load failed: {e}")
         return 0, f"Load error: {e}"
 
+
+# ============================================================================
+# INDEX PRICES SYNC — Per-symbol gap detection for index-level prices
+# ============================================================================
+
+def _get_index_prices_state(bq_client, table_ref, now_utc):
+    """
+    Per-symbol last date + interior gap detection for index_prices table.
+    Each index ticker uses its own exchange calendar.
+    """
+    meta_query = f"""
+        SELECT symbol,
+               MAX(name) as name,
+               MAX(currency) as currency,
+               MAX(exchange) as exchange,
+               MAX(trade_date) as last_date
+        FROM `{table_ref}`
+        GROUP BY symbol
+    """
+    meta_rows = list(bq_client.query(meta_query).result())
+
+    symbol_meta = {}
+    symbol_last_dates = {}
+
+    for row in meta_rows:
+        sym = row.symbol
+        symbol_meta[sym] = {
+            "name": row.name or sym,
+            "currency": row.currency or "N/A",
+            "exchange": row.exchange or "N/A",
+        }
+        if row.last_date:
+            d = row.last_date.date() if hasattr(row.last_date, 'date') else row.last_date
+            symbol_last_dates[sym] = d
+
+    # Interior gap detection — per symbol with its own calendar
+    symbol_missing_dates = {}
+    effective_today = now_utc.date()
+
+    for sym, cfg in INDEX_TICKERS.items():
+        if sym not in symbol_last_dates:
+            continue  # Not in DB yet — needs initial load
+
+        cal = xcals.get_calendar(cfg["cal"])
+        lookback_start = get_expected_last_trading_day(cal, effective_today - timedelta(days=16))
+        expected_days = get_valid_trading_days(cal, lookback_start, get_expected_last_trading_day(cal, effective_today))
+
+        gap_query = f"""
+            SELECT CAST(trade_date AS DATE) as td
+            FROM `{table_ref}`
+            WHERE symbol = '{sym}' AND trade_date >= '{lookback_start.strftime('%Y-%m-%d')}'
+        """
+        gap_rows = list(bq_client.query(gap_query).result())
+        existing_dates = {
+            (row.td.date() if hasattr(row.td, 'date') else row.td) for row in gap_rows
+        }
+
+        missing = [d for d in expected_days if d not in existing_dates]
+        if missing:
+            symbol_missing_dates[sym] = missing
+
+    return symbol_meta, symbol_last_dates, symbol_missing_dates
+
+
+def sync_index_prices(bq_client, storage_client, now_utc):
+    """
+    Sync the index_prices table — one row per index per trading day.
+    Uses per-symbol gap detection with exchange calendars.
+    """
+    table_ref = get_full_table_ref(INDEX_PRICE_TABLE)
+    logger.info(f"\n[INDEX PRICES] Checking {table_ref}...")
+
+    try:
+        symbol_meta, symbol_last_dates, symbol_missing_dates = \
+            _get_index_prices_state(bq_client, table_ref, now_utc)
+        logger.info(f"  {len(symbol_last_dates)} index tickers in DB")
+    except Exception as e:
+        logger.critical(f"  DB error for index_prices: {e}")
+        return 0, f"Error: {e}"
+
+    effective_today = now_utc.date()
+    symbols_to_update = {}
+
+    for sym, cfg in INDEX_TICKERS.items():
+        cal = xcals.get_calendar(cfg["cal"])
+        expected = get_expected_last_trading_day(cal, effective_today)
+
+        trailing = sym in symbol_last_dates and symbol_last_dates[sym] < expected
+        has_gaps = sym in symbol_missing_dates
+
+        if trailing or has_gaps:
+            earliest = expected
+            if trailing:
+                earliest = min(earliest, symbol_last_dates[sym] + timedelta(days=1))
+            if has_gaps:
+                earliest = min(earliest, min(symbol_missing_dates[sym]))
+
+            symbols_to_update[sym] = {
+                "earliest": earliest,
+                "effective_start": (min(symbol_missing_dates[sym]) - timedelta(days=1)) if has_gaps
+                                   else symbol_last_dates.get(sym, datetime(2023, 1, 1).date()),
+                **cfg,
+            }
+
+    if not symbols_to_update:
+        logger.info(f"  All index tickers up to date")
+        return 0, "Up to date"
+
+    logger.info(f"  {len(symbols_to_update)} index tickers need data: {list(symbols_to_update.keys())}")
+
+    # Download all needed index tickers
+    all_syms = list(symbols_to_update.keys())
+    earliest_overall = min(v["earliest"] for v in symbols_to_update.values())
+    start_str = earliest_overall.strftime('%Y-%m-%d')
+    end_str = (effective_today + timedelta(days=1)).strftime('%Y-%m-%d')
+
+    logger.info(f"  Downloading {len(all_syms)} index tickers ({earliest_overall} → {effective_today})...")
+
+    data = _try_download(all_syms, start_str, end_str)
+
+    # Fallback: individual downloads if bulk fails
+    if data is None or data.empty:
+        logger.warning(f"  Bulk failed, trying individual downloads...")
+        all_frames = []
+        for sym in all_syms:
+            try:
+                d = yf.download(sym, start=start_str, end=end_str, auto_adjust=False)
+                if d is not None and not d.empty:
+                    # Make single-ticker data look like multi-ticker format
+                    d.columns = pd.MultiIndex.from_product([[sym], d.columns])
+                    all_frames.append(d)
+                    logger.info(f"    {sym}: {len(d)} rows")
+            except Exception as e:
+                logger.warning(f"    {sym} failed: {e}")
+            time.sleep(1)
+        if all_frames:
+            data = pd.concat(all_frames, axis=1)
+        else:
+            logger.critical(f"  No data for any index ticker")
+            return 0, "No data"
+
+    # Extract records with index_prices schema
+    records = []
+    is_multi = isinstance(data.columns, pd.MultiIndex)
+    actual_dates = data.index.strftime('%Y-%m-%d').unique()
+
+    for date_str in actual_dates:
+        current_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+
+        for sym, update_info in symbols_to_update.items():
+            if current_date <= update_info["effective_start"]:
+                continue
+
+            try:
+                if is_multi:
+                    if sym not in data.columns.get_level_values(0):
+                        continue
+                    ticker_data = data[sym].loc[date_str]
+                elif len(all_syms) == 1:
+                    ticker_data = data.loc[date_str]
+                else:
+                    continue
+
+                close_val = ticker_data.get('Close')
+                if close_val is None or pd.isna(close_val):
+                    continue
+
+                raw_open = ticker_data.get('Open')
+                open_p = float(raw_open) if pd.notna(raw_open) else float(close_val)
+                vol = ticker_data.get('Volume', 0)
+
+                meta = symbol_meta.get(sym, {})
+                records.append({
+                    "symbol":      sym,
+                    "trade_date":  date_str,
+                    "open_price":  open_p,
+                    "high_price":  float(ticker_data['High']),
+                    "low_price":   float(ticker_data['Low']),
+                    "close_price": float(close_val),
+                    "volume":      int(vol) if pd.notna(vol) else 0,
+                    "name":        meta.get("name", update_info["name"]),
+                    "currency":    meta.get("currency", update_info["currency"]),
+                    "exchange":    meta.get("exchange", update_info["exchange"]),
+                })
+            except Exception as e:
+                logger.warning(f"  Index parse error {sym}/{date_str}: {e}")
+                continue
+
+    if not records:
+        logger.warning(f"  No new index price records")
+        return 0, "No new data"
+
+    updated_symbols = set(r["symbol"] for r in records)
+    logger.info(f"  Index prices: {len(records)} records for {len(updated_symbols)} tickers")
+
+    try:
+        load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, "index_prices", effective_today)
+        return len(records), f"{len(records)} records ({len(updated_symbols)} tickers)"
+    except Exception as e:
+        logger.critical(f"  Index prices load failed: {e}")
+        return 0, f"Load error: {e}"
+
+
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
@@ -450,6 +670,7 @@ def sync_stocks(request):
     results = {}
     synced_indices = []
 
+    # --- Sync stock prices per index ---
     for index_key, config in indices_to_sync.items():
         count, status = sync_index(bq_client, storage_client, index_key, config, now_utc)
         total_records += count
@@ -457,6 +678,16 @@ def sync_stocks(request):
         if count > 0:
             synced_indices.append(index_key)
 
+    # --- Sync index-level prices (always, on every run) ---
+    try:
+        idx_count, idx_status = sync_index_prices(bq_client, storage_client, now_utc)
+        total_records += idx_count
+        results["index_prices"] = idx_status
+    except Exception as e:
+        logger.critical(f"  Index prices sync error: {e}")
+        results["index_prices"] = f"Error: {e}"
+
+    # --- Notify backend ---
     if synced_indices:
         api_url = getenv("BACKEND_API_URL")
         if api_url:
