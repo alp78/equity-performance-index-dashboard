@@ -54,8 +54,6 @@
         }));
     })());
 
-    let allExpanded = $derived(sectorTree.length > 0 && sectorTree.every(s => openSectors.has(s.name)));
-
     // Open the sector for a given symbol using current tickers
     function openSectorFor(symbol) {
         const asset = tickers.find(t => t.symbol === symbol);
@@ -74,10 +72,20 @@
         openSectors = new Set([sectorName]);
     }
 
-    // Scroll to selected
+    // When selectedSymbol changes (from any source): open its sector + scroll to it
+    let lastEffectSymbol = '';
     $effect(() => {
         const sym = $selectedSymbol;
-        if (!scrollContainer || !sym) return;
+        if (!sym || tickers.length === 0) return;
+
+        // Only open sector when symbol actually changes (not on re-renders)
+        if (sym !== lastEffectSymbol) {
+            lastEffectSymbol = sym;
+            openSectorFor(sym);
+        }
+
+        // Always scroll to the symbol
+        if (!scrollContainer) return;
         setTimeout(() => {
             const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(sym)}"]`);
             if (el) {
@@ -85,22 +93,13 @@
                 const er = el.getBoundingClientRect();
                 scrollContainer.scrollTop += er.top - cr.top - (cr.height / 2) + (er.height / 2);
             }
-        }, 30);
+        }, 50);
     });
 
     function toggleSector(sector) {
         const next = new Set(openSectors);
         next.has(sector) ? next.delete(sector) : next.add(sector);
         openSectors = next;
-        openSectorsPerIndex[currentIndex] = [...next];
-    }
-
-    function toggleAll() {
-        if (allExpanded) {
-            openSectors = new Set();
-        } else {
-            openSectors = new Set(sectorTree.map(s => s.name));
-        }
     }
 
     function handleClickOutside(e) {
@@ -212,15 +211,18 @@
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
             </div>
-            <button onclick={toggleAll} title={allExpanded ? 'Collapse all' : 'Expand all'}
-                class="shrink-0 w-10 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
+            <button onclick={() => { openSectors = new Set(sectorTree.map(s => s.name)); }} title="Expand all"
+                class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
             >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    {#if allExpanded}
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                    {:else}
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                    {/if}
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+            </button>
+            <button onclick={() => { openSectors = new Set(); }} title="Collapse all"
+                class="shrink-0 w-9 flex items-center justify-center bg-black/40 border border-bloom-muted/20 rounded-xl hover:border-bloom-accent/40 transition-all text-white/30 hover:text-bloom-accent"
+            >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
                 </svg>
             </button>
         </div>
@@ -253,15 +255,15 @@
                         <svg class="w-3 h-3 text-white/40 transition-transform {openSectors.has(sector.name) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
                         </svg>
-                        <span class="text-[11px] font-black text-white uppercase tracking-widest">{sector.name}</span>
+                        <span class="text-[11px] font-black text-white/80 uppercase tracking-widest">{sector.name}</span>
                     </div>
                     <span class="text-[10px] font-bold text-white/20 tabular-nums">{sector.stockCount}</span>
                 </button>
 
                 {#if openSectors.has(sector.name)}
                     {#each sector.industries as industry}
-                        <div class="px-5 py-2 bg-white/[0.02] border-b border-white/[0.04] ml-1 border-l-[2px] border-l-white/[0.06]">
-                            <span class="text-[10px] font-bold text-white/45 uppercase tracking-wider">{industry.name}</span>
+                        <div class="flex items-center gap-2 px-4 py-[7px] ml-2 border-l-[2px] border-l-amber-500/30 bg-[#13131a]">
+                            <span class="text-[10px] font-semibold text-white/55 uppercase tracking-wide">{industry.name}</span>
                         </div>
                         {#each industry.stocks as item}
                             {@render stockRow(item)}

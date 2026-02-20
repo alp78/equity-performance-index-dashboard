@@ -171,8 +171,9 @@
 
         connectWs();
 
-        // Also poll REST endpoint every 60s as fallback for stale WS
-        const pollInterval = setInterval(async () => {
+        // Fetch market data immediately (in case WS takes a moment to connect)
+        // Then poll every 60s as fallback for stale WS
+        async function fetchMarketData() {
             try {
                 const res = await fetch(`${API_BASE_URL}/market-data`);
                 if (res.ok) {
@@ -190,7 +191,10 @@
                     }
                 }
             } catch (e) { /* silent fallback */ }
-        }, 60000);
+        }
+
+        fetchMarketData(); // Immediate fetch
+        const pollInterval = setInterval(fetchMarketData, 60000);
 
         return () => clearInterval(pollInterval);
     });
@@ -220,10 +224,10 @@
                         <button
                             onclick={() => selectLeaderSymbol(symbol)}
                             title="{symbol}{getLeaderName(symbol) ? ' — ' + getLeaderName(symbol) : ''}"
-                            class="text-sm font-black text-white uppercase tracking-normal text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                            class="text-sm font-black text-white/80 uppercase tracking-normal text-left hover:text-bloom-accent transition-colors cursor-pointer"
                         >{clean(symbol)}</button>
                     {:else}
-                        <span class="text-sm font-black text-white uppercase tracking-normal">{clean(symbol)}</span>
+                        <span class="text-sm font-black text-white/80 uppercase tracking-normal">{clean(symbol)}</span>
                     {/if}
                     <div class="flex items-center gap-1.5 mt-0.5">
                         <div class="w-1.5 h-1.5 rounded-full {status.dot} {status.pulse ? 'animate-pulse' : ''}"></div>
@@ -232,7 +236,7 @@
                 </div>
 
                 <div class="flex flex-col items-end">
-                    <span class="text-base font-mono font-black text-white leading-none mb-1 tabular-nums">
+                    <span class="text-base font-mono font-black text-white/85 leading-none mb-1 tabular-nums">
                         {#if hasData}
                             {ccy}{data.price.toLocaleString(undefined, {
                                 minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,

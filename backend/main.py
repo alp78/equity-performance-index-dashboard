@@ -252,11 +252,12 @@ async def refresh_single_index(index_key):
     """Background refresh of a single index. Non-blocking."""
     print(f"Refreshing index: {index_key}")
     invalidate_index_cache(index_key)
+    INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
+    row_count = await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
     INDEX_LOAD_STATUS[index_key] = {
-        "loaded": True, "loading": False,
-        "row_count": INDEX_LOAD_STATUS.get(index_key, {}).get("row_count", 0),
+        "loaded": row_count > 0, "loading": False,
+        "row_count": row_count,
     }
     invalidate_index_cache(index_key)
 
@@ -378,6 +379,29 @@ async def fetch_stock_data():
 # BACKGROUND TASKS
 # ============================================================================
 
+async def self_keepalive():
+    """
+    Self-ping every 4 minutes to prevent Cloud Run from recycling this container.
+    Cloud Run considers a container idle if it has no active requests or connections.
+    This background task ensures the container stays warm even when no users are connected.
+    Combined with --min-instances 1, this keeps DuckDB, LATEST_MARKET_DATA, and the
+    feeder alive permanently.
+    """
+    await asyncio.sleep(60)  # Wait for startup to finish
+    port = int(getenv("PORT", "8080"))
+    print(f"SELF_KEEPALIVE: Pinging localhost:{port}/health every 4 min")
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            writer.write(b"GET /health HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            await writer.drain()
+            await reader.read(512)
+            writer.close()
+        except Exception:
+            pass
+        await asyncio.sleep(4 * 60)
+
+
 async def market_data_feeder():
     """Polls live prices. Started after priority indices are loaded."""
     print("Real-time Feeder Active")
@@ -395,7 +419,7 @@ async def preload_all_indices():
     """
     Preload indices at startup.
     Phase 1: stoxx50 + sp500 sequentially (Cloud Run has limited resources).
-    Phase 2: Start feeder immediately.
+    Phase 2: Start feeder + keepalive immediately.
     Phase 3: Remaining indices load one-by-one in background.
     """
     # Phase 1: Priority indices — sequential to avoid BigQuery concurrency issues
@@ -406,8 +430,9 @@ async def preload_all_indices():
             print(f"Phase 1 error loading {idx}: {e}")
     print("Phase 1 preload complete (stoxx50, sp500)")
 
-    # Phase 2: Start feeder — stoxx50/sp500 leaders available immediately
+    # Phase 2: Start feeder + self-keepalive
     asyncio.create_task(market_data_feeder())
+    asyncio.create_task(self_keepalive())
 
     # Phase 3: Remaining indices — sequential to avoid memory pressure on Cloud Run
     remaining = [k for k in MARKET_INDICES if k not in ("stoxx50", "sp500")]

@@ -25,31 +25,36 @@ PROJECT_ID  = getenv("PROJECT_ID")
 DATASET_ID  = getenv("DATASET_ID")
 BUCKET_NAME = getenv("BUCKET_NAME")
 
-# Mapped each index to its exchange calendar ISO code
 INDICES = {
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
-        "cal": "XFRA",  # Frankfurt Stock Exchange
+        "sync_after_utc": 17,
+        "cal": "XFRA",
     },
     "sp500": {
         "table_id": getenv("SP500_TABLE_ID", "sp500_prices"),
-        "cal": "XNYS",  # New York Stock Exchange
+        "sync_after_utc": 21,
+        "cal": "XNYS",
     },
     "ftse100": {
         "table_id": getenv("FTSE100_TABLE_ID", "ftse100_prices"),
-        "cal": "XLON",  # London Stock Exchange
+        "sync_after_utc": 17,
+        "cal": "XLON",
     },
     "nikkei225": {
         "table_id": getenv("NIKKEI225_TABLE_ID", "nikkei225_prices"),
-        "cal": "XTKS",  # Tokyo Stock Exchange
+        "sync_after_utc": 7,
+        "cal": "XTKS",
     },
     "csi300": {
         "table_id": getenv("CSI300_TABLE_ID", "csi300_prices"),
-        "cal": "XSHG",  # Shanghai Stock Exchange
+        "sync_after_utc": 8,
+        "cal": "XSHG",
     },
     "nifty50": {
         "table_id": getenv("NIFTY50_TABLE_ID", "nifty50_prices"),
-        "cal": "XNSE",  # National Stock Exchange of India
+        "sync_after_utc": 11,
+        "cal": "XBOM",  # Bombay Stock Exchange handles the Indian trading calendar
     },
 }
 
@@ -79,10 +84,9 @@ def get_full_table_ref(short_table_id):
 
 def get_expected_last_trading_day(cal, d):
     """Most recent valid trading session on or before date d."""
-    d_str = d.strftime('%Y-%m-%d')
-    if cal.is_session(d_str):
-        return d
-    return cal.previous_session(d_str).date()
+    while not cal.is_session(d.strftime('%Y-%m-%d')):
+        d -= timedelta(days=1)
+    return d
 
 def get_valid_trading_days(cal, start_date, end_date):
     """Generate all exact trading days between start and end (inclusive)."""
@@ -98,11 +102,7 @@ def get_valid_trading_days(cal, start_date, end_date):
 # STEP 1 — PER-SYMBOL GAP DETECTION
 # ============================================================================
 
-def get_db_state_detailed(bq_client, table_ref, today, cal):
-    """
-    Returns per-symbol metadata + per-symbol set of missing trading days.
-    Checks the last ~10 trading days for interior gaps using exact exchange calendars.
-    """
+def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
     meta_query = f"""
         SELECT 
             symbol,
@@ -136,8 +136,7 @@ def get_db_state_detailed(bq_client, table_ref, today, cal):
     if not tickers:
         return tickers, global_last_date, name_map, sector_map, industry_map, {}, set()
 
-    # Look back 16 calendar days, then snap to the nearest valid prior session
-    lookback_start = get_expected_last_trading_day(cal, today - timedelta(days=16))
+    lookback_start = get_expected_last_trading_day(cal, effective_today - timedelta(days=16))
     gap_query = f"""
         SELECT symbol, CAST(trade_date AS DATE) as td
         FROM `{table_ref}`
@@ -150,8 +149,7 @@ def get_db_state_detailed(bq_client, table_ref, today, cal):
         d = row.td.date() if hasattr(row.td, 'date') else row.td
         existing.add((row.symbol, d))
 
-    # We no longer need the 50% majority rule. The calendar gives us exact expected days.
-    expected_days = get_valid_trading_days(cal, lookback_start, get_expected_last_trading_day(cal, today))
+    expected_days = get_valid_trading_days(cal, lookback_start, get_expected_last_trading_day(cal, effective_today))
 
     symbol_missing_dates = {}
     all_gap_dates = set()
@@ -166,7 +164,6 @@ def get_db_state_detailed(bq_client, table_ref, today, cal):
         logger.info(f"  Gap scan: {len(symbol_missing_dates)} symbols with {total_gaps} missing date-slots")
 
     return tickers, global_last_date, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates
-
 
 # ============================================================================
 # STEP 2 — DOWNLOAD & TRANSFORM
@@ -220,7 +217,7 @@ def _try_download(yf_tickers, start_str, end_str):
         try:
             data = yf.download(
                 yf_tickers, start=start_str, end=end_str,
-                group_by='ticker', auto_adjust=False, threads=True,
+                group_by='ticker', auto_adjust=False, threads=False,
             )
             if data is not None and not data.empty:
                 logger.info(f"  Download OK (attempt {attempt}): {data.shape}")
@@ -248,7 +245,7 @@ def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
                 logger.info(f"    Got {data.shape}")
         except Exception as e:
             logger.warning(f"    Batch failed: {e}")
-        time.sleep(2)
+        time.sleep(5)
 
     if not all_frames:
         return None
@@ -319,14 +316,13 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
     logger.info(f"  Result: {len(records)} records for {len(updated_symbols)} symbols")
     return records
 
-
 # ============================================================================
 # STEP 3 — LOAD TO GCS & BIGQUERY
 # ============================================================================
 
-def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix, today):
+def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix, effective_today):
     bucket = storage_client.bucket(BUCKET_NAME)
-    blob_path = f"{gcs_prefix}/{today.strftime('%Y/%m/%d')}/prices.json"
+    blob_path = f"{gcs_prefix}/{effective_today.strftime('%Y/%m/%d')}/prices.json"
     blob = bucket.blob(blob_path)
     blob.upload_from_string(json.dumps(records), content_type='application/json')
 
@@ -338,21 +334,29 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     bq_client.load_table_from_file(StringIO(ndjson), table_ref, job_config=job_config).result()
     logger.info(f"  BigQuery: {len(records)} records → {table_ref}")
 
-
 # ============================================================================
 # SYNC LOGIC
 # ============================================================================
 
-def sync_index(bq_client, storage_client, index_key, config, today):
+def sync_index(bq_client, storage_client, index_key, config, now_utc):
     table_ref = get_full_table_ref(config["table_id"])
     cal_name = config.get("cal", "XNYS")
     cal = xcals.get_calendar(cal_name)
+
+    effective_today = now_utc.date()
+    sync_hour = config.get("sync_after_utc", 0)
+    
+    if now_utc.hour < sync_hour:
+        effective_today -= timedelta(days=1)
+        logger.info(f"[{index_key.upper()}] Pre-close sync. Adjusting effective date to {effective_today}")
+    else:
+        logger.info(f"[{index_key.upper()}] Post-close sync. Effective date is {effective_today}")
 
     logger.info(f"\n[{index_key.upper()}] Checking {table_ref} (Calendar: {cal_name})...")
 
     try:
         tickers, global_last, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates = \
-            get_db_state_detailed(bq_client, table_ref, today, cal)
+            get_db_state_detailed(bq_client, table_ref, effective_today, cal)
         logger.info(f"  {len(tickers)} tickers, global last: {global_last}")
     except Exception as e:
         logger.critical(f"  DB error for {index_key}: {e}")
@@ -361,8 +365,7 @@ def sync_index(bq_client, storage_client, index_key, config, today):
     if not tickers:
         return 0, "No tickers"
 
-    # Use the exchange calendar to get the exact required date
-    expected = get_expected_last_trading_day(cal, today)
+    expected = get_expected_last_trading_day(cal, effective_today)
 
     trailing_behind = {s: d for s, d in symbol_last_dates.items() if d < expected}
     all_gap_symbols = set(symbol_missing_dates.keys()) | set(trailing_behind.keys())
@@ -398,7 +401,7 @@ def sync_index(bq_client, storage_client, index_key, config, today):
 
     records = download_and_transform(
         tickers, name_map, sector_map, industry_map,
-        earliest_needed, today, symbol_effective_start
+        earliest_needed, effective_today, symbol_effective_start
     )
 
     if not records:
@@ -407,7 +410,7 @@ def sync_index(bq_client, storage_client, index_key, config, today):
         return 0, f"No data ({len(all_gap_symbols)} gaps)"
 
     try:
-        load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, index_key, today)
+        load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, index_key, effective_today)
 
         updated = set(r["symbol"] for r in records)
         still_missing = all_gap_symbols - updated
@@ -419,7 +422,6 @@ def sync_index(bq_client, storage_client, index_key, config, today):
         logger.critical(f"  Load failed: {e}")
         return 0, f"Load error: {e}"
 
-
 # ============================================================================
 # ENTRY POINT
 # ============================================================================
@@ -429,10 +431,6 @@ def sync_stocks(request):
     bq_client = bigquery.Client()
     storage_client = storage.Client()
     now_utc = datetime.utcnow()
-    today = now_utc.date()
-
-    # Note: Global is_weekend check removed. The function now relies on 
-    # the individual exchange calendars to dictate valid operations.
 
     target_index = "all"
     try:
@@ -453,7 +451,7 @@ def sync_stocks(request):
     synced_indices = []
 
     for index_key, config in indices_to_sync.items():
-        count, status = sync_index(bq_client, storage_client, index_key, config, today)
+        count, status = sync_index(bq_client, storage_client, index_key, config, now_utc)
         total_records += count
         results[index_key] = status
         if count > 0:
