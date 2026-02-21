@@ -266,6 +266,12 @@
         singleSelectedIndustries = { ...singleSelectedIndustries, [sector]: [] };
     }
 
+    function selectAllForIndex(key) {
+        const sectors = singleIndexSectors[key] || availableSectors || [];
+        selectedSectors.set([...sectors]);
+        singleSelectedIndustries = {};
+    }
+
     function toggleMultiSector(sec) {
         selectedSectors.update(list => {
             if (list.includes(sec)) {
@@ -830,12 +836,13 @@
                             {#if isIndexOpen}
                                 {@const sectors = singleIndexSectors[key] || availableSectors || []}
                                 <!-- Sector select all / count header -->
+                                {@const hasAnyIndustryFilter = sectors.some(s => (singleSelectedIndustries[s] || []).length > 0)}
                                 <div class="flex items-center justify-between px-4 py-[6px] ml-2 border-l-[2px] border-l-bloom-accent/10 bg-[#15151e]">
                                     <span class="text-[9px] font-black text-white/20 uppercase tracking-widest">
                                         {$selectedSectors.length} of {sectors.length} sectors
                                     </span>
-                                    {#if $selectedSectors.length < sectors.length}
-                                        <button onclick={() => selectedSectors.set([...sectors])}
+                                    {#if $selectedSectors.length < sectors.length || hasAnyIndustryFilter}
+                                        <button onclick={() => selectAllForIndex(key)}
                                             class="text-[9px] font-bold uppercase tracking-wider text-amber-400/70 hover:text-amber-400 transition-all">
                                             Select All
                                         </button>

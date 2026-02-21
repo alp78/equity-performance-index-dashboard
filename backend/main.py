@@ -27,6 +27,7 @@ import uvicorn
 import yfinance as yf
 import time
 import threading
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
@@ -94,6 +95,8 @@ INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
 INDUSTRY_SERIES_STATUS: dict = {}
 LATEST_MARKET_DATA: dict = {}
+STARTUP_TIME: float = 0.0
+STARTUP_DONE_TIME: float = 0.0
 
 API_CACHE: dict = {}
 CACHE_TTL = 1800
@@ -664,7 +667,10 @@ async def preload_all_indices():
 
 
 async def background_startup():
+    global STARTUP_TIME, STARTUP_DONE_TIME
+    STARTUP_TIME = time.time()
     await preload_all_indices()
+    STARTUP_DONE_TIME = time.time()
 
 
 @asynccontextmanager
@@ -707,12 +713,124 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/health")
 async def health():
     loaded = {k: v for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")}
-    return {
-        "status": "ok" if loaded else "warming_up",
+    total_indices = len(MARKET_INDICES)
+
+    # Build step-by-step progress for each index
+    steps = []
+    step_num = 0
+    for idx in MARKET_INDICES:
+        step_num += 1
+        status = INDEX_LOAD_STATUS.get(idx, {})
+        if status.get("loaded"):
+            rows = status.get("row_count", 0)
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} ({rows:,} rows) [ok]")
+        elif status.get("loading"):
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} ... loading")
+        else:
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} - pending")
+
+        step_num += 1
+        sec_status = SECTOR_SERIES_STATUS.get(idx, {})
+        if sec_status.get("ready"):
+            try:
+                with db_lock:
+                    cnt = local_db.execute(f"SELECT COUNT(*) FROM sector_series_{idx}").fetchone()[0]
+                steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} ({cnt:,} rows) [ok]")
+            except Exception:
+                steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} [ok]")
+        elif sec_status.get("computing"):
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} ... computing")
+        else:
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} - pending")
+
+        step_num += 1
+        ind_status = INDUSTRY_SERIES_STATUS.get(idx, {})
+        if ind_status.get("ready"):
+            try:
+                with db_lock:
+                    cnt = local_db.execute(f"SELECT COUNT(*) FROM industry_series_{idx}").fetchone()[0]
+                steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} ({cnt:,} rows) [ok]")
+            except Exception:
+                steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} [ok]")
+        elif ind_status.get("computing"):
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} ... computing")
+        else:
+            steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} - pending")
+
+    # Final step: index_prices
+    total_steps = total_indices * 3 + 1
+    if INDEX_PRICES_LOADED:
+        try:
+            with db_lock:
+                cnt = local_db.execute("SELECT COUNT(*) FROM index_prices").fetchone()[0]
+            steps.append(f"{total_steps}/{total_steps}: index prices ({cnt:,} rows) [ok]")
+        except Exception:
+            steps.append(f"{total_steps}/{total_steps}: index prices [ok]")
+    else:
+        steps.append(f"{total_steps}/{total_steps}: index prices - pending")
+
+    completed = sum(1 for s in steps if "[ok]" in s)
+    all_done = completed == total_steps
+
+    # Count total rows and memory across all loaded tables
+    total_rows = 0
+    total_bytes = 0
+    try:
+        with db_lock:
+            tables = [r[0] for r in local_db.execute("SHOW TABLES").fetchall()]
+            for tbl in tables:
+                rc = local_db.execute(f"SELECT COUNT(*) FROM \"{tbl}\"").fetchone()[0]
+                total_rows += rc
+                # estimated_size returns bytes for in-memory tables
+                try:
+                    sz = local_db.execute(f"SELECT estimated_size FROM duckdb_tables() WHERE table_name = '{tbl}'").fetchone()
+                    if sz:
+                        total_bytes += sz[0]
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    def fmt_bytes(b):
+        if b >= 1_073_741_824:
+            return f"{b / 1_073_741_824:.1f}Gb"
+        if b >= 1_048_576:
+            return f"{b / 1_048_576:.0f}Mb"
+        if b >= 1024:
+            return f"{b / 1024:.0f}Kb"
+        return f"{b}b"
+
+    def fmt_rows(n):
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.0f}k"
+        return str(n)
+
+    def fmt_time(s):
+        if s >= 60:
+            m = int(s // 60)
+            sec = s % 60
+            return f"{m}m{sec:.0f}s" if sec >= 1 else f"{m}m"
+        return f"{s:.0f}s"
+
+    result = {
+        "status": "ready" if all_done else "warming_up",
+        "progress": f"{completed}/{total_steps}",
         "indices_loaded": len(loaded),
-        "total_rows": sum(v.get("row_count", 0) for v in loaded.values()),
-        "indices": {k: v for k, v in INDEX_LOAD_STATUS.items()},
+        "total_rows": fmt_rows(total_rows),
+        "total_memory": fmt_bytes(total_bytes) if total_bytes else "n/a",
+        "steps": steps,
     }
+
+    if all_done and STARTUP_DONE_TIME and STARTUP_TIME:
+        result["total_time"] = fmt_time(STARTUP_DONE_TIME - STARTUP_TIME)
+        cet = timezone(timedelta(hours=1))
+        result["loaded_at"] = datetime.fromtimestamp(STARTUP_DONE_TIME, tz=cet).strftime("%d %b %Y %H:%M:%S CET")
+    elif STARTUP_TIME:
+        result["elapsed"] = fmt_time(time.time() - STARTUP_TIME)
+
+    return result
 
 
 @app.get("/market-data")

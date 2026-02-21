@@ -402,7 +402,7 @@
             _lastMode = mode;
         }
         const industries = $selectedIndustries;
-        const sectors = $selectedSectors;
+        let sectors = $selectedSectors;
 
         if (mode === 'single-index') {
             const currentIndex = (indices || [])[0] || '';
@@ -412,8 +412,9 @@
                 }
                 _lastSectorIndex = currentIndex;
                 const saved = $sectorsByIndex[currentIndex];
-                selectedSectors.set(saved && saved.length > 0 ? saved : ALL_SECTORS);
-                return;
+                const next = saved && saved.length > 0 ? saved : ALL_SECTORS;
+                selectedSectors.set(next);
+                sectors = next;
             }
         }
 
