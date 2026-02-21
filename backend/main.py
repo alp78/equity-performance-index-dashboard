@@ -91,6 +91,7 @@ local_db = duckdb.connect(database=':memory:', read_only=False)
 db_lock = threading.Lock()
 
 INDEX_LOAD_STATUS: dict = {}
+SECTOR_SERIES_STATUS: dict = {}
 LATEST_MARKET_DATA: dict = {}
 
 API_CACHE: dict = {}
@@ -246,6 +247,76 @@ def _rebuild_unified_view():
     local_db.execute(f"CREATE VIEW latest_prices AS {latest_unions}")
 
 
+def _precompute_sector_series(index_key):
+    """Pre-compute normalized % change time series for ALL sectors in an index.
+    Stores result in sector_series_{index_key} DuckDB table for instant lookups."""
+    table_name = f"prices_{index_key}"
+    series_table = f"sector_series_{index_key}"
+
+    SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": True}
+    t0 = time.time()
+
+    try:
+        precompute_sql = sql("precompute_all_sector_series.sql").replace("{table}", table_name)
+
+        with db_lock:
+            local_db.execute(f"DROP TABLE IF EXISTS {series_table}")
+            local_db.execute(f"CREATE TABLE {series_table} AS {precompute_sql}")
+            local_db.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{series_table}_sector ON {series_table} (sector)"
+            )
+
+        with db_lock:
+            row_count = local_db.execute(f"SELECT COUNT(*) FROM {series_table}").fetchone()[0]
+            sector_count = local_db.execute(
+                f"SELECT COUNT(DISTINCT sector) FROM {series_table}"
+            ).fetchone()[0]
+
+        SECTOR_SERIES_STATUS[index_key] = {"ready": True, "computing": False}
+        print(f"  [{index_key}] Sector series precomputed: {sector_count} sectors, "
+              f"{row_count} rows in {time.time() - t0:.1f}s")
+
+    except Exception as e:
+        SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
+        print(f"  [{index_key}] Sector series precompute error: {e}")
+
+
+def _prewarm_sector_caches(index_key):
+    """Pre-warm API_CACHE for /sector-comparison/table so Heatmap/Rankings load instantly."""
+    table = f"prices_{index_key}"
+    t0 = time.time()
+
+    try:
+        for period_label in ["max", "1y"]:
+            cache_key = f"sector_table_{index_key}_{period_label}"
+            with db_lock:
+                df = _sector_returns_df(table, False, period_label, "", "")
+            if df.empty:
+                continue
+
+            all_data = {}
+            for _, row in df.iterrows():
+                sector = row["sector"]
+                all_data[sector] = {
+                    "return_pct": round(float(row["return_pct"]), 2),
+                    "stock_count": int(row["stock_count"]),
+                }
+
+            result = []
+            for sector, vals in all_data.items():
+                result.append({
+                    "sector": sector,
+                    "avg_return_pct": vals["return_pct"],
+                    "indices": {index_key: vals},
+                })
+            result.sort(key=lambda x: x["avg_return_pct"], reverse=True)
+            set_cached_response(cache_key, result)
+
+        print(f"  [{index_key}] Sector caches pre-warmed in {time.time() - t0:.1f}s")
+    except Exception as e:
+        print(f"  [{index_key}] Sector cache pre-warm error: {e}")
+
+
 def _load_index_prices_from_bq():
     """Load index_prices table from BigQuery into DuckDB."""
     global INDEX_PRICES_LOADED
@@ -309,6 +380,9 @@ def ensure_index_loaded(index_key):
             "loading": False,
             "row_count": row_count,
         }
+        if row_count > 0:
+            _precompute_sector_series(index_key)
+            _prewarm_sector_caches(index_key)
 
     import concurrent.futures
     _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -320,12 +394,16 @@ async def refresh_single_index(index_key):
     """Background refresh of a single index. Non-blocking."""
     print(f"Refreshing index: {index_key}")
     invalidate_index_cache(index_key)
+    SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
     loop = asyncio.get_event_loop()
     row_count = await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
     INDEX_LOAD_STATUS[index_key] = {
         "loaded": row_count > 0, "loading": False, "row_count": row_count,
     }
+    if row_count > 0:
+        await loop.run_in_executor(None, lambda: _precompute_sector_series(index_key))
+        await loop.run_in_executor(None, lambda: _prewarm_sector_caches(index_key))
     invalidate_index_cache(index_key)
 
 
@@ -1040,6 +1118,52 @@ async def get_sector_comparison_data_v2(
     if cached:
         return cached
 
+    # --- Fast path: serve from pre-computed sector_series tables ---
+    use_precomputed = (not industry_filter and period.lower() == "max")
+    if use_precomputed:
+        try:
+            series = []
+            all_ready = True
+
+            if mode == "cross-index":
+                for idx in index_list:
+                    if not SECTOR_SERIES_STATUS.get(idx, {}).get("ready"):
+                        all_ready = False
+                        break
+                    with db_lock:
+                        df = local_db.execute(
+                            f"SELECT time, pct FROM sector_series_{idx} WHERE sector = ? ORDER BY time",
+                            [sector]
+                        ).df()
+                    if df.empty or len(df) < 2:
+                        continue
+                    points = [{"time": str(r["time"]), "pct": float(r["pct"])} for _, r in df.iterrows()]
+                    series.append({"symbol": idx, "points": points})
+
+            elif mode == "single-index":
+                idx = index_list[0]
+                if not SECTOR_SERIES_STATUS.get(idx, {}).get("ready"):
+                    all_ready = False
+                else:
+                    for sec in [s.strip() for s in sector.split(",") if s.strip()]:
+                        with db_lock:
+                            df = local_db.execute(
+                                f"SELECT time, pct FROM sector_series_{idx} WHERE sector = ? ORDER BY time",
+                                [sec]
+                            ).df()
+                        if df.empty or len(df) < 2:
+                            continue
+                        points = [{"time": str(r["time"]), "pct": float(r["pct"])} for _, r in df.iterrows()]
+                        series.append({"symbol": sec, "points": points})
+
+            if all_ready and series:
+                result = {"series": series, "mode": mode}
+                set_cached_response(cache_key, result)
+                return result
+        except Exception:
+            pass  # Fall through to slow path
+
+    # --- Slow path: run clean_sector_series.sql on the fly ---
     def _build_clauses(sec):
         industry_clause = ""
         params = [sec]
@@ -1091,6 +1215,62 @@ async def get_sector_comparison_data_v2(
         print(f"Sector comparison v2 error: {e}")
         import traceback; traceback.print_exc()
         return {"series": [], "mode": mode}
+
+
+@app.get("/sector-comparison/all-series")
+async def get_all_sector_series(indices: str = ""):
+    """Return ALL pre-computed sector time series for requested indices.
+    Used by frontend for instant mode/sector/index switching."""
+    if indices and indices.lower() != "all":
+        index_list = [i.strip() for i in indices.split(",")
+                      if i.strip() and i.strip() in MARKET_INDICES]
+    else:
+        index_list = [k for k, v in SECTOR_SERIES_STATUS.items() if v.get("ready")]
+
+    if not index_list:
+        return {"data": {}, "ready": [], "pending": []}
+
+    result = {}
+    ready_indices = []
+    pending_indices = []
+
+    for idx in index_list:
+        status = SECTOR_SERIES_STATUS.get(idx, {})
+        if not status.get("ready"):
+            pending_indices.append(idx)
+            continue
+
+        series_table = f"sector_series_{idx}"
+        try:
+            with db_lock:
+                df = local_db.execute(
+                    f"SELECT sector, time, pct FROM {series_table} ORDER BY sector, time"
+                ).df()
+
+            if df.empty:
+                continue
+
+            idx_data = {}
+            current_sector = None
+            points = []
+            for _, row in df.iterrows():
+                s = row["sector"]
+                if s != current_sector:
+                    if current_sector is not None:
+                        idx_data[current_sector] = points
+                    current_sector = s
+                    points = []
+                points.append({"time": str(row["time"]), "pct": float(row["pct"])})
+            if current_sector is not None:
+                idx_data[current_sector] = points
+
+            result[idx] = idx_data
+            ready_indices.append(idx)
+        except Exception as e:
+            print(f"  all-series: error reading {idx}: {e}")
+            pending_indices.append(idx)
+
+    return {"data": result, "ready": ready_indices, "pending": pending_indices}
 
 
 @app.get("/sector-comparison/histogram")

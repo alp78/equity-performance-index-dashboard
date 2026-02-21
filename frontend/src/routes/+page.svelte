@@ -55,6 +55,10 @@
     let sectorDataLoading = $state(false);
     let _lastSectorFetchKey = '';
 
+    // Pre-computed sector series: ALL sectors for ALL indices (instant switching cache)
+    let allSectorSeries = $state(null);
+    let allSectorSeriesLoading = $state(false);
+
     const SECTOR_INDEX_COLORS = {
         sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899',
         nikkei225: '#f59e0b', csi300: '#ef4444', nifty50: '#22c55e',
@@ -98,6 +102,47 @@
 
     let _sectorDataVersion = 0;
 
+    async function preloadAllSectorSeries() {
+        if (allSectorSeriesLoading || allSectorSeries) return;
+        allSectorSeriesLoading = true;
+        try {
+            const res = await fetchWithTimeout(
+                `${API_BASE_URL}/sector-comparison/all-series?indices=all`, 30000
+            );
+            if (res.ok) {
+                const json = await res.json();
+                allSectorSeries = json.data || {};
+
+                // Retry pending indices after a delay
+                if (json.pending && json.pending.length > 0) {
+                    setTimeout(async () => {
+                        try {
+                            const retryRes = await fetchWithTimeout(
+                                `${API_BASE_URL}/sector-comparison/all-series?indices=${json.pending.join(',')}`, 30000
+                            );
+                            if (retryRes.ok) {
+                                const retryJson = await retryRes.json();
+                                if (retryJson.data) {
+                                    allSectorSeries = { ...allSectorSeries, ...retryJson.data };
+                                }
+                            }
+                        } catch {}
+                    }, 10000);
+                }
+
+                // Background pre-warm sub-component caches (fire-and-forget)
+                if (json.ready && json.ready.length > 0) {
+                    setTimeout(() => {
+                        for (const idx of json.ready) {
+                            fetch(`${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=1y`).catch(() => {});
+                        }
+                    }, 500);
+                }
+            }
+        } catch {}
+        allSectorSeriesLoading = false;
+    }
+
     async function fetchSectorData(sector, indices, mode, industries, sectors) {
         if (!indices || indices.length === 0) return;
 
@@ -121,6 +166,43 @@
         const prevKey = _lastSectorFetchKey;
         _lastSectorFetchKey = fetchKey;
 
+        // --- Fast path: serve from allSectorSeries cache (no network call) ---
+        if (!industriesParam && allSectorSeries) {
+            const series = [];
+            let allHit = true;
+
+            if (mode === 'cross-index') {
+                for (const idx of indices) {
+                    const idxData = allSectorSeries[idx];
+                    if (!idxData || !idxData[sector]) { allHit = false; break; }
+                    series.push({ symbol: idx, points: idxData[sector] });
+                }
+            } else if (mode === 'single-index') {
+                const idx = indices[0];
+                const idxData = allSectorSeries[idx];
+                if (!idxData) {
+                    allHit = false;
+                } else {
+                    for (const sec of sectors) {
+                        if (!idxData[sec]) continue;
+                        series.push({ symbol: sec, points: idxData[sec] });
+                    }
+                    if (series.length === 0) allHit = false;
+                }
+            }
+
+            if (allHit && series.length > 0) {
+                _sectorDataVersion++;
+                sectorComparisonData = {
+                    series: series.map(s => ({ symbol: s.symbol, points: s.points })),
+                    _version: _sectorDataVersion,
+                };
+                sectorDataLoading = false;
+                return;
+            }
+        }
+
+        // --- Slow path: network fetch (industry filter active or cache not ready) ---
         sectorDataLoading = true;
         try {
             let url = `${API_BASE_URL}/sector-comparison/data-v2?sector=${encodeURIComponent(sectorParam)}&indices=${indicesParam}&mode=${mode}&period=max`;
@@ -184,6 +266,13 @@
         }
 
         fetchSectorData(sector, indices, mode, industries, sectors);
+    });
+
+    // Preload all sector series when entering sector mode
+    $effect(() => {
+        if (inSectors && !allSectorSeries && !allSectorSeriesLoading) {
+            preloadAllSectorSeries();
+        }
     });
 
     // Read from localStorage synchronously to prevent button flashing on load

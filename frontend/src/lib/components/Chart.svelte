@@ -931,6 +931,14 @@
                 const s = cData.series.find(s => s.symbol === cs.symbol);
                 if (s) cs.series.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
             });
+            // Rebuild mergedTimeAxis and processedData so xToDate maps correctly
+            // (different indices have different trading calendars)
+            buildMergedTimeAxis(cData);
+            let longest = cData.series[0].points;
+            for (const s of cData.series) {
+                if (s.points.length > longest.length) longest = s.points;
+            }
+            processedData = longest.map(p => ({ time: p.time, close: p.pct }));
             return;
         }
 
