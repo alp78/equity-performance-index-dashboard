@@ -1,119 +1,77 @@
-# Equity Performance Index Dashboard
+# Global Exchange Monitor
 
-A high-performance, cloud-native financial dashboard built on Google Cloud Platform. Combines a SvelteKit frontend, FastAPI backend, and BigQuery data warehouse to deliver real-time S&P 500 market data, technical indicators, and global macro feeds through WebSocket and REST APIs.
-
----
-
-## Live Dashboard
-
-![Live Dashboard](docs/Dashboard.jpg)
-
-The interface is composed of six panels: a searchable S&P 500 sidebar with live daily price, high/low, and volume; an interactive price chart with MA30/MA90 overlays and a volume histogram; a period selector (1W through MAX) that filters client-side with no additional network requests; US equities and global macro panels fed by a persistent WebSocket connection; and a period performance panel showing the top and bottom three S&P 500 movers.
+A real-time global stock market dashboard tracking 6 major indices — S&P 500, EURO STOXX 50, FTSE 100, Nikkei 225, CSI 300, and Nifty 50 — with sector analysis, cross-index comparison, and live price feeds.
 
 ---
 
-## System Architecture
+## Screenshots
 
-![System Diagram](docs/Diagram.jpg)
+### Global Index Overview
+![Global Index Overview](docs/Dashboard_indices.jpg)
+Normalized % change comparison across all 6 indices with interactive crosshair tooltip, volume chart, and a sortable performance table showing current price, YTD return, 52-week range, and period return.
+
+### Sector Analysis
+![Sector Analysis](docs/Dashboard_sectors.jpg)
+Cross-index sector performance with a heatmap, industry breakdown, and top/bottom movers — filterable by index, industry, and time period.
+
+### Stock Page
+![Stock Page](docs/Dashboard_stocks.jpg)
+Per-stock OHLCV candlestick chart with MA30/MA90 overlays, live price feed, top movers panel, market leaders, and global macro indicators.
 
 ---
 
-## Core Components
+## Architecture
 
-### 1. Data Ingestion and Persistence
+![Architecture Diagram](docs/Diagram.jpg)
 
-| Component | Role |
+### How it works
+
+**Ingestion** — A Cloud Function (`sync_stocks`) runs daily, fetching OHLCV data from Yahoo Finance for all index constituents. It performs per-symbol gap detection using exchange calendars (XNYS, XFRA, XLON, XTKS, XSHG, XBOM) to catch interior gaps, not just trailing ones. Data flows: Yahoo Finance → GCS (raw NDJSON staging) → BigQuery (persistent warehouse).
+
+**Backend** — A FastAPI app on Cloud Run hydrates per-index DuckDB in-memory tables from BigQuery on startup, with lazy loading per index. An API response cache (5s TTL) sits in front of DuckDB for hot-path queries. When the Cloud Function completes a sync, it fires a webhook that invalidates the cache and triggers a background DuckDB reload — non-blocking, so stale data is served during the refresh window. All SQL queries are extracted into standalone `.sql` files and loaded with a caching loader.
+
+**Real-time feed** — A background task polls Binance and Yahoo Finance every 10 seconds and broadcasts live prices via WebSocket to all connected clients.
+
+**Frontend** — SvelteKit app hosted on Firebase Hosting. Connects to the REST API for historical data and opens a WebSocket for live price updates.
+
+### Stack
+
+| Layer | Technology |
 |---|---|
-| Cloud Function `sync_stocks` | Triggered daily by Cloud Scheduler. Performs an incremental EOD pull from Yahoo Finance — idempotent, fetches only dates not yet in BigQuery |
-| GCS Bucket | Receives each daily batch as NDJSON before any database write, serving as an immutable bronze-layer audit trail |
-| BigQuery `stock_prices` | System of record for all historical OHLCV data. Append-only with read-time deduplication via `ROW_NUMBER() OVER (PARTITION BY symbol, trade_date)` |
-
-### 2. Event-Driven Cache Orchestration
-
-On successful ingestion, the Cloud Function fires an async webhook to the FastAPI backend at `/api/admin/refresh`. The backend responds immediately and runs a two-phase background refresh: first loading only the latest trade date into DuckDB (~1 second, makes the sidebar immediately available), then replacing the full historical dataset atomically. The API response cache is cleared on completion.
-
-### 3. Serving Layer — Cloud Run API
-
-A FastAPI application on Cloud Run with dedicated CPU allocation, serving REST endpoints and WebSocket connections backed by a two-layer cache:
-
-| Layer | Technology | TTL | Purpose |
-|---|---|---|---|
-| Response Cache | Python dict `API_CACHE` | 30 minutes | Eliminates redundant DuckDB queries |
-| Data Cache | DuckDB In-Memory | Until webhook | Reduces query latency from 2–5s to under 30ms |
-
-All analytical queries use DuckDB window functions (`LAG`, `FIRST_VALUE`, `LAST_VALUE`, `AVG OVER ROWS`) in single-pass operations. A composite index on `(symbol, trade_date)` supports sub-millisecond lookups.
-
-**REST Endpoints**
-
-| Endpoint | Description |
-|---|---|
-| `GET /summary` | All tickers with daily change, high, low, volume |
-| `GET /data/{symbol}?period=` | Historical OHLCV with MA30 and MA90 |
-| `GET /rankings?period=` | Top and bottom three period performers |
-| `GET /metadata/{symbol}` | Company name for chart header |
-| `POST /api/admin/refresh` | Webhook receiver — triggers cache reload |
-
-### 4. Real-Time Feed — WebSocket Broadcaster
-
-A persistent async background task polls two sources at different cadences and broadcasts updates to all connected clients. New connections receive an immediate snapshot of the last-known state before entering the live stream.
-
-| Source | Assets | Interval |
-|---|---|---|
-| Binance REST API | BTC/USDT | Every 5 seconds |
-| Yahoo Finance | NVDA, AAPL, MSFT, XAU/USD, EUR/USD | Every 60 seconds |
-
-NYSE market hours are checked via `pandas_market_calendars` on each poll cycle, driving the LIVE/CLOSED indicator in the UI.
-
-### 5. Frontend — SvelteKit on Firebase
-
-The SvelteKit application is deployed on Firebase Hosting with global CDN edge distribution, automatic SSL, and Brotli/Gzip compression. SSR is disabled — the dashboard is fully client-rendered.
-
-A centralized store architecture (`stores.js`) ensures data is fetched once and shared across components. Summary data loads on mount and is never reloaded. Period changes affect only the RankingPanel. Chart data is fetched at `period=max` on symbol load and filtered client-side for all period views. The RankingPanel prefetches all period variants on mount for instant switching.
+| Frontend | SvelteKit, TailwindCSS, Lightweight Charts |
+| Backend | FastAPI, DuckDB (in-memory), Python |
+| Warehouse | BigQuery |
+| Ingestion | Google Cloud Functions, yfinance, exchange-calendars |
+| Staging | Google Cloud Storage |
+| Hosting | Firebase Hosting (frontend), Cloud Run (backend) |
+| Real-time | WebSocket, Binance API, Yahoo Finance |
 
 ---
 
-## Project Structure
+## Features
 
-```text
-EXCHANGE_GCP/
-├── backend/
-│   └── main.py                  # FastAPI, DuckDB, WebSocket, caching
-├── ingestion/
-│   └── main.py                  # Cloud Function: Yahoo Finance → GCS → BigQuery → Webhook
-├── frontend/
-│   ├── src/
-│   │   ├── routes/
-│   │   │   ├── +page.svelte     # Root layout and state orchestration
-│   │   │   └── +page.js         # SSR and prerendering disabled
-│   │   └── lib/
-│   │       ├── stores.js        # Centralized reactive state
-│   │       └── components/
-│   │           ├── Sidebar.svelte
-│   │           ├── Chart.svelte
-│   │           ├── LiveIndicators.svelte
-│   │           └── RankingPanel.svelte
-│   └── firebase.json
-└── docs/
-    ├── Dashboard.jpg
-    └── Diagram.jpg
-```
+### Global Index Overview
+- Normalized % change chart across up to 6 indices simultaneously with unified timeline and forward-fill for sparse series
+- Interactive crosshair tooltip showing price, % change, and volume per index at any date
+- Volume bar chart synchronized with the main chart
+- Index performance table: current price, daily change, YTD, 52-week range, period return, volume
+- Period selector: 1W · 1MO · 3MO · 6MO · 1Y · 5Y · MAX · Custom Range
 
----
+### Sector Analysis
+- **Cross-index mode** — track one sector across all 6 indices on a single normalized chart
+- **Single-index mode** — compare multiple sectors within one index
+- Per-stock normalization + unified timeline + forward-fill prevents chart spikes from IPOs, delistings, and trading calendar mismatches
+- **Sector Heatmap** — all sectors × all indices, colour-coded by return magnitude, with cross-index average column
+- **Industry breakdown** — drill into sub-industries within any sector per index
+- **Top/bottom movers** — best and worst performing stocks within the selected sector and period
+- Sidebar industry filter with per-index stock counts and ctrl+click to isolate
+- Period selector with custom date range support
 
-## Technical Specifications
-
-| Metric | Value |
-|---|---|
-| Initial page load | 1–2 seconds |
-| Chart and rankings period switch | Instant — client-side, no network call |
-| Symbol switch | ~200ms (cache hit) / ~1s (cache miss) |
-| Crypto refresh | Every 5 seconds |
-| Equity refresh | Every 60 seconds |
-| DuckDB query latency | 10–30ms vs 2–5s raw BigQuery |
-| API cache hit rate | ~95% |
-
-**Decoupled architecture.** Ingestion, storage, and serving layers operate and recover independently. A failure in any one layer does not cascade to the others.
-
-**Hybrid data model.** Accurate EOD historical data from BigQuery is combined with live intraday price action from WebSocket feeds, giving the chart both depth and recency.
-
-**Compiler-first frontend.** Svelte eliminates the Virtual DOM, surgically updating only the DOM nodes that change when WebSocket ticks arrive — well suited for a high-frequency, multi-panel price dashboard.
+### Stock Page
+- OHLCV candlestick chart with MA30 and MA90 overlays
+- Live price line (WebSocket) shown alongside historical candles with VS LIVE delta in tooltip
+- Sector/industry browse tree in sidebar with stock count per node
+- Symbol search
+- **Top Movers** panel — period return bar chart for top and bottom performers in the index
+- **Market Leaders** panel — real-time price and daily change for index blue chips
+- **Global Macro** panel — live BTC/USD, XAU/USD, EUR/USD via WebSocket
