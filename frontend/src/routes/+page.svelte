@@ -150,9 +150,10 @@
 
     async function loadIndustrySeries(sector, indices) {
         if (!sector || !indices || indices.length === 0) return;
-        // Already fully cached for this sector?
-        if (industrySeriesCache[sector]) {
-            const missing = indices.filter(idx => !(idx in industrySeriesCache[sector]));
+        // Check cache without triggering reactivity in calling $effect
+        const cached = industrySeriesCache[sector];
+        if (cached) {
+            const missing = indices.filter(idx => !(idx in cached));
             if (missing.length === 0) return;
         }
         const key = `${sector}_${indices.join(',')}`;
@@ -426,7 +427,8 @@
             }
         }
 
-        fetchSectorData(sector, indices, mode, industries, sectors);
+        // untrack: prevent cache reads inside fetchSectorData from re-triggering this effect
+        untrack(() => fetchSectorData(sector, indices, mode, industries, sectors));
     });
 
     // Preload all sector series when entering sector mode
@@ -444,7 +446,8 @@
         if (!sector) return;
         const indices = mode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
         if (!indices || indices.length === 0) return;
-        loadIndustrySeries(sector, indices);
+        // untrack: prevent cache reads inside loadIndustrySeries from re-triggering this effect
+        untrack(() => loadIndustrySeries(sector, indices));
     });
 
     // Read from localStorage synchronously to prevent button flashing on load

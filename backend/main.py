@@ -94,6 +94,7 @@ db_lock = threading.Lock()
 INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
 INDUSTRY_SERIES_STATUS: dict = {}
+INDEX_PRICES_ROW_COUNT: int = 0
 LATEST_MARKET_DATA: dict = {}
 STARTUP_TIME: float = 0.0
 STARTUP_DONE_TIME: float = 0.0
@@ -225,8 +226,7 @@ def _load_index_from_bq(index_key):
                 .replace("{table_name}", table_name)
             )
             _rebuild_unified_view()
-
-        row_count = local_db.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            row_count = local_db.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
         t_done = time.time()
         print(f"  [{index_key}] DuckDB: {t_done - t_bq:.1f}s. Total: {t_done - t0:.1f}s ({row_count} rows)")
         return row_count
@@ -276,7 +276,7 @@ def _precompute_sector_series(index_key):
                 f"SELECT COUNT(DISTINCT sector) FROM {series_table}"
             ).fetchone()[0]
 
-        SECTOR_SERIES_STATUS[index_key] = {"ready": True, "computing": False}
+        SECTOR_SERIES_STATUS[index_key] = {"ready": True, "computing": False, "row_count": row_count}
         print(f"  [{index_key}] Sector series precomputed: {sector_count} sectors, "
               f"{row_count} rows in {time.time() - t0:.1f}s")
 
@@ -313,7 +313,7 @@ def _precompute_industry_series(index_key):
                 f"SELECT COUNT(DISTINCT industry) FROM {series_table}"
             ).fetchone()[0]
 
-        INDUSTRY_SERIES_STATUS[index_key] = {"ready": True, "computing": False}
+        INDUSTRY_SERIES_STATUS[index_key] = {"ready": True, "computing": False, "row_count": row_count}
         print(f"  [{index_key}] Industry series precomputed: {industry_count} industries, "
               f"{row_count} rows in {time.time() - t0:.1f}s")
 
@@ -386,17 +386,18 @@ def _load_index_prices_from_bq():
             )
             local_db.execute("DROP TABLE IF EXISTS latest_index_prices")
             local_db.execute(sql("duckdb_create_latest_index_prices.sql"))
-
-        row_count = local_db.execute("SELECT COUNT(*) FROM index_prices").fetchone()[0]
-        max_dates = local_db.execute("""
-            SELECT symbol, MAX(trade_date) as max_date, MIN(trade_date) as min_date, COUNT(*) as cnt
-            FROM index_prices GROUP BY symbol ORDER BY symbol
-        """).fetchall()
+            row_count = local_db.execute("SELECT COUNT(*) FROM index_prices").fetchone()[0]
+            max_dates = local_db.execute("""
+                SELECT symbol, MAX(trade_date) as max_date, MIN(trade_date) as min_date, COUNT(*) as cnt
+                FROM index_prices GROUP BY symbol ORDER BY symbol
+            """).fetchall()
         t_done = time.time()
         print(f"  [index_prices] DuckDB: {t_done - t_bq:.1f}s. Total: {t_done - t0:.1f}s ({row_count} rows)")
         for sym, max_d, min_d, cnt in max_dates:
             print(f"    {sym}: {min_d} → {max_d} ({cnt} rows)")
         INDEX_PRICES_LOADED = True
+        global INDEX_PRICES_ROW_COUNT
+        INDEX_PRICES_ROW_COUNT = row_count
         return row_count
 
     except Exception as e:
@@ -637,31 +638,43 @@ async def market_data_feeder():
 
 
 async def preload_all_indices():
-    for idx in ["stoxx50", "sp500"]:
-        try:
-            await refresh_single_index(idx)
-        except Exception as e:
-            print(f"Phase 1 error loading {idx}: {e}")
+    loop = asyncio.get_event_loop()
+
+    # Phase 1: stoxx50 + sp500 in parallel
+    phase1 = ["stoxx50", "sp500"]
+    phase1_tasks = [refresh_single_index(idx) for idx in phase1]
+    results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
+    for idx, res in zip(phase1, results):
+        if isinstance(res, Exception):
+            print(f"Phase 1 error loading {idx}: {res}")
     print("Phase 1 preload complete (stoxx50, sp500)")
 
     asyncio.create_task(market_data_feeder())
     asyncio.create_task(self_keepalive())
 
+    # Phase 2: all remaining indices + index_prices in parallel
     remaining = [k for k in MARKET_INDICES if k not in ("stoxx50", "sp500")]
-    for idx in remaining:
+
+    async def _load_remaining(idx):
         try:
             await refresh_single_index(idx)
             print(f"  Background preload: {idx} ready")
         except Exception as e:
             print(f"  Background preload error {idx}: {e}")
-        await asyncio.sleep(1)
 
-    try:
-        loop = asyncio.get_event_loop()
-        row_count = await loop.run_in_executor(None, _load_index_prices_from_bq)
-        print(f"  Index prices loaded: {row_count} rows")
-    except Exception as e:
-        print(f"  Index prices load error: {e}")
+    async def _load_index_prices():
+        try:
+            row_count = await loop.run_in_executor(None, _load_index_prices_from_bq)
+            print(f"  Index prices loaded: {row_count} rows")
+        except Exception as e:
+            print(f"  Index prices load error: {e}")
+
+    phase2_tasks = [_load_remaining(idx) for idx in remaining] + [_load_index_prices()]
+    await asyncio.gather(*phase2_tasks)
+
+    # Final unified view rebuild to ensure all indices are included
+    with db_lock:
+        _rebuild_unified_view()
 
     print("All indices preloaded")
 
@@ -714,91 +727,45 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health():
     loaded = {k: v for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")}
     total_indices = len(MARKET_INDICES)
+    total_steps = total_indices * 3 + 1
 
-    # Build step-by-step progress for each index
-    steps = []
-    step_num = 0
+    # Only show completed steps (from cached counts) + what's currently loading
+    done = []
+    loading = []
+    total_rows = 0
     for idx in MARKET_INDICES:
-        step_num += 1
         status = INDEX_LOAD_STATUS.get(idx, {})
         if status.get("loaded"):
-            rows = status.get("row_count", 0)
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} ({rows:,} rows) [ok]")
+            rc = status.get("row_count", 0)
+            done.append(f"stocks for {idx} ({rc:,} rows)")
+            total_rows += rc
         elif status.get("loading"):
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} ... loading")
-        else:
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: stocks for {idx} - pending")
+            loading.append(f"stocks for {idx}")
 
-        step_num += 1
         sec_status = SECTOR_SERIES_STATUS.get(idx, {})
         if sec_status.get("ready"):
-            try:
-                with db_lock:
-                    cnt = local_db.execute(f"SELECT COUNT(*) FROM sector_series_{idx}").fetchone()[0]
-                steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} ({cnt:,} rows) [ok]")
-            except Exception:
-                steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} [ok]")
+            rc = sec_status.get("row_count", 0)
+            done.append(f"sector series for {idx} ({rc:,} rows)")
+            total_rows += rc
         elif sec_status.get("computing"):
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} ... computing")
-        else:
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: sector series for {idx} - pending")
+            loading.append(f"sector series for {idx}")
 
-        step_num += 1
         ind_status = INDUSTRY_SERIES_STATUS.get(idx, {})
         if ind_status.get("ready"):
-            try:
-                with db_lock:
-                    cnt = local_db.execute(f"SELECT COUNT(*) FROM industry_series_{idx}").fetchone()[0]
-                steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} ({cnt:,} rows) [ok]")
-            except Exception:
-                steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} [ok]")
+            rc = ind_status.get("row_count", 0)
+            done.append(f"industry series for {idx} ({rc:,} rows)")
+            total_rows += rc
         elif ind_status.get("computing"):
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} ... computing")
-        else:
-            steps.append(f"{step_num}/{total_indices * 3 + 1}: industry series for {idx} - pending")
+            loading.append(f"industry series for {idx}")
 
-    # Final step: index_prices
-    total_steps = total_indices * 3 + 1
     if INDEX_PRICES_LOADED:
-        try:
-            with db_lock:
-                cnt = local_db.execute("SELECT COUNT(*) FROM index_prices").fetchone()[0]
-            steps.append(f"{total_steps}/{total_steps}: index prices ({cnt:,} rows) [ok]")
-        except Exception:
-            steps.append(f"{total_steps}/{total_steps}: index prices [ok]")
-    else:
-        steps.append(f"{total_steps}/{total_steps}: index prices - pending")
+        done.append(f"index prices ({INDEX_PRICES_ROW_COUNT:,} rows)")
+        total_rows += INDEX_PRICES_ROW_COUNT
+    elif any(v.get("loaded") for v in INDEX_LOAD_STATUS.values()):
+        loading.append("index prices")
 
-    completed = sum(1 for s in steps if "[ok]" in s)
+    completed = len(done)
     all_done = completed == total_steps
-
-    # Count total rows and memory across all loaded tables
-    total_rows = 0
-    total_bytes = 0
-    try:
-        with db_lock:
-            tables = [r[0] for r in local_db.execute("SHOW TABLES").fetchall()]
-            for tbl in tables:
-                rc = local_db.execute(f"SELECT COUNT(*) FROM \"{tbl}\"").fetchone()[0]
-                total_rows += rc
-                # estimated_size returns bytes for in-memory tables
-                try:
-                    sz = local_db.execute(f"SELECT estimated_size FROM duckdb_tables() WHERE table_name = '{tbl}'").fetchone()
-                    if sz:
-                        total_bytes += sz[0]
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    def fmt_bytes(b):
-        if b >= 1_073_741_824:
-            return f"{b / 1_073_741_824:.1f}Gb"
-        if b >= 1_048_576:
-            return f"{b / 1_048_576:.0f}Mb"
-        if b >= 1024:
-            return f"{b / 1024:.0f}Kb"
-        return f"{b}b"
 
     def fmt_rows(n):
         if n >= 1_000_000:
@@ -819,9 +786,11 @@ async def health():
         "progress": f"{completed}/{total_steps}",
         "indices_loaded": len(loaded),
         "total_rows": fmt_rows(total_rows),
-        "total_memory": fmt_bytes(total_bytes) if total_bytes else "n/a",
-        "steps": steps,
+        "done": done,
     }
+
+    if loading:
+        result["loading"] = loading
 
     if all_done and STARTUP_DONE_TIME and STARTUP_TIME:
         result["total_time"] = fmt_time(STARTUP_DONE_TIME - STARTUP_TIME)

@@ -389,7 +389,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
 
     if not all_gap_symbols:
         logger.info(f"  All {len(tickers)} symbols up to date ({expected}), no interior gaps")
-        return 0, "Up to date"
+        return 0, f"0 rows ({len(tickers)} symbols up to date)"
 
     earliest_needed = expected
     if trailing_behind:
@@ -400,12 +400,13 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         if all_missing:
             earliest_needed = min(earliest_needed, min(all_missing))
 
-    logger.info(f"  {len(all_gap_symbols)} symbols need data. "
+    gap_tickers = list(all_gap_symbols)
+    logger.info(f"  {len(gap_tickers)}/{len(tickers)} symbols need data. "
                 f"Trailing: {len(trailing_behind)}, Interior gaps: {len(symbol_missing_dates)}. "
                 f"Fetching from {earliest_needed}")
 
     symbol_effective_start = {}
-    for sym in tickers:
+    for sym in gap_tickers:
         missing = symbol_missing_dates.get(sym, [])
         trailing = symbol_last_dates.get(sym, datetime(2023, 1, 1).date())
         if missing:
@@ -417,7 +418,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
             symbol_effective_start[sym] = expected
 
     records = download_and_transform(
-        tickers, name_map, sector_map, industry_map,
+        gap_tickers, name_map, sector_map, industry_map,
         earliest_needed, effective_today, symbol_effective_start
     )
 
@@ -434,7 +435,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         if still_missing:
             logger.warning(f"  Still missing: {list(still_missing)[:10]}")
 
-        return len(records), f"{len(records)} records ({len(updated)} symbols)"
+        return len(records), f"{len(records)} rows written ({len(updated)}/{len(tickers)} symbols updated)"
     except Exception as e:
         logger.critical(f"  Load failed: {e}")
         return 0, f"Load error: {e}"
@@ -544,8 +545,8 @@ def sync_index_prices(bq_client, storage_client, now_utc):
             }
 
     if not symbols_to_update:
-        logger.info(f"  All index tickers up to date")
-        return 0, "Up to date"
+        logger.info(f"  All {len(INDEX_TICKERS)} index tickers up to date")
+        return 0, f"0 rows ({len(INDEX_TICKERS)} tickers up to date)"
 
     logger.info(f"  {len(symbols_to_update)} index tickers need data: {list(symbols_to_update.keys())}")
 
@@ -636,7 +637,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
 
     try:
         load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, "index_prices", effective_today)
-        return len(records), f"{len(records)} records ({len(updated_symbols)} tickers)"
+        return len(records), f"{len(records)} rows written ({len(updated_symbols)}/{len(INDEX_TICKERS)} tickers updated)"
     except Exception as e:
         logger.critical(f"  Index prices load failed: {e}")
         return 0, f"Load error: {e}"
@@ -708,6 +709,9 @@ def sync_stocks(request):
             except Exception as e:
                 logger.warning(f"  Webhook error index_prices: {e}")
 
-    summary = f"Done (target: {target_index}). {total_records} records. {json.dumps(results)}"
+    lines = [f"Sync complete (target: {target_index}) - {total_records} total rows written"]
+    for key, status in results.items():
+        lines.append(f"  {key}: {status}")
+    summary = "\n".join(lines)
     logger.info(f"\n--- {summary} ---")
     return summary, 200
