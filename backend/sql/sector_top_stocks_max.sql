@@ -1,3 +1,4 @@
+-- returns top stocks by return within a sector over all available data
 WITH Ranked AS (
     SELECT symbol, name,
         FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,

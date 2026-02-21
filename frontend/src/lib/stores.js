@@ -1,9 +1,4 @@
-/**
- * Global Stores & Data Loaders
- * ============================
- * INDEX_CONFIG is the single source of truth for all indices.
- * To add a new index, add an entry here — everything else adapts.
- */
+// Global stores and data loaders — INDEX_CONFIG is the single source of truth for all indices
 
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
@@ -12,7 +7,6 @@ import { API_BASE_URL } from '$lib/config.js';
 // --- INDEX CONFIGURATION ---
 
 export const INDEX_CONFIG = {
-    // --- WEST ---
     stoxx50: {
         label: 'EURO STOXX 50',
         shortLabel: 'STOXX 50',
@@ -37,7 +31,6 @@ export const INDEX_CONFIG = {
         defaultSymbol: 'SHEL.L',
         region: 'west',
     },
-    // --- EAST ---
     nikkei225: {
         label: 'Nikkei 225',
         shortLabel: 'Nikkei 225',
@@ -64,7 +57,7 @@ export const INDEX_CONFIG = {
     },
 };
 
-// Index ticker → index key mapping
+// ticker symbol <-> index key bidirectional mapping
 export const INDEX_TICKER_MAP = {
     '^GSPC':      'sp500',
     '^STOXX50E':  'stoxx50',
@@ -78,7 +71,7 @@ export const INDEX_KEY_TO_TICKER = Object.fromEntries(
     Object.entries(INDEX_TICKER_MAP).map(([ticker, key]) => [key, ticker])
 );
 
-// Grouped for dropdown
+// grouped by region for dropdown rendering
 export const INDEX_GROUPS = [
     {
         label: 'West',
@@ -94,9 +87,9 @@ export const INDEX_GROUPS = [
     },
 ];
 
-// --- GLOBAL STORES (persisted across browser refresh) ---
+// --- PERSISTED STORES ---
+// all stores restore from localStorage on page load
 
-// Read stored values BEFORE creating stores
 const _storedIndex = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_index');
@@ -113,7 +106,7 @@ const _storedSymbol = browser ? (() => {
 export const selectedSymbol = writable(_storedSymbol);
 export const marketIndex = writable(_storedIndex);
 
-// Overview mode: which index tickers are selected for comparison
+// overview mode: selected index tickers for comparison chart
 const _storedOverviewIndices = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_overview_indices');
@@ -123,8 +116,7 @@ const _storedOverviewIndices = browser ? (() => {
 
 export const overviewSelectedIndices = writable(_storedOverviewIndices);
 
-// Sector mode stores
-// Cross-index mode: multiple indices selected
+// sector mode: cross-index uses multiple indices, single-index uses one
 const _storedSectorIndices = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_sector_indices');
@@ -132,7 +124,6 @@ const _storedSectorIndices = browser ? (() => {
     } catch { return ['sp500', 'stoxx50']; }
 })() : ['sp500', 'stoxx50'];
 
-// Single-index mode: one index selected (separate store so they don't interfere)
 const _storedSingleIndex = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_single_index');
@@ -146,11 +137,10 @@ const _storedSelectedSector = browser ? (() => {
     } catch { return 'Technology'; }
 })() : 'Technology';
 
-export const sectorSelectedIndices = writable(_storedSectorIndices);  // cross-index mode
-export const singleSelectedIndex   = writable(_storedSingleIndex);    // single-index mode
+export const sectorSelectedIndices = writable(_storedSectorIndices);
+export const singleSelectedIndex   = writable(_storedSingleIndex);
 export const selectedSector = writable(_storedSelectedSector);
 
-// Sector analysis: mode, selected industries, multi-sector selection
 const _storedSectorMode = browser ? (() => {
     try { return localStorage.getItem('dash_sector_mode') || 'cross-index'; } catch { return 'cross-index'; }
 })() : 'cross-index';
@@ -162,10 +152,9 @@ const _storedSectorIndustries = browser ? (() => {
     } catch { return []; }
 })() : [];
 
-// All 11 sectors — used as default for unvisited indices
 export const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
 
-// Per-index sector selections: { sp500: [...], stoxx50: [...], ... }
+// per-index sector checkbox state: { sp500: [...], stoxx50: [...] }
 const _storedSectorsByIndex = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_sectors_by_index');
@@ -173,10 +162,7 @@ const _storedSectorsByIndex = browser ? (() => {
     } catch { return {}; }
 })() : {};
 
-// Current index for single-index mode — default to stoxx50 on first visit
 const _currentSingleIndex = _storedSectorIndices[0] || 'stoxx50';
-
-// Load initial sectors for current index — default to ALL sectors for unvisited indices
 const _initialSectors = _storedSectorsByIndex[_currentSingleIndex] || ALL_SECTORS;
 
 export const sectorAnalysisMode = writable(_storedSectorMode);
@@ -184,11 +170,17 @@ export const selectedIndustries = writable(_storedSectorIndustries);
 export const selectedSectors = writable(_initialSectors);
 export const sectorsByIndex = writable(_storedSectorsByIndex);
 
-// Derived: are we in overview mode?
+// --- DERIVED STORES ---
+
 export const isOverviewMode = derived(marketIndex, ($idx) => $idx === 'overview');
 export const isSectorMode = derived(marketIndex, ($idx) => $idx === 'sectors');
+export const currentCurrency = derived(marketIndex, ($idx) =>
+    ($idx === 'overview' || $idx === 'sectors') ? '%' : (INDEX_CONFIG[$idx]?.currency || '$')
+);
 
-// Persist on change (after initial creation)
+// --- PERSISTENCE ---
+// subscribe to each store and sync to localStorage on change
+
 if (browser) {
     marketIndex.subscribe(val => {
         try { localStorage.setItem('dash_index', val); } catch {}
@@ -222,9 +214,7 @@ if (browser) {
     });
 }
 
-export const currentCurrency = derived(marketIndex, ($idx) =>
-    ($idx === 'overview' || $idx === 'sectors') ? '%' : (INDEX_CONFIG[$idx]?.currency || '$')
-);
+// --- DATA STORES ---
 
 export const summaryData = writable({
     assets: [],
@@ -241,14 +231,13 @@ export const rankingsData = writable({
     error: null,
 });
 
-// Index overview summary data (separate from stock summary)
 export const indexOverviewData = writable({
     assets: [],
     loaded: false,
     loading: false,
 });
 
-// --- FETCH HELPER ---
+// --- FETCH HELPERS ---
 
 async function fetchWithRetry(url, retries = 2, timeout = 10000) {
     for (let i = 0; i < retries; i++) {
@@ -268,11 +257,11 @@ async function fetchWithRetry(url, retries = 2, timeout = 10000) {
 
 // --- DATA LOADERS ---
 
+// retries with backoff because backend may still be loading index data from BigQuery
 export async function loadSummaryData(index = 'stoxx50') {
     if (!browser) return;
     summaryData.update(s => ({ ...s, loading: true, error: null }));
 
-    // Retry with backoff — backend may be lazy-loading the index from BigQuery
     const maxRetries = 5;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
@@ -283,7 +272,6 @@ export async function loadSummaryData(index = 'stoxx50') {
                 summaryData.set({ assets: data, loaded: true, loading: false, error: null });
                 return data;
             }
-            // Empty = backend still loading, retry
             if (attempt < maxRetries - 1) {
                 await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
                 continue;
@@ -331,8 +319,9 @@ export async function loadRankingsData(period = '1y', index = 'stoxx50') {
     }
 }
 
-// Focus request — triggers sidebar scroll+open even if symbol hasn't changed
-// Increment counter to force reactivity on re-click of same symbol
+// --- FOCUS REQUEST ---
+// triggers sidebar scroll+expand even if the same symbol is re-clicked
+
 export const focusSymbolRequest = writable({ symbol: '', seq: 0 });
 export function requestFocusSymbol(symbol) {
     focusSymbolRequest.update(v => ({ symbol, seq: v.seq + 1 }));

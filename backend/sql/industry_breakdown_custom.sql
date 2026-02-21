@@ -1,3 +1,4 @@
+-- computes average return per industry within a sector for a custom date range
 WITH Filtered AS (
     SELECT symbol, industry, close, trade_date
     FROM {table}

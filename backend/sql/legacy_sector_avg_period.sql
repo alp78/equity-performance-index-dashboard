@@ -1,3 +1,4 @@
+-- computes daily average close price for a sector over a recent lookback period
 WITH sector_stocks AS (
     SELECT symbol,
            strftime(trade_date, '%Y-%m-%d') as time,

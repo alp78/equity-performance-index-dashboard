@@ -1,17 +1,19 @@
-<!--
-  Sidebar — Sector-grouped stock list with collapsible sections
--->
+<!-- collapsible stock list grouped by sector. three modes: stock browsing,
+     cross-index sector tree with industry checkboxes, single-index sector
+     tree with per-sector industry filters. -->
 
 <script>
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
     import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest, isOverviewMode, overviewSelectedIndices, loadIndexOverviewData, indexOverviewData, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER, isSectorMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, selectedSectors } from '$lib/stores.js';
+
+    // --- UI STATE ---
 
     let searchQuery = $state('');
     let dropdownOpen = $state(false);
     let scrollContainer;
-
-    // Per-index open sectors state
     let openSectors = $state(new Set());
+
+    // --- DERIVED STATE ---
 
     let tickers = $derived($summaryData.assets || []);
     let loading = $derived($summaryData.loading);
@@ -22,6 +24,8 @@
     let inOverview = $derived($isOverviewMode);
     let inSectors = $derived($isSectorMode);
 
+    // --- CONSTANTS ---
+
     const INDEX_FLAGS = {
         stoxx50:   'fi fi-eu',
         sp500:     'fi fi-us',
@@ -31,22 +35,23 @@
         nifty50:   'fi fi-in',
     };
 
-    // Overview mode: color palette for index lines
     const INDEX_COLORS = {
-        '^GSPC':     '#e2e8f0', // white/slate
-        '^STOXX50E': '#2563eb', // deep blue
-        '^FTSE':     '#ec4899', // pink
-        '^N225':     '#f59e0b', // amber
-        '000300.SS': '#ef4444', // red
-        '^NSEI':     '#22c55e', // green
+        '^GSPC':     '#e2e8f0',
+        '^STOXX50E': '#2563eb',
+        '^FTSE':     '#ec4899',
+        '^N225':     '#f59e0b',
+        '000300.SS': '#ef4444',
+        '^NSEI':     '#22c55e',
     };
+
+    // --- OVERVIEW MODE ---
 
     let overviewAssets = $derived($indexOverviewData.assets || []);
 
     function toggleOverviewIndex(ticker) {
         overviewSelectedIndices.update(list => {
             if (list.includes(ticker)) {
-                return list.length > 1 ? list.filter(t => t !== ticker) : list; // Keep at least 1
+                return list.length > 1 ? list.filter(t => t !== ticker) : list; // keep at least 1
             }
             return [...list, ticker];
         });
@@ -67,6 +72,29 @@
         openSectors = new Set();
     }
 
+    // --- SECTOR ANALYSIS STATE ---
+
+    let availableSectors = $state([]);
+    let sectorsLoaded = $state(false);
+    let sectorIndustries = $state([]);
+    let _lastLoadedSector = '';
+    let sectorPanelOpen = $state(new Set());
+    // cache: { compositeKey: [{industry, total}] }
+    let allSectorIndustries = $state({});
+    // { cacheKey: [{industry, total}] } for single-index expanded sectors
+    let singleIndexIndustries = $state({});
+    // persisted: which index is expanded in single-index mode
+    let singleOpenIndex = $state((() => {
+        try { return localStorage.getItem('dash_single_open_index') || 'stoxx50'; } catch { return 'stoxx50'; }
+    })());
+    let singleOpenSectors = $state(new Set());
+    // { indexKey: [sectorName, ...] } per-index sector list
+    let singleIndexSectors = $state({});
+    // { sectorName: [industryName, ...] } per-sector industry filter (empty = all selected)
+    let singleSelectedIndustries = $state({});
+
+    // --- SECTOR ANALYSIS: INDEX TOGGLE ---
+
     function toggleSectorIndex(key) {
         sectorSelectedIndices.update(list => {
             if (list.includes(key)) {
@@ -74,23 +102,13 @@
             }
             return [...list, key];
         });
+        // invalidate preload cache so next preload fetches with new indices
+        _preloadedIndicesKey = '';
     }
 
-    // Sector list for the sidebar (fetched once)
-    let availableSectors = $state([]);
-    let sectorsLoaded = $state(false);
-    let sectorIndustries = $state([]);
-    let _lastLoadedSector = '';
-    let sectorPanelOpen = $state(new Set()); // Which sectors are expanded in sector analysis sidebar
-    let allSectorIndustries = $state({}); // cache: { cacheKey: [{industry, total}] }
-    let singleIndexIndustries = $state({}); // { sectorName: [{industry, total}] } for single-index expanded sectors
-    let singleOpenIndex = $state((() => {
-        try { return localStorage.getItem('dash_single_open_index') || 'stoxx50'; } catch { return 'stoxx50'; }
-    })()); // Which index is expanded in single-index mode — persisted
-    let singleOpenSectors = $state(new Set()); // Which sectors expanded within the open index
-    let singleIndexSectors = $state({}); // { indexKey: [sectorName, ...] } — sectors available per index
-    let singleSelectedIndustries = $state({}); // { sectorName: [industryName, ...] } — per-sector industry filter for single-index mode. Empty array = all selected
+    // --- STOCK COUNT HELPERS ---
 
+    // total stocks for an index, filtered by selected sectors and per-sector industry filters
     function getIndexStockCount(key, selectedSectorsList) {
         const sectors = singleIndexSectors[key] || [];
         let total = 0;
@@ -119,6 +137,8 @@
         return total;
     }
 
+    // --- SINGLE-INDEX DATA LOADING ---
+
     async function loadSingleIndexIndustries(sector) {
         if (!sector) return;
         const indicesStr = $sectorSelectedIndices.join(',') || Object.keys(INDEX_CONFIG).join(',');
@@ -138,8 +158,8 @@
         } catch {}
     }
 
+    // load sectors and preload all industry data for a given index
     async function _loadSingleIndexData(key) {
-        // Load sectors for this index if not cached
         let sectors = singleIndexSectors[key];
         if (!sectors) {
             try {
@@ -152,7 +172,6 @@
             } catch {}
         }
 
-        // Preload industries for all sectors to get stock counts
         if (sectors && sectors.length > 0) {
             for (const sec of sectors) {
                 const ck = `${sec}_${key}`;
@@ -173,8 +192,8 @@
         }
     }
 
+    // expand a different index in single-index mode (clicking same index is a no-op)
     async function openSingleIndex(key) {
-        // Don't allow closing the active index — must click a different one
         if (singleOpenIndex === key) return;
 
         singleOpenIndex = key;
@@ -185,13 +204,15 @@
         await _loadSingleIndexData(key);
     }
 
+    // --- SINGLE-INDEX SECTOR/INDUSTRY TOGGLES ---
+
+    // expand or collapse a sector within the active index, loading industries on first open
     function toggleSingleSector(sec) {
         const next = new Set(singleOpenSectors);
         if (next.has(sec)) {
             next.delete(sec);
         } else {
             next.add(sec);
-            // Load industries for this sector within the current index
             const idxKey = singleOpenIndex;
             const cacheKey = `${sec}_${idxKey}`;
             if (!allSectorIndustries[cacheKey]) {
@@ -209,15 +230,13 @@
         }
         singleOpenSectors = next;
 
-        // Also toggle sector selection for the chart
         toggleMultiSector(sec);
     }
 
+    // ctrl+click isolates a single industry; normal click toggles it within the set
     function toggleIndustry(industry, exclusive = false) {
         if (exclusive) {
-            // Ctrl+click: select ONLY this industry
             selectedIndustries.update(list => {
-                // If this is already the only one selected, go back to all
                 if (list.length === 1 && list[0] === industry) return [];
                 return [industry];
             });
@@ -225,7 +244,7 @@
         }
         selectedIndustries.update(list => {
             if (list.length === 0) {
-                // Currently showing all — toggling one off means select all EXCEPT this one
+                // all shown: toggling one off means select all except this one
                 const allInds = sectorIndustries.map(i => i.industry);
                 return allInds.filter(i => i !== industry);
             }
@@ -239,7 +258,7 @@
         });
     }
 
-    // Per-sector industry toggle for single-index mode
+    // per-sector industry toggle for single-index mode (same ctrl+click logic as cross-index)
     function toggleSingleIndustry(sector, industry, allIndustries, exclusive = false) {
         const current = singleSelectedIndustries[sector] || [];
         if (exclusive) {
@@ -251,7 +270,6 @@
             return;
         }
         if (current.length === 0) {
-            // All selected — toggle one off means all EXCEPT this
             singleSelectedIndustries = { ...singleSelectedIndustries, [sector]: allIndustries.filter(i => i !== industry) };
         } else if (current.includes(industry)) {
             const newList = current.filter(i => i !== industry);
@@ -281,18 +299,18 @@
         });
     }
 
+    // --- CROSS-INDEX INDUSTRY LOADING ---
+
+    // fetch industries for a sector, serving from cache when possible to avoid UI flash
     async function loadIndustries(sector) {
         if (!sector) { sectorIndustries = []; return; }
         const indicesStr = $sectorSelectedIndices.join(',') || Object.keys(INDEX_CONFIG).join(',');
         const cacheKey = `${sector}_${indicesStr}`;
-        // Serve from cache instantly — no flash
         if (allSectorIndustries[cacheKey]) {
             sectorIndustries = allSectorIndustries[cacheKey];
             return;
         }
-        // Don't clear the list — keep current industries visible while new data loads,
-        // then swap atomically. This way adding/removing an index just updates counts,
-        // not a full blank → reload flash. Only clear when switching to a different sector.
+        // keep current list visible during load to avoid blank-then-reload flash
         const prevSector = _lastLoadedSector;
         _lastLoadedSector = sector;
         if (prevSector !== sector) sectorIndustries = [];
@@ -307,21 +325,42 @@
         } catch { sectorIndustries = []; }
     }
 
+    // preload industries for every sector so switching is instant from cache
+    let _preloadedIndicesKey = '';
+    async function preloadAllIndustries() {
+        const indicesStr = $sectorSelectedIndices.join(',') || Object.keys(INDEX_CONFIG).join(',');
+        if (_preloadedIndicesKey === indicesStr) return;
+        _preloadedIndicesKey = indicesStr;
+        const sectors = availableSectors.length > 0
+            ? availableSectors
+            : ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
+        const { API_BASE_URL } = await import('$lib/config.js');
+        // fire all requests in parallel, non-blocking
+        for (const sec of sectors) {
+            const cacheKey = `${sec}_${indicesStr}`;
+            if (allSectorIndustries[cacheKey]) continue;
+            fetch(`${API_BASE_URL}/sector-comparison/industries?sector=${encodeURIComponent(sec)}&indices=${indicesStr}`)
+                .then(r => r.ok ? r.json() : [])
+                .then(data => { allSectorIndustries[cacheKey] = data; })
+                .catch(() => {});
+        }
+    }
+
+    // cross-index mode: only one sector panel open at a time
     function toggleSectorPanel(sec) {
         if (sectorPanelOpen.has(sec)) {
-            sectorPanelOpen = new Set(); // Close all (cross-index is exclusive)
+            sectorPanelOpen = new Set();
         } else {
-            sectorPanelOpen = new Set([sec]); // Open only this one
+            sectorPanelOpen = new Set([sec]);
             selectedSector.set(sec);
             selectedIndustries.set([]);
             loadIndustries(sec);
         }
     }
 
+    // --- DERIVED STOCK COUNTS ---
 
-
-    // Compute stock counts based on selected industries
-    // Total stocks in sector across selected indices
+    // total stocks in current sector across selected indices, filtered by industry selection
     let sectorStockCount = $derived((() => {
         if (!sectorIndustries.length) return 0;
         const included = sectorIndustries.filter(ind =>
@@ -330,7 +369,7 @@
         return included.reduce((sum, ind) => sum + (ind.total || 0), 0);
     })());
 
-    // Per-index stock counts for current sector
+    // per-index stock counts for the currently expanded sector
     let indexStockCounts = $derived((() => {
         const counts = {};
         if (!sectorIndustries.length) return counts;
@@ -355,8 +394,10 @@
         sectorsLoaded = true;
     }
 
-    // Fetch sectors on entering sector mode
+    // --- REACTIVE: SECTOR MODE INITIALIZATION ---
+
     $effect(() => {
+        // fetch available sectors on first entry
         if (inSectors && !sectorsLoaded) {
             import('$lib/config.js').then(({ API_BASE_URL }) => {
                 const allKeys = Object.keys(INDEX_CONFIG).join(',');
@@ -366,31 +407,57 @@
                     .catch(() => { sectorsLoaded = true; });
             });
         }
-        // Open the current sector and load its industries
+        // cross-index: auto-expand current sector, load industries, preload all others
         if (inSectors && $selectedSector && $sectorAnalysisMode === 'cross-index') {
             sectorPanelOpen = new Set([$selectedSector]);
             loadIndustries($selectedSector);
+            preloadAllIndustries();
+            tick().then(() => {
+                const el = document.querySelector(`[data-sector-cross="${CSS.escape($selectedSector)}"]`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
+        // single-index: auto-expand selected sector and load its industries
+        if (inSectors && $selectedSector && $sectorAnalysisMode === 'single-index') {
+            const sec = $selectedSector;
+            if (!singleOpenSectors.has(sec)) {
+                const next = new Set(singleOpenSectors);
+                next.add(sec);
+                singleOpenSectors = next;
+                const idxKey = singleOpenIndex;
+                const ck = `${sec}_${idxKey}`;
+                if (!allSectorIndustries[ck]) {
+                    import('$lib/config.js').then(({ API_BASE_URL: base }) => {
+                        fetch(`${base}/sector-comparison/industries?sector=${encodeURIComponent(sec)}&indices=${idxKey}`)
+                            .then(r => r.ok ? r.json() : [])
+                            .then(data => { allSectorIndustries[ck] = data; singleIndexIndustries = { ...singleIndexIndustries, [ck]: data }; });
+                    });
+                } else {
+                    singleIndexIndustries = { ...singleIndexIndustries, [ck]: allSectorIndustries[ck] };
+                }
+            }
+            tick().then(() => {
+                const el = document.querySelector(`[data-sector-single="${CSS.escape(sec)}"]`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
         }
     });
 
-    // Sync single-index per-sector industry filters → global selectedIndustries for API
-    // Key: for unfiltered sectors (empty array = all), we include ALL their industry names
-    // so the API doesn't accidentally exclude them.
+    // --- REACTIVE: SYNC SINGLE-INDEX INDUSTRY FILTERS TO GLOBAL STORE ---
+
+    // merge per-sector industry selections into the global selectedIndustries store for the API.
+    // unfiltered sectors (empty array) contribute ALL their known industry names.
     $effect(() => {
         if ($sectorAnalysisMode !== 'single-index') return;
         const perSector = singleSelectedIndustries;
-        // Check if ANY sector has a filter active
         let anyFiltered = false;
         for (const [sec, inds] of Object.entries(perSector)) {
             if (inds.length > 0) { anyFiltered = true; break; }
         }
         if (!anyFiltered) {
-            // No per-sector filters at all — clear global
             if ($selectedIndustries.length > 0) selectedIndustries.set([]);
             return;
         }
-        // Build combined list: filtered sectors contribute their selection,
-        // unfiltered sectors contribute ALL their known industries
         const combined = new Set();
         const activeKey = singleOpenIndex;
         const activeSectors = singleIndexSectors[activeKey] || [];
@@ -407,7 +474,9 @@
         selectedIndustries.set(Array.from(combined));
     });
 
-    // Build sector → industry → stocks hierarchy
+    // --- SECTOR TREE (STOCK BROWSING MODE) ---
+
+    // build sector > industry > stocks hierarchy, filtered by search query
     let sectorTree = $derived((() => {
         const filtered = tickers.filter(t =>
             !searchQuery ||
@@ -432,7 +501,8 @@
         }));
     })());
 
-    // Open the sector for a given symbol using current tickers
+    // --- SECTOR EXPAND/COLLAPSE HELPERS ---
+
     function openSectorFor(symbol) {
         const asset = tickers.find(t => t.symbol === symbol);
         if (!asset) return;
@@ -442,7 +512,7 @@
         }
     }
 
-    // Set sectors to exactly one sector for a symbol
+    // collapse all sectors then open only the one containing this symbol
     function resetSectorsTo(symbol, tickerList) {
         const asset = tickerList.find(t => t.symbol === symbol);
         if (!asset) { openSectors = new Set(); return; }
@@ -450,8 +520,10 @@
         openSectors = new Set([sectorName]);
     }
 
-    // External focus request (from TopMovers/MarketLeaders): open sector + scroll
-    // Uses a seq counter so re-clicking same symbol still triggers
+    // --- REACTIVE: EXTERNAL FOCUS REQUEST ---
+
+    // handle focus requests from TopMovers/MarketLeaders: open sector + scroll into view.
+    // uses a seq counter so re-clicking the same symbol still triggers.
     let lastFocusSeq = 0;
     $effect(() => {
         const req = $focusSymbolRequest;
@@ -472,6 +544,8 @@
         }, 50);
     });
 
+    // --- GENERAL UI HANDLERS ---
+
     function toggleSector(sector) {
         const next = new Set(openSectors);
         next.has(sector) ? next.delete(sector) : next.add(sector);
@@ -481,6 +555,8 @@
     function handleClickOutside(e) {
         if (dropdownOpen && !e.target.closest('.index-dropdown')) dropdownOpen = false;
     }
+
+    // --- LIFECYCLE ---
 
     onMount(async () => {
         document.addEventListener('click', handleClickOutside);
@@ -493,7 +569,7 @@
             resetSectorsTo($selectedSymbol, $summaryData.assets);
         }
 
-        // Auto-initialize single-index mode: open the persisted index and load its data
+        // restore persisted single-index expansion
         if ($sectorAnalysisMode === 'single-index' && singleOpenIndex) {
             singleSelectedIndex.set([singleOpenIndex]);
             _loadSingleIndexData(singleOpenIndex);
@@ -502,6 +578,9 @@
         return () => document.removeEventListener('click', handleClickOutside);
     });
 
+    // --- INDEX SWITCHING ---
+
+    // remember the last selected symbol per index so switching back restores it
     let lastSymbolPerIndex = Object.fromEntries(
         Object.entries(INDEX_CONFIG).map(([key, cfg]) => [key, cfg.defaultSymbol])
     );
@@ -515,18 +594,19 @@
     async function switchIndex(key) {
         if (key === currentIndex) return;
         lastSymbolPerIndex[currentIndex] = $selectedSymbol;
-        openSectors = new Set(); // Clear immediately
+        openSectors = new Set();
         marketIndex.set(key);
         searchQuery = '';
         dropdownOpen = false;
         const newTickers = await loadSummaryData(key);
         const newSymbol = lastSymbolPerIndex[key] || INDEX_CONFIG[key]?.defaultSymbol || '';
         selectedSymbol.set(newSymbol);
-        // Set sector AFTER we have the correct tickers
         if (newTickers && newTickers.length > 0) {
             resetSectorsTo(newSymbol, newTickers);
         }
     }
+
+    // --- FORMATTERS ---
 
     function formatVol(val) {
         if (!val) return '0';
@@ -535,7 +615,6 @@
         return val.toString();
     }
 
-    // Exported: open sector for a symbol (from top movers/leaders click)
     export function openSectorForSymbol(symbol) {
         openSectorFor(symbol);
     }
@@ -545,9 +624,8 @@
 
     <div class="p-4 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
 
-        <!-- INDEX DROPDOWN -->
+        <!-- index dropdown selector -->
         <div class="relative index-dropdown">
-            <!-- Dashboard Title -->
             <div class="text-[20px] font-black text-white/25 uppercase tracking-[0.1em] mb-2.5 text-center">Global Exchange Monitor</div>
 
             <button
@@ -580,7 +658,7 @@
 
             {#if dropdownOpen}
                 <div class="absolute top-full left-0 right-0 mt-2 bg-[#16161e] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
-                    <!-- GLOBAL INDEX OVERVIEW option -->
+                    <!-- global index overview option -->
                     <button
                         onclick={switchToOverview}
                         class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all border-b border-white/10
@@ -598,7 +676,7 @@
                         {/if}
                     </button>
 
-                    <!-- SECTOR ANALYSIS option -->
+                    <!-- sector analysis option -->
                     <button
                         onclick={switchToSectors}
                         class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all border-b border-white/10
@@ -641,7 +719,7 @@
             {/if}
         </div>
 
-        <!-- SEARCH + EXPAND/COLLAPSE (hidden in overview/sector mode) -->
+        <!-- search bar + expand/collapse (hidden in overview and sector modes) -->
         {#if !inOverview && !inSectors}
             <div class="flex gap-2">
                 <div class="relative group flex-1">
@@ -672,11 +750,10 @@
 
     <div bind:this={scrollContainer} class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
         {#if inSectors}
-            <!-- SECTOR ANALYSIS SIDEBAR -->
+            <!-- sector analysis sidebar -->
             <div class="flex flex-col h-full">
-                <!-- Mode toggle + Indices — fixed top area -->
                 <div class="p-4 pb-2 space-y-3 shrink-0">
-                <!-- Mode toggle -->
+                <!-- mode toggle: cross-index vs single-index -->
                 <div class="flex bg-black/40 border border-white/10 rounded-xl p-1 gap-1">
                     <button onclick={() => sectorAnalysisMode.set('cross-index')}
                         class="flex-1 text-center py-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all
@@ -691,7 +768,7 @@
                 </div>
 
                 {#if $sectorAnalysisMode === 'cross-index'}
-                    <!-- Index checkboxes (cross-index) -->
+                    <!-- index checkboxes (cross-index mode) -->
                     <div class="space-y-1">
                         <div class="flex items-center justify-between mb-1">
                             <span class="text-[10px] font-black text-white/30 uppercase tracking-widest">Select Indices</span>
@@ -729,13 +806,14 @@
             </div>
 
                 {#if $sectorAnalysisMode === 'cross-index'}
-                    <!-- Cross-index: Sector tree -->
+                    <!-- cross-index sector tree -->
                     <div class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
                         {#each (availableSectors.length > 0 ? availableSectors : ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate']) as sec}
                             {@const isOpen = sectorPanelOpen.has(sec)}
                             {@const isActive = $selectedSector === sec}
                             {@const isCurrent = isOpen && isActive}
-                            <button onclick={() => toggleSectorPanel(sec)}
+                            <button data-sector-cross={sec}
+                                onclick={() => toggleSectorPanel(sec)}
                                 class="w-full flex items-center justify-between px-4 py-3 hover:bg-[#1e1e2a] border-b border-white/[0.06] transition-all relative overflow-hidden
                                 {isActive ? 'bg-orange-500/15' : 'bg-[#1a1a24] border-l-[3px] border-l-white/10'}"
                             >
@@ -796,7 +874,7 @@
                         {/each}
                     </div>
                 {:else}
-                    <!-- Single-index: Index → Sector → Industry tree -->
+                    <!-- single-index: index > sector > industry tree -->
                     <div class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
                         {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
                             {@const isIndexOpen = singleOpenIndex === key}
@@ -813,7 +891,7 @@
                                 }
                                 return total;
                             })()}
-                            <!-- Index row (top-level) — orange style when selected like stock page -->
+                            <!-- index row (top-level) -->
                             <button onclick={() => openSingleIndex(key)}
                                 class="w-full flex items-center justify-between px-4 py-3.5 bg-[#1a1a24] hover:bg-[#1e1e2a] border-b border-white/[0.06] transition-all relative overflow-hidden
                                 {isIndexOpen ? 'bg-orange-500/15' : 'border-l-[3px] border-l-white/10'}"
@@ -835,8 +913,8 @@
 
                             {#if isIndexOpen}
                                 {@const sectors = singleIndexSectors[key] || availableSectors || []}
-                                <!-- Sector select all / count header -->
                                 {@const hasAnyIndustryFilter = sectors.some(s => (singleSelectedIndustries[s] || []).length > 0)}
+                                <!-- sector select-all / count header -->
                                 <div class="flex items-center justify-between px-4 py-[6px] ml-2 border-l-[2px] border-l-bloom-accent/10 bg-[#15151e]">
                                     <span class="text-[9px] font-black text-white/20 uppercase tracking-widest">
                                         {$selectedSectors.length} of {sectors.length} sectors
@@ -853,6 +931,7 @@
                                 {#each sectors as sec, sIdx}
                                     {@const isSectorOpen = singleOpenSectors.has(sec)}
                                     {@const isSectorActive = $selectedSectors.includes(sec)}
+                                    {@const isSelectedSec = $selectedSector === sec}
                                     {@const sectorPalette = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#3b82f6', '#f97316', '#84cc16', '#a855f7', '#14b8a6']}
                                     {@const allSectorsRef = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate']}
                                     {@const stableIdx = allSectorsRef.indexOf(sec)}
@@ -867,9 +946,14 @@
                                         return t;
                                     })()}
                                     {@const secIndustries = singleIndexIndustries[`${sec}_${key}`] || []}
-                                    <!-- Sector row -->
-                                    <div class="flex items-center ml-2 border-b border-white/[0.04] bg-[#1a1a24] hover:bg-[#1e1e2a] transition-all border-l-[3px] border-l-bloom-accent/20">
-                                        <!-- Checkbox — ctrl+click for exclusive -->
+                                    <!-- sector row -->
+                                    <div data-sector-single={sec}
+                                         class="flex items-center ml-2 border-b border-white/[0.04] transition-all border-l-[3px] relative
+                                        {isSelectedSec ? 'bg-orange-500/15 border-l-orange-500' : 'bg-[#1a1a24] hover:bg-[#1e1e2a] border-l-bloom-accent/20'}">
+                                        {#if isSelectedSec}
+                                            <div class="absolute left-0 top-0 bottom-0 w-[3px] bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
+                                        {/if}
+                                        <!-- checkbox (ctrl+click for exclusive select) -->
                                         <button onclick={(e) => {
                                                 e.stopPropagation();
                                                 const allSecs = singleIndexSectors[singleOpenIndex] || availableSectors || [];
@@ -895,7 +979,7 @@
                                                 {/if}
                                             </div>
                                         </button>
-                                        <!-- Expand/collapse -->
+                                        <!-- expand/collapse chevron + sector name -->
                                         <button onclick={() => {
                                                 const next = new Set(singleOpenSectors);
                                                 if (next.has(sec)) { next.delete(sec); } else {
@@ -919,7 +1003,8 @@
                                             <svg class="w-3.5 h-3.5 text-white/30 transition-transform shrink-0 {isSectorOpen ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
                                             </svg>
-                                            <span class="text-[11px] font-semibold uppercase tracking-widest truncate {isSectorActive ? 'text-white/80' : 'text-white/50'}">
+                                            <span class="text-[11px] font-semibold uppercase tracking-widest truncate
+                                                {isSelectedSec ? 'text-white/90' : isSectorActive ? 'text-white/80' : 'text-white/50'}">
                                                 {sec}
                                             </span>
                                             {#if secStockCount > 0}
@@ -928,7 +1013,7 @@
                                         </button>
                                     </div>
 
-                                    <!-- Industries (level 3) with per-sector filtering -->
+                                    <!-- industry checkboxes (level 3) with per-sector filtering -->
                                     {#if isSectorOpen}
                                         {#if secIndustries.length > 0}
                                             {@const secSelInds = singleSelectedIndustries[sec] || []}
@@ -979,7 +1064,7 @@
                 {/if}
             </div>
         {:else if inOverview}
-            <!-- GLOBAL INDEX OVERVIEW: checkboxes for comparison -->
+            <!-- global index overview: checkboxes for comparison -->
             <div class="p-4 space-y-2">
                 <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-3">Select indices to compare</div>
                 {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
@@ -991,7 +1076,6 @@
                         class="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all
                         {isSelected ? 'bg-white/[0.06] border border-white/10' : 'bg-transparent border border-transparent hover:bg-white/[0.03]'}"
                     >
-                        <!-- Checkbox -->
                         <div class="w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-all
                             {isSelected ? 'border-white/40 bg-white/20' : 'border-white/15 bg-transparent'}">
                             {#if isSelected}
@@ -1001,13 +1085,11 @@
                             {/if}
                         </div>
 
-                        <!-- Flag + name -->
                         <span class="{INDEX_FLAGS[key] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
                         <div class="flex-1 text-left">
                             <div class="text-[13px] font-bold text-white/70">{cfg.shortLabel}</div>
                         </div>
 
-                        <!-- Price + change -->
                         {#if asset}
                             <div class="text-right">
                                 <div class="text-[13px] font-mono font-bold text-white/60 tabular-nums">
@@ -1040,6 +1122,7 @@
                 {@render stockRow(item)}
             {/each}
         {:else}
+            <!-- stock browsing: collapsible sector > industry > stock tree -->
             {#each sectorTree as sector}
                 <button onclick={() => toggleSector(sector.name)}
                     class="w-full flex items-center justify-between px-4 py-3 bg-[#1a1a24] hover:bg-[#1e1e2a] border-b border-white/[0.06] border-l-[3px] border-l-bloom-accent/50 transition-all sticky top-0 z-10"

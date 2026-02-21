@@ -1,3 +1,4 @@
+-- creates a deduplicated index table with sector and industry from temp staging data
 CREATE TABLE {table_name} AS
 SELECT symbol, name, sector, industry, trade_date, open, close, high, low, volume, market_index
 FROM (

@@ -1,3 +1,4 @@
+-- computes average return per sector over all available data
 WITH PerSymbol AS (
     SELECT symbol, sector,
         FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,

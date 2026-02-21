@@ -1,6 +1,4 @@
-<!--
-  LiveIndicators — Real-time prices via WebSocket
--->
+<!-- real-time prices via WebSocket with market open/closed status -->
 
 <script>
     import { onMount, onDestroy } from 'svelte';
@@ -10,10 +8,13 @@
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
     let quotes = $state({});
-    let lastUpdateTime = {};  // symbol → timestamp of last WS update
+    let lastUpdateTime = {};
     let socket;
     let currentIndex = $derived($marketIndex);
     let indexCurrency = $derived($currentCurrency);
+
+    // --- MARKET HOURS ---
+    // keyed by region; used to determine open/closed/live status
 
     const MARKET_HOURS = {
         US:     { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  weekdays: true },
@@ -27,6 +28,8 @@
         COMMOD: { tz: 'America/New_York',  open: { h: 18, m: 0 }, close: { h: 17, m: 0 }, weekdays: true, sundayOpen: true },
     };
 
+    // --- SYMBOL MAPPINGS ---
+
     const SYMBOL_MARKET_MAP = {
         'NVDA': 'US', 'AAPL': 'US', 'MSFT': 'US', 'AMZN': 'US',
         'ASML': 'EU', 'SAP': 'EU', 'LVMH': 'EU',
@@ -39,12 +42,13 @@
         'FXCM:XAU/USD': 'COMMOD',
     };
 
-    // Per-symbol currency for non-dynamic panels
     const SYMBOL_CURRENCY = {
         'BINANCE:BTCUSDT': '$',
         'FXCM:XAU/USD': '$',
         'FXCM:EUR/USD': '',
     };
+
+    // --- PER-INDEX LEADER STOCKS ---
 
     const SYMBOL_SETS = {
         sp500:     { title: 'MARKET LEADERS', subtitle: 'S&P 500',       symbols: ['NVDA', 'AAPL', 'MSFT'] },
@@ -55,13 +59,11 @@
         nifty50:   { title: 'MARKET LEADERS', subtitle: 'NIFTY 50',      symbols: ['RELIANCE.NS', 'TCS.NS', 'INFY.NS'] },
     };
 
-    // Name lookup from sidebar data
     let nameMap = $derived(
         Object.fromEntries(($summaryData.assets || []).map(a => [a.symbol, a.name || '']))
     );
 
-    // Resolve the actual ticker symbol in the sidebar for a leader symbol
-    // e.g. 'ASML' display → 'ASML.AS' in sidebar
+    // display symbol -> sidebar symbol (e.g. 'ASML' -> 'ASML.AS')
     const LEADER_TO_SIDEBAR = {
         'ASML': 'ASML.AS', 'SAP': 'SAP.DE', 'LVMH': 'MC.PA',
     };
@@ -78,17 +80,22 @@
         return nameMap[sidebarSym] || nameMap[symbol] || '';
     }
 
+    // --- RESOLVED PROPS ---
+
     let resolvedSymbols = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.symbols || symbols) : symbols);
     let resolvedTitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.title || title) : title);
     let resolvedSubtitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.subtitle || '') : subtitle);
     let hasRealSubtitle = $derived(resolvedSubtitle && resolvedSubtitle.trim().length > 0);
 
+    // strip exchange prefix (e.g. "BINANCE:BTCUSDT" -> "BTCUSDT")
     function clean(s) { return s && s.includes(':') ? s.split(':')[1] : s; }
 
     function getCurrency(symbol) {
         if (dynamicByIndex) return indexCurrency;
         return SYMBOL_CURRENCY[symbol] ?? '$';
     }
+
+    // --- MARKET STATUS ---
 
     function isMarketOpen(symbol) {
         const marketKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
@@ -101,6 +108,7 @@
         const day = tzNow.getDay();
         const currentMins = tzNow.getHours() * 60 + tzNow.getMinutes();
 
+        // forex/commodities: open sunday evening through friday close
         if (market.sundayOpen) {
             if (day === 6) return false;
             if (day === 0 && currentMins < market.open.h * 60 + market.open.m) return false;
@@ -114,31 +122,32 @@
         return currentMins >= openMins && currentMins < closeMins;
     }
 
+    // determine LIVE / DELAYED / CLOSED / STALE badge
     function getStatus(symbol, data) {
         if (!data || data.price === 0) return { label: '', color: '', dot: 'opacity-0', pulse: false };
-        
+
         const marketKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
-        
-        // Crypto: always live if we're getting updates
+
         if (marketKey === 'CRYPTO') {
             const fresh = lastUpdateTime[symbol] && (Date.now() - lastUpdateTime[symbol] < 30000);
             if (fresh) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
             return { label: 'STALE', color: 'text-yellow-500', dot: 'bg-yellow-500', pulse: false };
         }
-        
-        // Stocks/Forex/Commodities: check market hours AND data freshness
+
         const marketOpen = isMarketOpen(symbol);
         const lastUpdate = lastUpdateTime[symbol];
-        const fresh = lastUpdate && (Date.now() - lastUpdate < 120000); // 2 min
-        
+        const fresh = lastUpdate && (Date.now() - lastUpdate < 120000);
+
         if (marketOpen && fresh) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
         if (marketOpen) return { label: 'DELAYED', color: 'text-yellow-500', dot: 'bg-yellow-500', pulse: false };
         return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
     }
 
+    // --- WEBSOCKET + HTTP FALLBACK ---
+
     onMount(() => {
         const wsUrl = getWebSocketUrl();
-        // Init all symbols across all sets
+        // subscribe to all symbols across every index set
         const allSyms = new Set([...symbols]);
         if (dynamicByIndex) {
             Object.values(SYMBOL_SETS).forEach(set => set.symbols.forEach(s => allSyms.add(s)));
@@ -161,7 +170,6 @@
                 } catch (e) { console.error("WS Error", e); }
             };
             socket.onclose = () => {
-                // Auto-reconnect after 3 seconds
                 setTimeout(connectWs, 3000);
             };
             socket.onerror = (e) => {
@@ -172,8 +180,7 @@
 
         connectWs();
 
-        // Fetch market data immediately (in case WS takes a moment to connect)
-        // Then poll every 60s as fallback for stale WS
+        // immediate REST fetch + 60s poll as fallback for stale WS
         async function fetchMarketData() {
             try {
                 const res = await fetch(`${API_BASE_URL}/market-data`);
@@ -191,10 +198,10 @@
                         });
                     }
                 }
-            } catch (e) { /* silent fallback */ }
+            } catch (e) {}
         }
 
-        fetchMarketData(); // Immediate fetch
+        fetchMarketData();
         const pollInterval = setInterval(fetchMarketData, 60000);
 
         return () => clearInterval(pollInterval);
@@ -205,6 +212,7 @@
 
 <div class="flex flex-col h-full bg-white/5 rounded-3xl p-5 border border-white/5 shadow-2xl backdrop-blur-md overflow-x-hidden">
 
+    <!-- header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3 flex-shrink-0">
         <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">{resolvedTitle}</h3>
         <span class="text-[11px] font-black uppercase tracking-wider mt-1
@@ -212,6 +220,7 @@
         >{hasRealSubtitle ? resolvedSubtitle : 'PLACEHOLDER'}</span>
     </div>
 
+    <!-- symbol cards -->
     <div class="flex-1 flex flex-col overflow-y-auto overflow-x-hidden gap-2 min-h-0">
         {#each resolvedSymbols as symbol}
             {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0 }}

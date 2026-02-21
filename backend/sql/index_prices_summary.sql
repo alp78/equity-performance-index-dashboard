@@ -1,3 +1,4 @@
+-- returns the latest price summary with daily change percent for all index symbols
 SELECT symbol, name, currency, exchange, trade_date,
     CAST(open AS FLOAT) as open,
     CAST(close AS FLOAT) as last_price,

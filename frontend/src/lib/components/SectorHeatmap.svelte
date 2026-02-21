@@ -1,11 +1,4 @@
-<!--
-  SectorHeatmap
-  =============
-  Sector × Index grid. Color intensity = return magnitude.
-  Column widths are computed dynamically so it works with 2–6 indices.
-  Cells show abbreviated values; full value appears in a tooltip.
-  Click any row → selects that sector, updates the chart above.
--->
+<!-- cross-index heatmap grid showing sector returns; click row to select sector -->
 
 <script>
     import { browser } from '$app/environment';
@@ -21,6 +14,8 @@
     let indices   = $derived($sectorSelectedIndices);
     let activeSec = $derived($selectedSector);
 
+    // --- INDEX DISPLAY CONFIG ---
+
     const INDEX_COLORS = {
         sp500:     '#e2e8f0',
         stoxx50:   '#2563eb',
@@ -29,7 +24,7 @@
         csi300:    '#ef4444',
         nifty50:   '#22c55e',
     };
-    // Very short labels for column headers — critical when 6 indices selected
+    // abbreviated labels for narrow column headers
     const INDEX_ABBR = {
         sp500:     'S&P',
         stoxx50:   'STX',
@@ -38,7 +33,6 @@
         csi300:    'CSI',
         nifty50:   'NFT',
     };
-    // Full names for tooltip
     const INDEX_FULL = {
         sp500:     'S&P 500',
         stoxx50:   'STOXX 50',
@@ -47,6 +41,8 @@
         csi300:    'CSI 300',
         nifty50:   'Nifty 50',
     };
+
+    // --- PERIOD LABEL ---
 
     function fmtDate(d) {
         if (!d) return '';
@@ -59,12 +55,13 @@
                  : (currentPeriod || '1y').toUpperCase()
     );
 
-    // Full value with sign + %
+    // --- VALUE FORMATTERS ---
+
     function fmt(val) {
         if (val == null) return '—';
         return (val >= 0 ? '+' : '') + val.toFixed(1) + '%';
     }
-    // Abbreviated: no trailing zero when space is tight
+    // compact format: drops trailing zero for tight cells
     function fmtShort(val) {
         if (val == null) return '—';
         const abs = Math.abs(val);
@@ -72,19 +69,17 @@
         return (val >= 0 ? '+' : '−') + str + '%';
     }
 
-    // ── Dynamic column widths based on index count ────────────────────────────
-    // sector: 18%, avg: 8%, remaining shared equally between index cols
+    // --- DYNAMIC COLUMN WIDTHS ---
+    // sector 18%, avg 8%, remaining shared equally among index columns
     let sectorW = $derived('18%');
     let avgW    = $derived('8%');
     let idxW    = $derived(`${Math.floor(74 / Math.max(indices.length, 1))}%`);
 
-    // Use short values when many indices (cells get narrow)
     let useShort = $derived(indices.length >= 4);
 
-    // ── Data loading ──────────────────────────────────────────────────────────
-    // Strategy: cache each index individually. When user toggles an index,
-    // we can instantly compose the display from cached data and only fetch
-    // indices we haven't seen yet — eliminating the rearrangement delay.
+    // --- DATA LOADING ---
+    // per-index cache: instantly compose display from cached data,
+    // only fetch indices not yet seen — eliminates rearrangement delay
 
     // perIndexCache[periodKey][indexKey] = { sector -> {return_pct, stock_count} }
     let perIndexCache = {};
@@ -93,9 +88,9 @@
         return range?.start ? `${range.start}_${range.end}` : (period || '1y');
     }
 
-    // Merge per-index cache into the tableData format the template expects
+    // merge per-index cache into the row format the template expects
     function buildTableData(pKey, idxList) {
-        const sectorMap = {}; // sector -> { indices: {}, avg }
+        const sectorMap = {};
         for (const idx of idxList) {
             const idxData = perIndexCache[pKey]?.[idx];
             if (!idxData) continue;
@@ -113,7 +108,7 @@
     }
 
     async function fetchIndexIfNeeded(pKey, idx, period, range) {
-        if (perIndexCache[pKey]?.[idx]) return; // already cached
+        if (perIndexCache[pKey]?.[idx]) return;
         const url = range?.start
             ? `${API_BASE_URL}/sector-comparison/table?indices=${idx}&start=${range.start}&end=${range.end}`
             : `${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=${period||'1y'}`;
@@ -123,7 +118,7 @@
             const res = await fetch(url, { signal: ctrl.signal });
             clearTimeout(t);
             if (!res.ok) return;
-            const rows = await res.json(); // [{sector, avg_return_pct, indices:{idx:{return_pct,stock_count}}}]
+            const rows = await res.json();
             if (!perIndexCache[pKey]) perIndexCache[pKey] = {};
             perIndexCache[pKey][idx] = {};
             for (const row of rows) {
@@ -137,11 +132,10 @@
         if (!browser || !idxList || idxList.length === 0) return;
         const pKey = periodKey(period, range);
 
-        // Show instantly from cache for already-known indices
+        // show cached data immediately while missing indices load
         const cached = buildTableData(pKey, idxList);
         if (cached.length > 0) tableData = cached;
 
-        // Fetch any missing indices (in parallel)
         const missing = idxList.filter(idx => !perIndexCache[pKey]?.[idx]);
         if (missing.length === 0) return;
 
@@ -149,12 +143,13 @@
         await Promise.all(missing.map(idx => fetchIndexIfNeeded(pKey, idx, period, range)));
         loading = false;
 
-        // Rebuild with full data
         tableData = buildTableData(pKey, idxList);
     }
 
     $effect(() => { load(currentPeriod, customRange, indices); });
 
+    // --- SORTING AND OVERRIDES ---
+    // apply industry-level return overrides, then sort by avg return desc
     let sorted = $derived(
         [...tableData].map(row => {
             if (!industryOverrides?.[row.sector]) return row;
@@ -173,7 +168,8 @@
         }).sort((a,b) => (b.avg_return_pct||0) - (a.avg_return_pct||0))
     );
 
-    // Dynamic colour scale — cap at 80th percentile so outliers don't wash out others
+    // --- COLOUR SCALE ---
+    // capped at 80th percentile so outliers don't wash out the rest
     let allVals = $derived(
         tableData.flatMap(row =>
             indices.map(idx => row.indices?.[idx]?.return_pct).filter(v => v != null)
@@ -186,14 +182,13 @@
         return Math.max(Math.abs(p80), Math.abs(p20), 5);
     });
 
+    // opaque green/red mixed onto dark base — prevents parent color bleed
     function cellBg(val) {
         if (val == null) return 'background:#1a1a20';
         const s = scale();
         const t = Math.min(Math.abs(val) / s, 1);
-        // Mix the green/red onto the dark panel background so cells are always
-        // fully opaque — prevents any parent color bleeding through.
         const alpha = 0.07 + t * 0.52;
-        const bg = 14; // ~#0e0e14 base
+        const bg = 14;
         if (val >= 0) {
             const r = Math.round(bg + alpha * (34  - bg));
             const g = Math.round(bg + alpha * (197 - bg));
@@ -206,9 +201,9 @@
             return `background:rgb(${r},${g},${b})`;
         }
     }
+    // white text, opacity scales with magnitude
     function cellTextColor(val) {
         if (val == null) return 'color:rgba(255,255,255,0.2)';
-        // Always white — background colour already encodes direction/magnitude
         const s = scale();
         const t = Math.min(Math.abs(val) / s, 1);
         const a = (0.6 + t * 0.4).toFixed(2);
@@ -222,14 +217,14 @@
 
 <div class="heatmap-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0">
 
-    <!-- Header — matches SectorTopStocks / RankingPanel style exactly -->
+    <!-- header -->
     <div class="flex items-start justify-between px-5 pt-5 pb-3 flex-shrink-0 border-b border-white/5">
         <div class="flex flex-col items-start">
             <div class="flex items-center gap-2">
                 <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">Sector Heatmap</h3>
                 <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">{periodLabel}</span>
             </div>
-            <!-- Empty subtitle row — keeps header height aligned with Top Stocks panel -->
+            <!-- invisible spacer keeps header height aligned with sibling panels -->
             <span class="text-[11px] font-black text-white/0 uppercase tracking-wider mt-1 select-none" aria-hidden="true">·</span>
         </div>
         {#if loading}
@@ -237,7 +232,7 @@
         {/if}
     </div>
 
-    <!-- Column headers -->
+    <!-- column headers -->
     <div class="flex items-center col-hdr-row px-3 border-b border-white/[0.03] flex-shrink-0">
         <div style="width:{sectorW}" class="pl-3 text-left flex-shrink-0">
             <span class="col-hdr-text font-black text-white/15 uppercase tracking-widest">Sector</span>
@@ -256,7 +251,7 @@
         {/each}
     </div>
 
-    <!-- Rows -->
+    <!-- data rows -->
     <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
         {#if sorted.length === 0 && !loading}
             <div class="flex items-center justify-center h-full text-white/15 text-[11px] font-bold uppercase tracking-widest">
@@ -266,15 +261,9 @@
 
         {#each sorted as row (row.sector)}
             {@const isActive = row.sector === activeSec}
-            <!--
-                box-shadow: inset is the only CSS technique that paints a
-                background-like colour BEHIND all children without creating
-                a stacking context that would blend with child backgrounds.
-                bg-color on any ancestor (even transparent) composites on top.
-            -->
+            <!-- inset box-shadow acts as bg colour without creating a stacking context -->
             <div class="row-wrap relative border-b border-white/[0.04] transition-all duration-150">
 
-                <!-- Left accent bar -->
                 {#if isActive}
                     <div class="absolute left-0 top-0 bottom-0 w-[3px] pointer-events-none
                         bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
@@ -285,7 +274,7 @@
                         {isActive ? '' : 'hover:bg-white/[0.02]'}"
                     onclick={() => selectedSector.set(row.sector)}
                 >
-                    <!-- Sector name — orange highlight confined here only -->
+                    <!-- sector name — orange highlight only on active row -->
                     <div style="width:{sectorW}; {isActive ? 'background:rgba(249,115,22,0.12)' : ''}"
                          class="pl-4 pr-2 text-left flex-shrink-0 h-full flex items-center">
                         <span class="row-sec font-bold truncate block
@@ -294,7 +283,7 @@
                         </span>
                     </div>
 
-                    <!-- Avg -->
+                    <!-- average return -->
                     <div style="width:{avgW}" class="pr-2 text-right flex-shrink-0">
                         <span class="row-avg font-black font-mono tabular-nums"
                               style="{avgTextColor(row.avg_return_pct)}">
@@ -302,7 +291,7 @@
                         </span>
                     </div>
 
-                    <!-- Per-index cells -->
+                    <!-- per-index cells -->
                     {#each indices as idx}
                         {@const val = row.indices?.[idx]?.return_pct ?? null}
                         {@const isOverridden = row._filtered && industryOverrides?.[row.sector]?.[idx] !== undefined}
@@ -324,24 +313,15 @@
 </div>
 
 <style>
-    /*
-     * Responsiveness strategy:
-     * - container-type: size  →  gives us cqh (container query height) units
-     * - Row height is driven by the scroll area's available height divided by
-     *   ~12 rows (11 sectors + header). Using cqh keeps everything in view
-     *   without scrolling at any viewport height.
-     * - Font sizes use clamp() so text shrinks gracefully at small sizes.
-     */
+    /* container queries drive responsive sizing via cqh units */
     .heatmap-root { container-type: size; }
 
-
-    /* Header area — fixed small padding */
     .col-hdr-row  { padding: clamp(2px, 0.8cqh, 6px) 0; }
     .col-hdr-text { font-size: clamp(11px, 1.5cqh, 13px); }
     .col-dot      { width:  clamp(4px, 0.8cqh, 7px);
                     height: clamp(4px, 0.8cqh, 7px); }
 
-    /* Data rows — height fills available container height ÷ 12 rows */
+    /* row height = available height / 12 (11 sectors + header) */
     .row-wrap    { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12);
                    min-height: 22px;
                    max-height: 44px; }
@@ -352,12 +332,10 @@
                    display: flex;
                    align-items: center; }
 
-    /* Text inside rows scales with row height */
     .row-sec     { font-size: clamp(11px, 1.7cqh, 15px); }
     .row-avg     { font-size: clamp(12px, 1.7cqh, 15px); }
     .cell-text   { font-size: clamp(11px, 1.6cqh, 14px); }
 
-    /* Cell inner height matches row, with a small margin */
     .cell-inner  { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12 - 6px);
                    min-height: 16px;
                    max-height: 36px; }

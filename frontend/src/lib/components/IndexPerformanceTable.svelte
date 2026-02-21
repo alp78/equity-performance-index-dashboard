@@ -1,3 +1,5 @@
+<!-- overview table with price, return, volatility, 52W range for all indices -->
+
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
@@ -10,11 +12,14 @@
     let cache = {};
     let now = $state(new Date());
 
+    // refresh clock every 30s for market open/closed recalculation
     $effect(() => {
         if (!browser) return;
         const iv = setInterval(() => { now = new Date(); }, 30000);
         return () => clearInterval(iv);
     });
+
+    // --- INDEX METADATA ---
 
     const MARKET_HOURS = {
         'US':  { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  cet: '15:30 – 22:00' },
@@ -48,6 +53,8 @@
         } catch { return false; }
     }
 
+    // --- PERIOD LABEL ---
+
     function fmtDate(d) {
         if (!d) return '';
         const dt = new Date(d + 'T00:00:00');
@@ -62,6 +69,8 @@
         if (!period) return '1Y';
         return period.toUpperCase();
     }
+
+    // --- DATA LOADING ---
 
     async function load(period, range) {
         if (!browser) return;
@@ -82,13 +91,14 @@
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeout);
             if (res.ok) { const data = await res.json(); cache[cacheKey] = data; stats = data; }
-        } catch (e) { /* silent */ }
+        } catch (e) {}
         loading = false;
     }
 
     $effect(() => { load(currentPeriod, customRange); });
 
-    // Sorted by period return descending
+    // --- DERIVED TABLE DATA ---
+    // sorted by period return desc; rank map drives animated row reordering
     let sortedStats = $derived(
         stats.filter(s => INDEX_META[s.symbol])
              .sort((a, b) => (b.period_return_pct || 0) - (a.period_return_pct || 0))
@@ -100,7 +110,8 @@
         stats.filter(s => INDEX_META[s.symbol])
     );
 
-    // Column widths: Index | Exchange | Hours | Price | Last Day | YTD | 52W Range | Return | Vol
+    // --- FORMATTERS ---
+
     const COL = [13, 10, 10, 11, 9, 9, 17, 11, 10];
 
     function fmt(val, decimals = 2) {
@@ -117,6 +128,7 @@
         if (val >= 10000) return (val / 1000).toFixed(1) + 'k';
         return val.toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
+    // returns 0-100 position of current price within 52-week range
     function rangePosition(current, low, high) {
         if (high === low) return 50;
         return Math.min(100, Math.max(0, ((current - low) / (high - low)) * 100));
@@ -124,7 +136,8 @@
 </script>
 
 <div class="perf-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden">
-    <!-- Header -->
+
+    <!-- header -->
     <div class="flex items-center justify-between px-6 flex-shrink-0 header-row">
         <div class="flex items-center gap-3">
             <h3 class="hdr-title font-black text-white/30 uppercase">Index Performance</h3>
@@ -135,7 +148,7 @@
         {/if}
     </div>
 
-    <!-- Column headers: Index | Exchange | Hours | Price | Last Day | YTD | 52W Range | Return | Vol -->
+    <!-- column headers -->
     <div class="grid-header flex items-center text-white/20 uppercase tracking-wider font-black px-2 flex-shrink-0">
         <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left">Index</div>
         <div style="width:{COL[1]}%" class="px-1 text-left">Exchange</div>
@@ -148,7 +161,7 @@
         <div style="width:{COL[8]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
     </div>
 
-    <!-- Rows -->
+    <!-- data rows — absolutely positioned for animated rank reordering -->
     <div class="flex-1 min-h-0 overflow-hidden px-2 relative rows-container">
         {#each allStats as row (row.symbol)}
             {@const meta = INDEX_META[row.symbol] || {}}
@@ -161,7 +174,6 @@
                 class="data-row absolute left-0 right-0 flex items-center border-t border-white/[0.04]"
                 style="top: calc({rank} * (100% / 6)); height: calc(100% / 6); opacity: {isSelected ? 1 : 0.25}; transition: top 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s;"
             >
-                <!-- Index -->
                 <div style="width:{COL[0]}%" class="pl-4 pr-1">
                     <div class="flex items-center gap-2">
                         <div class="color-bar rounded-full flex-shrink-0" style="background: {meta.color}"></div>
@@ -170,7 +182,6 @@
                     </div>
                 </div>
 
-                <!-- Exchange + status -->
                 <div style="width:{COL[1]}%" class="px-1">
                     <div class="flex items-center gap-1.5">
                         <span class="font-bold text-white/40 exch-text">{row.exchange || '—'}</span>
@@ -182,29 +193,25 @@
                     </div>
                 </div>
 
-                <!-- Hours CET -->
                 <div style="width:{COL[2]}%" class="px-1 text-right text-white/25 font-mono tabular-nums font-medium hours-text">
                     {mkt.cet || '—'}
                 </div>
 
-                <!-- Current Price -->
                 <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
                     {fmtPrice(row.current_price, meta.ccy || '')}
                 </div>
 
-                <!-- Last Day -->
                 <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.daily_change_pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.85)'}">
                     {row.daily_change_pct >= 0 ? '+' : ''}{fmt(row.daily_change_pct)}%
                 </div>
 
-                <!-- YTD -->
                 <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.ytd_return_pct >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'}">
                     {row.ytd_return_pct >= 0 ? '+' : ''}{fmt(row.ytd_return_pct)}%
                 </div>
 
-                <!-- 52W Range -->
+                <!-- 52-week range bar with tick at current price position -->
                 <div style="width:{COL[6]}%" class="px-1 pl-6">
                     <div class="flex items-center gap-1.5">
                         <span class="range-num text-white/40 font-mono tabular-nums text-right font-bold" style="min-width:36px">{fmtCompact(row.low_52w)}</span>
@@ -217,13 +224,11 @@
                     </div>
                 </div>
 
-                <!-- Return (period) -->
                 <div style="width:{COL[7]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
                     style:color="{row.period_return_pct >= 0 ? 'rgba(34,197,94,1)' : 'rgba(239,68,68,0.95)'}">
                     {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
                 </div>
 
-                <!-- Volatility -->
                 <div style="width:{COL[8]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
                     {fmt(row.volatility_pct, 1)}%
                 </div>
@@ -240,7 +245,7 @@
     .perf-root { container-type: size; }
     .rows-container { overflow: hidden; }
 
-    /* ---- Base / Small ---- */
+    /* --- small (base) --- */
     .header-row { padding-top: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
     .hdr-title { font-size: 11px; letter-spacing: 0.25em; }
     .hdr-period { font-size: 9px; }
@@ -260,7 +265,7 @@
     .range-track { height: 4px; }
     .range-tick { width: 2px; height: 10px; border-radius: 1px; }
 
-    /* ---- Medium (220–320px) ---- */
+    /* --- medium (220-320px) --- */
     @container (min-height: 220px) {
         .header-row { padding-top: 8px; padding-bottom: 8px; }
         .hdr-title { font-size: 12px; letter-spacing: 0.25em; }
@@ -281,7 +286,7 @@
         .range-tick { width: 2px; height: 12px; border-radius: 1px; }
     }
 
-    /* ---- Large (>320px) ---- */
+    /* --- large (>320px) --- */
     @container (min-height: 320px) {
         .header-row { padding-top: 12px; padding-bottom: 10px; }
         .hdr-title { font-size: 13px; letter-spacing: 0.3em; }

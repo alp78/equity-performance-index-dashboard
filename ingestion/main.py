@@ -1,13 +1,5 @@
-"""
-Cloud Function — Daily Price Sync (Multi-Index + Index Prices)
-==============================================================
-Resilient sync with per-symbol gap detection and
-market-specific holiday/calendar awareness.
-
-Syncs two types of data:
-  1. Stock prices per index (stoxx50_prices, sp500_prices, etc.)
-  2. Index-level prices (index_prices table — ^GSPC, ^STOXX50E, etc.)
-"""
+# Cloud Function: syncs stock and index price data from yfinance to BigQuery
+# with per-symbol gap detection and exchange-calendar-aware scheduling
 
 import functions_framework
 from google.cloud import bigquery, storage
@@ -29,7 +21,8 @@ PROJECT_ID  = getenv("PROJECT_ID")
 DATASET_ID  = getenv("DATASET_ID")
 BUCKET_NAME = getenv("BUCKET_NAME")
 
-# --- Stock index configs (per-stock prices) ---
+# --- STOCK INDEX CONFIGS ---
+
 INDICES = {
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
@@ -63,7 +56,8 @@ INDICES = {
     },
 }
 
-# --- Index-level price tickers (the indices themselves) ---
+# --- INDEX-LEVEL PRICE TICKERS ---
+
 INDEX_PRICE_TABLE = getenv("INDEX_PRICE_TABLE_ID", "index_prices")
 
 INDEX_TICKERS = {
@@ -78,6 +72,7 @@ INDEX_TICKERS = {
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 30
 
+# suffixes that indicate an exchange-qualified ticker (should not be normalized)
 EXCHANGE_SUFFIXES = {
     '.DE', '.PA', '.AS', '.BR', '.MI', '.MC', '.HE', '.VI',
     '.L',  '.SW', '.ST', '.CO', '.OL',
@@ -87,6 +82,7 @@ EXCHANGE_SUFFIXES = {
 
 
 def to_yf_ticker(db_ticker):
+    # keep exchange-suffixed tickers as-is; replace dots with dashes otherwise
     for suffix in EXCHANGE_SUFFIXES:
         if db_ticker.upper().endswith(suffix.upper()):
             return db_ticker
@@ -95,18 +91,16 @@ def to_yf_ticker(db_ticker):
 def get_full_table_ref(short_table_id):
     return f"{PROJECT_ID}.{DATASET_ID}.{short_table_id}"
 
-# ============================================================================
-# CALENDAR HELPERS
-# ============================================================================
+# --- CALENDAR HELPERS ---
 
 def get_expected_last_trading_day(cal, d):
-    """Most recent valid trading session on or before date d."""
+    """most recent valid trading session on or before date d."""
     while not cal.is_session(d.strftime('%Y-%m-%d')):
         d -= timedelta(days=1)
     return d
 
 def get_valid_trading_days(cal, start_date, end_date):
-    """Generate all exact trading days between start and end (inclusive)."""
+    """all trading days between start and end (inclusive)."""
     days = []
     d = start_date
     while d <= end_date:
@@ -115,13 +109,12 @@ def get_valid_trading_days(cal, start_date, end_date):
         d += timedelta(days=1)
     return days
 
-# ============================================================================
-# STEP 1 — PER-SYMBOL GAP DETECTION (stocks)
-# ============================================================================
+# --- GAP DETECTION (STOCK PRICES) ---
 
 def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
+    # fetch per-symbol metadata and latest trade dates
     meta_query = f"""
-        SELECT 
+        SELECT
             symbol,
             MAX(name) as name,
             MAX(sector) as sector,
@@ -153,6 +146,7 @@ def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
     if not tickers:
         return tickers, global_last_date, name_map, sector_map, industry_map, {}, set()
 
+    # scan for interior gaps within a 16-day lookback window
     lookback_start = get_expected_last_trading_day(cal, effective_today - timedelta(days=16))
     gap_query = f"""
         SELECT symbol, CAST(trade_date AS DATE) as td
@@ -168,6 +162,7 @@ def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
 
     expected_days = get_valid_trading_days(cal, lookback_start, get_expected_last_trading_day(cal, effective_today))
 
+    # compare expected vs existing to find missing date-slots per symbol
     symbol_missing_dates = {}
     all_gap_dates = set()
     for sym in tickers:
@@ -182,9 +177,7 @@ def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
 
     return tickers, global_last_date, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates
 
-# ============================================================================
-# STEP 2 — DOWNLOAD & TRANSFORM (stocks)
-# ============================================================================
+# --- DOWNLOAD AND TRANSFORM (STOCK PRICES) ---
 
 def download_and_transform(tickers, name_map, sector_map, industry_map,
                            start_date, end_date, symbol_last_dates):
@@ -194,6 +187,7 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
     yf_map = {t: to_yf_ticker(t) for t in tickers}
     yf_tickers = list(yf_map.values())
 
+    # backfill missing sector/industry metadata from yfinance (capped at 50)
     missing_meta = [t for t in tickers if t not in sector_map or t not in industry_map]
     if missing_meta:
         logger.info(f"  Fetching metadata for {len(missing_meta)} tickers...")
@@ -219,6 +213,7 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
         if is_multi:
             bulk_symbols = set(data.columns.get_level_values(0).unique())
 
+    # fall back to smaller batches if bulk captured <30% of tickers
     if len(bulk_symbols) < len(yf_tickers) * 0.3 and len(yf_tickers) > 10:
         logger.warning(f"  Bulk got {len(bulk_symbols)}/{len(yf_tickers)} tickers. Falling back to batches...")
         data = _batch_download(yf_tickers, start_str, end_str, batch_size=30)
@@ -230,6 +225,7 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
 
 
 def _try_download(yf_tickers, start_str, end_str):
+    """attempt bulk yfinance download with retries."""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             data = yf.download(
@@ -248,6 +244,7 @@ def _try_download(yf_tickers, start_str, end_str):
 
 
 def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
+    """download in smaller batches and merge results."""
     all_frames = []
     for i in range(0, len(yf_tickers), batch_size):
         batch = yf_tickers[i:i + batch_size]
@@ -278,6 +275,7 @@ def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
 
 
 def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, symbol_last_dates):
+    """convert downloaded DataFrame into list of BigQuery-ready dicts."""
     records = []
     failed_tickers = []
     is_multi = isinstance(data.columns, pd.MultiIndex)
@@ -287,6 +285,7 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
         current_date = datetime.strptime(date_str, '%Y-%m-%d').date()
 
         for original_ticker in tickers:
+            # skip dates already covered in BigQuery
             sym_last = symbol_last_dates.get(original_ticker)
             if sym_last and current_date <= sym_last:
                 continue
@@ -306,6 +305,7 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
                 if close_val is None or pd.isna(close_val):
                     continue
 
+                # fall back to close if open is missing
                 raw_open = ticker_data.get('Open')
                 open_p = float(raw_open) if pd.notna(raw_open) else float(close_val)
 
@@ -333,11 +333,10 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
     logger.info(f"  Result: {len(records)} records for {len(updated_symbols)} symbols")
     return records
 
-# ============================================================================
-# STEP 3 — LOAD TO GCS & BIGQUERY
-# ============================================================================
+# --- LOAD TO GCS AND BIGQUERY ---
 
 def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix, effective_today):
+    # archive JSON snapshot to GCS, then append NDJSON to BigQuery
     bucket = storage_client.bucket(BUCKET_NAME)
     blob_path = f"{gcs_prefix}/{effective_today.strftime('%Y/%m/%d')}/prices.json"
     blob = bucket.blob(blob_path)
@@ -351,15 +350,14 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     bq_client.load_table_from_file(StringIO(ndjson), table_ref, job_config=job_config).result()
     logger.info(f"  BigQuery: {len(records)} records → {table_ref}")
 
-# ============================================================================
-# SYNC LOGIC — Stock prices
-# ============================================================================
+# --- SYNC STOCK PRICES ---
 
 def sync_index(bq_client, storage_client, index_key, config, now_utc):
     table_ref = get_full_table_ref(config["table_id"])
     cal_name = config.get("cal", "XNYS")
     cal = xcals.get_calendar(cal_name)
 
+    # shift effective date back if market hasn't closed yet
     effective_today = now_utc.date()
     sync_hour = config.get("sync_after_utc", 0)
 
@@ -384,6 +382,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
 
     expected = get_expected_last_trading_day(cal, effective_today)
 
+    # identify symbols that are trailing (behind latest session) or have interior gaps
     trailing_behind = {s: d for s, d in symbol_last_dates.items() if d < expected}
     all_gap_symbols = set(symbol_missing_dates.keys()) | set(trailing_behind.keys())
 
@@ -391,6 +390,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         logger.info(f"  All {len(tickers)} symbols up to date ({expected}), no interior gaps")
         return 0, f"0 rows ({len(tickers)} symbols up to date)"
 
+    # determine the earliest date we need to fetch across all gap types
     earliest_needed = expected
     if trailing_behind:
         earliest_trailing = min(trailing_behind.values())
@@ -405,6 +405,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
                 f"Trailing: {len(trailing_behind)}, Interior gaps: {len(symbol_missing_dates)}. "
                 f"Fetching from {earliest_needed}")
 
+    # per-symbol effective start date to avoid re-inserting existing rows
     symbol_effective_start = {}
     for sym in gap_tickers:
         missing = symbol_missing_dates.get(sym, [])
@@ -441,15 +442,10 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         return 0, f"Load error: {e}"
 
 
-# ============================================================================
-# INDEX PRICES SYNC — Per-symbol gap detection for index-level prices
-# ============================================================================
+# --- SYNC INDEX PRICES ---
 
 def _get_index_prices_state(bq_client, table_ref, now_utc):
-    """
-    Per-symbol last date + interior gap detection for index_prices table.
-    Each index ticker uses its own exchange calendar.
-    """
+    """per-symbol gap detection for the index_prices table, each using its own exchange calendar."""
     meta_query = f"""
         SELECT symbol,
                MAX(name) as name,
@@ -475,13 +471,13 @@ def _get_index_prices_state(bq_client, table_ref, now_utc):
             d = row.last_date.date() if hasattr(row.last_date, 'date') else row.last_date
             symbol_last_dates[sym] = d
 
-    # Interior gap detection — per symbol with its own calendar
+    # interior gap detection per symbol using its own calendar
     symbol_missing_dates = {}
     effective_today = now_utc.date()
 
     for sym, cfg in INDEX_TICKERS.items():
         if sym not in symbol_last_dates:
-            continue  # Not in DB yet — needs initial load
+            continue
 
         cal = xcals.get_calendar(cfg["cal"])
         lookback_start = get_expected_last_trading_day(cal, effective_today - timedelta(days=16))
@@ -505,10 +501,7 @@ def _get_index_prices_state(bq_client, table_ref, now_utc):
 
 
 def sync_index_prices(bq_client, storage_client, now_utc):
-    """
-    Sync the index_prices table — one row per index per trading day.
-    Uses per-symbol gap detection with exchange calendars.
-    """
+    """sync the index_prices table with per-symbol gap detection."""
     table_ref = get_full_table_ref(INDEX_PRICE_TABLE)
     logger.info(f"\n[INDEX PRICES] Checking {table_ref}...")
 
@@ -523,6 +516,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
     effective_today = now_utc.date()
     symbols_to_update = {}
 
+    # determine which index tickers are trailing or have gaps
     for sym, cfg in INDEX_TICKERS.items():
         cal = xcals.get_calendar(cfg["cal"])
         expected = get_expected_last_trading_day(cal, effective_today)
@@ -550,7 +544,6 @@ def sync_index_prices(bq_client, storage_client, now_utc):
 
     logger.info(f"  {len(symbols_to_update)} index tickers need data: {list(symbols_to_update.keys())}")
 
-    # Download all needed index tickers
     all_syms = list(symbols_to_update.keys())
     earliest_overall = min(v["earliest"] for v in symbols_to_update.values())
     start_str = earliest_overall.strftime('%Y-%m-%d')
@@ -560,7 +553,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
 
     data = _try_download(all_syms, start_str, end_str)
 
-    # Fallback: individual downloads if bulk fails
+    # fall back to individual downloads if bulk fails
     if data is None or data.empty:
         logger.warning(f"  Bulk failed, trying individual downloads...")
         all_frames = []
@@ -568,7 +561,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
             try:
                 d = yf.download(sym, start=start_str, end=end_str, auto_adjust=False)
                 if d is not None and not d.empty:
-                    # Make single-ticker data look like multi-ticker format
+                    # reshape single-ticker columns into MultiIndex to match bulk format
                     d.columns = pd.MultiIndex.from_product([[sym], d.columns])
                     all_frames.append(d)
                     logger.info(f"    {sym}: {len(d)} rows")
@@ -581,7 +574,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
             logger.critical(f"  No data for any index ticker")
             return 0, "No data"
 
-    # Extract records with index_prices schema
+    # build index_prices records from downloaded data
     records = []
     is_multi = isinstance(data.columns, pd.MultiIndex)
     actual_dates = data.index.strftime('%Y-%m-%d').unique()
@@ -643,9 +636,7 @@ def sync_index_prices(bq_client, storage_client, now_utc):
         return 0, f"Load error: {e}"
 
 
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
+# --- ENTRY POINT ---
 
 @functions_framework.http
 def sync_stocks(request):
@@ -653,6 +644,7 @@ def sync_stocks(request):
     storage_client = storage.Client()
     now_utc = datetime.utcnow()
 
+    # allow targeting a single index via request body {"index": "sp500"}
     target_index = "all"
     try:
         body = request.get_json(silent=True) or {}
@@ -671,7 +663,7 @@ def sync_stocks(request):
     results = {}
     synced_indices = []
 
-    # --- Sync stock prices per index ---
+    # sync per-stock prices for each index
     for index_key, config in indices_to_sync.items():
         count, status = sync_index(bq_client, storage_client, index_key, config, now_utc)
         total_records += count
@@ -679,7 +671,7 @@ def sync_stocks(request):
         if count > 0:
             synced_indices.append(index_key)
 
-    # --- Sync index-level prices (always, on every run) ---
+    # sync index-level prices (runs on every invocation)
     try:
         idx_count, idx_status = sync_index_prices(bq_client, storage_client, now_utc)
         total_records += idx_count
@@ -688,7 +680,7 @@ def sync_stocks(request):
         logger.critical(f"  Index prices sync error: {e}")
         results["index_prices"] = f"Error: {e}"
 
-    # --- Notify backend ---
+    # notify backend to refresh caches for updated indices
     api_url = getenv("BACKEND_API_URL")
     if api_url:
         for idx in synced_indices:

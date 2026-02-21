@@ -1,3 +1,4 @@
+-- ranks sectors by average stock return across all indices for a recent lookback period
 WITH AllData AS ({union}),
 MaxDate AS (SELECT MAX(trade_date) as md FROM AllData),
 Filtered AS (

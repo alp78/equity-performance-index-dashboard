@@ -1,3 +1,4 @@
+-- returns the latest price summary with daily change percent for all stocks in an index
 SELECT symbol, name, sector, industry,
     CAST(close AS FLOAT) as last_price,
     CAST(high AS FLOAT) as high,

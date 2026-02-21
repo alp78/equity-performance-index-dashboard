@@ -1,14 +1,13 @@
-<!--
-  SectorRankings.svelte
-  Single-index mode: all sectors ranked by return as horizontal bars.
-  Colour per sector matches chart lines. Click row → selects sector.
--->
+<!-- single-index ranked bar chart of sectors; click row to select, orange highlight on active -->
+
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
     import { singleSelectedIndex, selectedSector, selectedSectors, INDEX_CONFIG } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null, industryReturnOverride = null } = $props();
+
+    // --- SECTOR PALETTE ---
 
     const ALL_SECTORS = [
         'Technology', 'Financial Services', 'Healthcare', 'Industrials',
@@ -24,6 +23,8 @@
         return SECTOR_PALETTE[(i >= 0 ? i : ALL_SECTORS.length) % SECTOR_PALETTE.length];
     }
 
+    // --- STATE ---
+
     let rows     = $state([]);
     let loading  = $state(false);
     let cache    = {};
@@ -31,6 +32,8 @@
     let indexKey  = $derived(($singleSelectedIndex || [])[0] || 'sp500');
     let activeSec = $derived($selectedSector);
     let indexCfg  = $derived(INDEX_CONFIG?.[indexKey] || {});
+
+    // --- PERIOD LABEL ---
 
     function fmtDate(d) {
         if (!d) return '';
@@ -47,6 +50,8 @@
         if (v == null) return '—';
         return (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
     }
+
+    // --- DATA LOADING ---
 
     async function load(period, range, idx) {
         if (!browser || !idx) return;
@@ -72,7 +77,7 @@
                    .sort((a, b) => b.return_pct - a.return_pct);
                 cache[cKey] = mapped;
                 rows = mapped;
-                // If the currently selected sector doesn't exist in this index, reset to top
+                // reset to top sector if current selection missing from this index
                 const sectorNames = new Set(mapped.map(r => r.sector));
                 if (mapped.length > 0 && !sectorNames.has($selectedSector)) {
                     selectedSector.set(mapped[0].sector);
@@ -84,7 +89,8 @@
 
     $effect(() => { load(currentPeriod, customRange, indexKey); });
 
-    // Filter to selected sectors only, apply industry overrides, re-sort
+    // --- FILTERING AND OVERRIDES ---
+    // apply sidebar sector filter + industry-level return overrides, re-sort
     let filteredRows = $derived((() => {
         let base = $selectedSectors && $selectedSectors.length > 0
             ? rows.filter(r => $selectedSectors.includes(r.sector))
@@ -98,7 +104,7 @@
         }).sort((a, b) => (b.return_pct ?? 0) - (a.return_pct ?? 0));
     })());
 
-    // If active sector is deselected, fall back to first in filtered list
+    // fall back to first row if active sector was filtered out
     $effect(() => {
         if (filteredRows.length > 0 && !filteredRows.some(r => r.sector === $selectedSector)) {
             selectedSector.set(filteredRows[0].sector);
@@ -111,6 +117,7 @@
 
 <div class="rankings-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0">
 
+    <!-- header -->
     <div class="flex items-start justify-between px-5 pt-5 pb-3 flex-shrink-0 border-b border-white/5">
         <div class="flex flex-col items-start">
             <div class="flex items-center gap-2">
@@ -127,6 +134,7 @@
         {/if}
     </div>
 
+    <!-- ranked sector rows -->
     <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col justify-start px-4 py-2 gap-2">
         {#if rows.length === 0 && !loading}
             <div class="flex items-center justify-center h-full text-white/15 text-[10px] font-bold uppercase tracking-widest">No data</div>
@@ -136,14 +144,15 @@
             {@const color = sectorColor(row.sector)}
             {@const pos = (row.return_pct ?? 0) >= 0}
             <button
-                class="row-item w-full flex items-center gap-3 rounded-lg px-2 transition-all duration-150
-                    {isActive ? 'bg-white/[0.04]' : 'hover:bg-white/[0.02]'}"
+                class="row-item w-full flex items-center gap-3 rounded-lg px-2 transition-all duration-150 relative
+                    {isActive ? 'bg-orange-500/10' : 'hover:bg-white/[0.02]'}"
                 onclick={() => selectedSector.set(row.sector)}
             >
-                <div class="w-1.5 h-1.5 rounded-full flex-shrink-0 transition-all duration-150"
-                     style="background:{isActive ? color : 'rgba(255,255,255,0.15)'}; {row._filtered ? 'box-shadow: 0 0 4px rgba(249,115,22,0.6)' : ''}"></div>
+                {#if isActive}
+                    <div class="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
+                {/if}
                 <span class="sector-name font-bold flex-shrink-0 truncate text-left transition-colors duration-150"
-                      style="width:38%; color:{isActive ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}">
+                      style="width:40%; color:{isActive ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}">
                     {row.sector}
                 </span>
                 <div class="flex-1 flex items-center gap-2 min-w-0">

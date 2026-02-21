@@ -1,15 +1,4 @@
-<!--
-  RankingPanel Component
-  ======================
-  Displays top 3 / bottom 3 performers as bar charts.
-  
-  Two modes:
-    - Period: currentPeriod = '1y' etc → /rankings endpoint
-    - Custom: customRange = { start, end } → /rankings/custom endpoint
-  
-  Custom range dates are shown next to "Top Movers" title.
-  Index label always shown on the second line.
--->
+<!-- top 3 / bottom 3 stock performers as horizontal bar charts -->
 
 <script>
     import { browser } from '$app/environment';
@@ -24,7 +13,7 @@
     let rankingCache = {};
     let abortController = null;
 
-    // Build name map from sidebar data
+    // map symbol -> company name from sidebar data
     let nameMap = $derived(
         Object.fromEntries(($summaryData.assets || []).map(a => [a.symbol, a.name || '']))
     );
@@ -40,6 +29,8 @@
         return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
     }
 
+    // --- DATA LOADING ---
+    // retries up to 8 times since backend may still be loading from BigQuery
     async function load(period, index, range) {
         if (!browser) return;
 
@@ -54,7 +45,6 @@
             return;
         }
 
-        // Only use cache if it has actual data
         if (rankingCache[cacheKey]) {
             const cached = rankingCache[cacheKey];
             if (cached?.selected?.top?.length > 0 || cached?.selected?.bottom?.length > 0) {
@@ -68,7 +58,6 @@
 
         localLoading = true;
 
-        // Retry up to 8 times — backend may still be loading the index from BigQuery
         const maxRetries = 8;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
@@ -76,7 +65,6 @@
                 if (!res.ok) throw new Error("API Error");
                 const data = await res.json();
 
-                // Check if we got real data
                 const hasData = data?.selected?.top?.length > 0 || data?.selected?.bottom?.length > 0;
                 if (hasData) {
                     localRankings = data;
@@ -85,7 +73,7 @@
                     return;
                 }
 
-                // Empty = backend still loading, retry with short delay
+                // empty response = backend still loading, retry after delay
                 if (attempt < maxRetries - 1) {
                     await new Promise(r => setTimeout(r, 1500));
                     continue;
@@ -107,9 +95,9 @@
 
     let lastRankingIndex = '';
 
+    // clear stale rankings on index switch so spinner shows
     $effect(() => {
         const idx = currentIndex;
-        // Clear rankings when index changes to show loading spinner
         if (idx !== lastRankingIndex) {
             lastRankingIndex = idx;
             localRankings = null;
@@ -125,7 +113,7 @@
 
 <div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
 
-    <!-- Header -->
+    <!-- header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
         <div class="flex items-center gap-2">
             <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
@@ -141,7 +129,6 @@
                 </span>
             {/if}
         </div>
-        <!-- Index label always visible -->
         <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
             {INDEX_CONFIG[currentIndex]?.label || currentIndex}
         </span>
@@ -154,6 +141,7 @@
             {@const botMax = getSubsetMax(data.bottom)}
 
             <div class="flex-1 flex flex-col min-h-0 gap-1">
+                <!-- top performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / topMax) * 80}
@@ -174,6 +162,7 @@
 
                 <div class="flex-none h-px bg-white/10 mx-2"></div>
 
+                <!-- bottom performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / botMax) * 80}

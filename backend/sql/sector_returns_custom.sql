@@ -1,3 +1,4 @@
+-- computes average return per sector for a custom date range
 WITH Filtered AS (
     SELECT symbol, sector, close, trade_date
     FROM {table}

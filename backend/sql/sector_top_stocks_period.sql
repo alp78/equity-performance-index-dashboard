@@ -1,3 +1,4 @@
+-- returns top stocks by return within a sector for a recent lookback period
 WITH Filtered AS (
     SELECT symbol, name, close, trade_date
     FROM {table}

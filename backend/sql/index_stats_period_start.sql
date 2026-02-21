@@ -1,3 +1,4 @@
+-- returns the earliest close price for an index symbol within a lookback period
 SELECT close FROM index_prices
 WHERE symbol = ? AND trade_date >= (
     SELECT MAX(trade_date) - INTERVAL '{days} days' FROM index_prices WHERE symbol = ?

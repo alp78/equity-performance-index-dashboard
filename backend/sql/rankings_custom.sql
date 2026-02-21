@@ -1,3 +1,4 @@
+-- ranks all symbols in an index by return percent over a custom date range
 WITH Filtered AS (
     SELECT symbol, close, trade_date FROM {table}
     WHERE market_index = '{index}'

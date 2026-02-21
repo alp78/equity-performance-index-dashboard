@@ -1,3 +1,4 @@
+-- ranks sectors by average stock return across all indices for a custom date range
 WITH AllData AS ({union}),
 Filtered AS (
     SELECT symbol, sector, close, trade_date

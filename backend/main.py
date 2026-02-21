@@ -1,20 +1,5 @@
-"""
-Exchange Dashboard — Backend API
-=================================
-Architecture:
-  BigQuery (warehouse) → DuckDB (per-index lazy cache) → REST API / WebSocket → Frontend
-
-Cache strategy:
-  - Per-index lazy loading: each index loads into its own DuckDB table on first access
-  - Non-blocking refresh: webhook triggers background reload; stale data served during refresh
-  - API response cache with 5s TTL for hot-path queries
-  - Scales to 50+ indices: only the accessed index is loaded into memory
-
-Designed for scale:
-  - Adding a new index = one line in MARKET_INDICES
-  - Memory proportional to active indices, not total indices
-  - Cache hydration never blocks API responses
-"""
+# FastAPI backend for stock market dashboard.
+# Loads BigQuery data into DuckDB for fast querying; serves REST + WebSocket APIs.
 
 from os import getenv
 from pathlib import Path
@@ -35,9 +20,7 @@ from urllib.parse import unquote
 from contextlib import asynccontextmanager
 
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
+# --- CONFIGURATION ---
 
 PROJECT_ID = getenv("PROJECT_ID")
 
@@ -69,9 +52,7 @@ INDEX_KEY_TO_TICKER = {
 INDEX_TICKER_TO_KEY = {v: k for k, v in INDEX_KEY_TO_TICKER.items()}
 
 
-# ============================================================================
-# SQL LOADER
-# ============================================================================
+# --- SQL LOADER ---
 
 _SQL_DIR = Path(__file__).parent / "sql"
 _SQL_CACHE: dict[str, str] = {}
@@ -84,9 +65,7 @@ def sql(filename: str) -> str:
     return _SQL_CACHE[filename]
 
 
-# ============================================================================
-# CACHE LAYER
-# ============================================================================
+# --- CACHE LAYER ---
 
 local_db = duckdb.connect(database=':memory:', read_only=False)
 db_lock = threading.Lock()
@@ -121,20 +100,11 @@ def invalidate_index_cache(index_key):
         del API_CACHE[k]
 
 
-# ============================================================================
-# DATA QUALITY — Clean sector time series helper
-# ============================================================================
+# --- SECTOR SERIES BUILDER ---
 
 def build_clean_sector_sql(table, sector_clause, industry_clause="", date_clause=""):
-    """
-    Produce clean sector % change time series via DuckDB.
-
-    Normalizes each stock individually first (per-stock % change from its own base),
-    forward-fills onto a unified timeline, then averages % changes across stocks.
-
-    Prevents spikes from: different trading calendars, IPOs/delistings mid-period,
-    and different price scales across stocks.
-    """
+    """Build normalized per-stock % change SQL with forward-fill on a unified timeline.
+    Prevents spikes from calendar mismatches, IPOs/delistings, and differing price scales."""
     return (
         sql("clean_sector_series.sql")
         .replace("{table}", table)
@@ -144,9 +114,7 @@ def build_clean_sector_sql(table, sector_clause, industry_clause="", date_clause
     )
 
 
-# ============================================================================
-# WEBSOCKET CONNECTION MANAGER
-# ============================================================================
+# --- WEBSOCKET CONNECTION MANAGER ---
 
 class ConnectionManager:
     def __init__(self):
@@ -171,9 +139,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# ============================================================================
-# DATA INGESTION — Per-index lazy loading from BigQuery → DuckDB
-# ============================================================================
+# --- DATA INGESTION ---
 
 _bq_client = None
 
@@ -186,7 +152,7 @@ def get_bq_client():
 
 
 def _load_index_from_bq(index_key):
-    """Load a single index from BigQuery into DuckDB. Thread-safe."""
+    """Fetch one index from BigQuery, create per-index DuckDB table + latest snapshot."""
     config = MARKET_INDICES.get(index_key)
     if not config or not config.get("table_id") or not PROJECT_ID:
         return 0
@@ -237,7 +203,7 @@ def _load_index_from_bq(index_key):
 
 
 def _rebuild_unified_view():
-    """Rebuild the unified 'prices' and 'latest_prices' views from all loaded index tables."""
+    """Recreate the 'prices' and 'latest_prices' views as a union of all loaded index tables."""
     loaded_indices = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
     if not loaded_indices:
         return
@@ -252,8 +218,7 @@ def _rebuild_unified_view():
 
 
 def _precompute_sector_series(index_key):
-    """Pre-compute normalized % change time series for ALL sectors in an index.
-    Stores result in sector_series_{index_key} DuckDB table for instant lookups."""
+    """Build normalized % change time series for all sectors, stored as sector_series_{index}."""
     table_name = f"prices_{index_key}"
     series_table = f"sector_series_{index_key}"
 
@@ -286,8 +251,7 @@ def _precompute_sector_series(index_key):
 
 
 def _precompute_industry_series(index_key):
-    """Pre-compute normalized % change time series for ALL industries in an index.
-    Stores result in industry_series_{index_key} DuckDB table for instant lookups."""
+    """Build normalized % change time series for all industries, stored as industry_series_{index}."""
     table_name = f"prices_{index_key}"
     series_table = f"industry_series_{index_key}"
 
@@ -323,7 +287,7 @@ def _precompute_industry_series(index_key):
 
 
 def _prewarm_sector_caches(index_key):
-    """Pre-warm API_CACHE for /sector-comparison/table so Heatmap/Rankings load instantly."""
+    """Populate API_CACHE for sector table endpoint so heatmap/rankings load instantly."""
     table = f"prices_{index_key}"
     t0 = time.time()
 
@@ -359,7 +323,7 @@ def _prewarm_sector_caches(index_key):
 
 
 def _load_index_prices_from_bq():
-    """Load index_prices table from BigQuery into DuckDB."""
+    """Load the index-level price history (e.g. ^GSPC, ^STOXX50E) from BigQuery into DuckDB."""
     global INDEX_PRICES_LOADED
     if not INDEX_PRICES_TABLE or not PROJECT_ID:
         return 0
@@ -406,7 +370,7 @@ def _load_index_prices_from_bq():
 
 
 def ensure_index_loaded(index_key):
-    """Trigger background load if not loaded. Never blocks. Returns True if ready."""
+    """Trigger background load if not cached yet. Returns True only if data is ready."""
     status = INDEX_LOAD_STATUS.get(index_key)
     if status and status.get("loaded"):
         return True
@@ -434,7 +398,7 @@ def ensure_index_loaded(index_key):
 
 
 async def refresh_single_index(index_key):
-    """Background refresh of a single index. Non-blocking."""
+    """Reload one index from BigQuery, recompute series, and invalidate caches."""
     print(f"Refreshing index: {index_key}")
     invalidate_index_cache(index_key)
     SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
@@ -452,15 +416,13 @@ async def refresh_single_index(index_key):
     invalidate_index_cache(index_key)
 
 
-# ============================================================================
-# HELPERS
-# ============================================================================
+# --- HELPERS ---
 
 INTERVALS = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
 
 
 def _sector_returns_df(table, use_custom, period, start, end):
-    """Run the right sector_returns SQL variant and return a DataFrame."""
+    """Execute the appropriate sector returns SQL variant and return a DataFrame."""
     if use_custom:
         return local_db.execute(
             sql("sector_returns_custom.sql")
@@ -482,7 +444,7 @@ def _sector_returns_df(table, use_custom, period, start, end):
 
 
 def _top_items_df(union, item_col, use_custom, period, start, end):
-    """Run the right top_sectors or top_industries SQL variant."""
+    """Execute the appropriate top sectors/industries SQL variant."""
     base = f"top_{item_col}s"
     if use_custom:
         return local_db.execute(
@@ -504,11 +466,10 @@ def _top_items_df(union, item_col, use_custom, period, start, end):
         ).df()
 
 
-# ============================================================================
-# REAL-TIME DATA FEEDS
-# ============================================================================
+# --- REAL-TIME DATA FEEDS ---
 
 async def fetch_crypto_data():
+    """Fetch BTC/USDT price from Binance and broadcast via WebSocket."""
     try:
         ticker_r = requests.get(
             "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=2
@@ -539,7 +500,7 @@ async def fetch_crypto_data():
 
 
 async def fetch_stock_data():
-    """Fetch live stock prices in small batches to avoid blocking."""
+    """Fetch live prices for global macro instruments and index leader stocks via yfinance."""
     GLOBAL_MACRO = ["GC=F", "EURUSD=X"]
     INDEX_LEADERS = {
         "sp500":     ["NVDA", "AAPL", "MSFT", "AMZN"],
@@ -604,12 +565,10 @@ async def fetch_stock_data():
         await asyncio.sleep(0.5)
 
 
-# ============================================================================
-# BACKGROUND TASKS
-# ============================================================================
+# --- BACKGROUND TASKS ---
 
 async def self_keepalive():
-    """Self-ping every 4 minutes to prevent Cloud Run from recycling the container."""
+    """Ping localhost every 4 minutes to prevent Cloud Run container recycling."""
     await asyncio.sleep(60)
     port = int(getenv("PORT", "8080"))
     print(f"SELF_KEEPALIVE: Pinging localhost:{port}/health every 4 min")
@@ -626,6 +585,7 @@ async def self_keepalive():
 
 
 async def market_data_feeder():
+    """Poll crypto every 10s, stocks every 60s (every 6th cycle)."""
     print("Real-time Feeder Active")
     crypto_counter = 0
     while True:
@@ -638,9 +598,10 @@ async def market_data_feeder():
 
 
 async def preload_all_indices():
+    """Two-phase startup: priority indices first, then remaining indices + index prices."""
     loop = asyncio.get_event_loop()
 
-    # Phase 1: stoxx50 + sp500 in parallel
+    # phase 1: stoxx50 + sp500 in parallel (highest priority)
     phase1 = ["stoxx50", "sp500"]
     phase1_tasks = [refresh_single_index(idx) for idx in phase1]
     results = await asyncio.gather(*phase1_tasks, return_exceptions=True)
@@ -652,7 +613,7 @@ async def preload_all_indices():
     asyncio.create_task(market_data_feeder())
     asyncio.create_task(self_keepalive())
 
-    # Phase 2: all remaining indices + index_prices in parallel
+    # phase 2: remaining indices + index_prices in parallel
     remaining = [k for k in MARKET_INDICES if k not in ("stoxx50", "sp500")]
 
     async def _load_remaining(idx):
@@ -672,7 +633,6 @@ async def preload_all_indices():
     phase2_tasks = [_load_remaining(idx) for idx in remaining] + [_load_index_prices()]
     await asyncio.gather(*phase2_tasks)
 
-    # Final unified view rebuild to ensure all indices are included
     with db_lock:
         _rebuild_unified_view()
 
@@ -685,6 +645,8 @@ async def background_startup():
     await preload_all_indices()
     STARTUP_DONE_TIME = time.time()
 
+
+# --- APP INITIALIZATION ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -703,14 +665,13 @@ app.add_middleware(
 )
 
 
-# ============================================================================
-# WEBSOCKET
-# ============================================================================
+# --- WEBSOCKET ENDPOINT ---
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
+        # send cached market data snapshot on connect
         for payload in list(LATEST_MARKET_DATA.values()):
             await websocket.send_text(json.dumps(payload))
         while True:
@@ -719,17 +680,16 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
-# ============================================================================
-# REST API — Admin
-# ============================================================================
+# --- REST API: ADMIN ---
 
 @app.get("/health")
 async def health():
+    """Return detailed loading progress and readiness status."""
     loaded = {k: v for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")}
     total_indices = len(MARKET_INDICES)
+    # each index has 3 steps (load, sector series, industry series) + 1 for index_prices
     total_steps = total_indices * 3 + 1
 
-    # Only show completed steps (from cached counts) + what's currently loading
     done = []
     loading = []
     total_rows = 0
@@ -809,6 +769,7 @@ async def get_market_data():
 
 @app.post("/api/admin/refresh")
 async def webhook_refresh():
+    """Trigger background refresh for all currently loaded indices."""
     loaded = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
     if not loaded:
         return {"status": "skipped", "message": "No indices loaded yet"}
@@ -820,6 +781,7 @@ async def webhook_refresh():
 
 @app.post("/api/admin/refresh/{index_key}")
 async def webhook_refresh_index(index_key: str):
+    """Trigger background refresh for a single index or index_prices."""
     if index_key == "index_prices":
         loop = asyncio.get_event_loop()
         asyncio.create_task(loop.run_in_executor(None, _load_index_prices_from_bq))
@@ -830,9 +792,7 @@ async def webhook_refresh_index(index_key: str):
     return {"status": "accepted", "message": f"Refreshing {index_key}"}
 
 
-# ============================================================================
-# REST API — Index overview
-# ============================================================================
+# --- REST API: INDEX OVERVIEW ---
 
 @app.get("/index-prices/debug")
 async def get_index_prices_debug():
@@ -880,7 +840,7 @@ async def get_index_prices_summary():
 
 @app.get("/index-prices/data")
 async def get_index_prices_data(symbols: str = "", period: str = "1y"):
-    """Multi-symbol index price comparison using unified timeline + forward-fill."""
+    """Multi-symbol index price comparison with unified timeline and forward-fill."""
     if not INDEX_PRICES_LOADED:
         return {"series": []}
 
@@ -945,6 +905,7 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
 
 @app.get("/index-prices/stats")
 async def get_index_prices_stats(period: str = "1y", start: str = "", end: str = ""):
+    """Compute per-index stats: daily change, period return, YTD, 52w range, volatility."""
     if not INDEX_PRICES_LOADED:
         return []
 
@@ -980,7 +941,7 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
                 """, [sym, latest_date]).fetchone()
                 daily_change = float(((current_price - prev[0]) / prev[0]) * 100) if prev and prev[0] else 0
 
-                # Period return start price
+                # period return: find the start price for the requested window
                 if use_custom:
                     period_start = local_db.execute("""
                         SELECT close FROM index_prices WHERE symbol = ? AND trade_date >= ?
@@ -1001,7 +962,7 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
                     ((current_price - period_start[0]) / period_start[0]) * 100
                 ) if period_start and period_start[0] else 0
 
-                # YTD return
+                # year-to-date return
                 ytd_start = local_db.execute("""
                     SELECT close FROM index_prices
                     WHERE symbol = ? AND trade_date >= DATE_TRUNC('year', CURRENT_DATE)
@@ -1021,7 +982,7 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
                 low_52w = float(range_52w[0]) if range_52w and range_52w[0] else current_price
                 high_52w = float(range_52w[1]) if range_52w and range_52w[1] else current_price
 
-                # Volatility
+                # annualized volatility from daily log returns
                 if use_custom:
                     vol_row = local_db.execute(
                         sql("index_stats_volatility_custom.sql")
@@ -1092,13 +1053,11 @@ async def get_index_price_single(symbol: str, period: str = "max"):
         return []
 
 
-# ============================================================================
-# REST API — Sector comparison
-# ============================================================================
+# --- REST API: SECTOR COMPARISON ---
 
 @app.get("/sector-comparison/data")
 async def get_sector_comparison_data(sector: str = "Technology", indices: str = "", period: str = "max"):
-    """Legacy endpoint — simple AVG(close) normalisation. Kept for backwards compatibility."""
+    """Legacy endpoint using simple AVG(close) normalization. Kept for backwards compatibility."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list or not sector:
         return {"series": [], "sector": sector}
@@ -1231,11 +1190,8 @@ async def get_sector_comparison_data_v2(
     mode: str = "cross-index",
     period: str = "max",
 ):
-    """
-    Clean sector comparison using per-stock normalisation + unified timeline + forward-fill.
-    mode=cross-index: one sector across multiple indices (each index = one line).
-    mode=single-index: multiple sectors within one index (each sector = one line).
-    """
+    """Clean sector comparison using per-stock normalization, unified timeline, and forward-fill.
+    cross-index mode: one sector across indices. single-index mode: multiple sectors within one index."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list:
         return {"series": [], "mode": mode}
@@ -1246,7 +1202,7 @@ async def get_sector_comparison_data_v2(
     if cached:
         return cached
 
-    # --- Fast path: serve from pre-computed sector_series tables ---
+    # fast path: serve from precomputed tables when no filters applied
     use_precomputed = (not industry_filter and period.lower() == "max")
     if use_precomputed:
         try:
@@ -1289,9 +1245,9 @@ async def get_sector_comparison_data_v2(
                 set_cached_response(cache_key, result)
                 return result
         except Exception:
-            pass  # Fall through to slow path
+            pass  # fall through to slow path
 
-    # --- Slow path: run clean_sector_series.sql on the fly ---
+    # slow path: compute clean_sector_series on the fly
     def _build_clauses(sec):
         industry_clause = ""
         params = [sec]
@@ -1347,8 +1303,7 @@ async def get_sector_comparison_data_v2(
 
 @app.get("/sector-comparison/all-series")
 async def get_all_sector_series(indices: str = ""):
-    """Return ALL pre-computed sector time series for requested indices.
-    Used by frontend for instant mode/sector/index switching."""
+    """Return all precomputed sector time series for instant frontend switching."""
     if indices and indices.lower() != "all":
         index_list = [i.strip() for i in indices.split(",")
                       if i.strip() and i.strip() in MARKET_INDICES]
@@ -1378,6 +1333,7 @@ async def get_all_sector_series(indices: str = ""):
             if df.empty:
                 continue
 
+            # group rows by sector without extra queries
             idx_data = {}
             current_sector = None
             points = []
@@ -1403,8 +1359,7 @@ async def get_all_sector_series(indices: str = ""):
 
 @app.get("/sector-comparison/industry-series")
 async def get_industry_series(sector: str = "", indices: str = ""):
-    """Return pre-computed industry time series for ONE sector across requested indices.
-    Used by frontend for instant industry filtering."""
+    """Return precomputed industry time series for one sector across requested indices."""
     if not sector:
         return {"data": {}, "ready": [], "pending": []}
 
@@ -1441,6 +1396,7 @@ async def get_industry_series(sector: str = "", indices: str = ""):
                 result[idx] = {}
                 continue
 
+            # group rows by industry without extra queries
             idx_data = {}
             current_industry = None
             points = []
@@ -1470,6 +1426,7 @@ async def get_industry_series(sector: str = "", indices: str = ""):
 
 @app.get("/sector-comparison/histogram")
 async def get_sector_histogram(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+    """Return average return per sector across indices for histogram display."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list:
         index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
@@ -1514,6 +1471,7 @@ async def get_sector_histogram(indices: str = "", period: str = "1y", start: str
 
 @app.get("/sector-comparison/table")
 async def get_sector_comparison_table(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+    """Return sector returns broken down by index for heatmap/rankings table."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list:
         index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
@@ -1569,6 +1527,7 @@ async def get_sector_top_stocks(
     sector: str, indices: str = "", period: str = "1y",
     start: str = "", end: str = "", n: int = 5
 ):
+    """Return top N and bottom N performing stocks within a sector across indices."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list:
         index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
@@ -1644,6 +1603,7 @@ async def get_industry_breakdown(
     index: str = "", sector: str = "",
     period: str = "1y", start: str = "", end: str = "",
 ):
+    """Return per-industry return breakdown within one sector of one index."""
     if not index or index not in MARKET_INDICES or not sector:
         return []
 
@@ -1792,9 +1752,7 @@ async def get_top_industries(indices: str = "", period: str = "1y", start: str =
         return {"top": [], "bottom": []}
 
 
-# ============================================================================
-# REST API — Stock data
-# ============================================================================
+# --- REST API: STOCK DATA ---
 
 @app.get("/summary")
 async def get_summary(index: str = "sp500"):
@@ -1824,6 +1782,7 @@ async def get_summary(index: str = "sp500"):
         return []
 
 
+# symbol-to-index lookup cache and suffix heuristics for lazy loading
 SYMBOL_INDEX_MAP: dict = {}
 SUFFIX_TO_INDEX = {
     ".T":  "nikkei225",
@@ -1836,6 +1795,7 @@ SUFFIX_TO_INDEX = {
 
 
 def _guess_index_for_symbol(symbol):
+    """Infer index from ticker suffix (e.g. .T -> nikkei225), default to sp500."""
     upper = symbol.upper()
     for suffix, index_key in SUFFIX_TO_INDEX.items():
         if upper.endswith(suffix.upper()):
@@ -1844,11 +1804,13 @@ def _guess_index_for_symbol(symbol):
 
 
 def _find_symbol_table(symbol):
+    """Search loaded indices for a symbol, lazy-loading the guessed index if needed."""
     if symbol in SYMBOL_INDEX_MAP:
         idx = SYMBOL_INDEX_MAP[symbol]
         if INDEX_LOAD_STATUS.get(idx, {}).get("loaded"):
             return f"prices_{idx}"
 
+    # scan all loaded indices
     for index_key, status in INDEX_LOAD_STATUS.items():
         if not status.get("loaded"):
             continue
@@ -1863,6 +1825,7 @@ def _find_symbol_table(symbol):
         except:
             continue
 
+    # trigger lazy load for the guessed index
     guessed_index = _guess_index_for_symbol(symbol)
     if guessed_index and guessed_index in MARKET_INDICES:
         if not INDEX_LOAD_STATUS.get(guessed_index, {}).get("loaded"):

@@ -1,9 +1,6 @@
-<!--
-  Chart Component
-  ===============
-  Candlestick + faint area overlay. Currency symbol passed as prop.
-  Sticky price label pins to top/bottom when off-screen.
--->
+<!-- candlestick chart with comparison line overlay using lightweight-charts.
+     handles stock mode (OHLC+MA+volume), comparison mode (% return lines),
+     scroll/zoom, brush selection, tooltips, and visible range management. -->
 
 <script>
     import { onMount, onDestroy, tick } from 'svelte';
@@ -23,6 +20,8 @@
         hideVolume = false,
     } = $props();
 
+    // --- DOM REFS ---
+
     let chartContainer;
     let tooltip;
     let brushOverlay;
@@ -30,11 +29,17 @@
     let rangeLineEnd;
     let stickyLabel;
 
+    // --- CHART SERIES ---
+
     let chart;
     let candleSeries, areaSeries, volumeSeries, ma30Series, ma90Series;
-    let comparisonSeries = []; // Array of { symbol, series } for comparison mode — NEVER reassign, only mutate (splice/push) so closure in subscribeCrosshairMove sees updates
-    let legendSeries = $state([]); // Reactive copy updated only after series are ready — avoids glitch
+    // never reassign, only mutate (splice/push) so closure in subscribeCrosshairMove sees updates
+    let comparisonSeries = [];
+    // reactive copy updated only after series are ready to avoid render glitch
+    let legendSeries = $state([]);
     let observer;
+
+    // --- INTERNAL STATE ---
 
     let processedData = [];
     let lastDataKey = '';
@@ -55,6 +60,8 @@
         '1w': 7, '1mo': 30, '3mo': 90,
         '6mo': 180, '1y': 365, '5y': 1825,
     };
+
+    // --- FORMATTERS ---
 
     function formatDate(timeStr) {
         if (!timeStr) return "";
@@ -94,11 +101,10 @@
         cutoff.setDate(cutoff.getDate() - days);
         const cutoffStr = cutoff.toISOString().split('T')[0];
 
-        // Use time-based range (works correctly with multiple series that have different time points)
+        // comparison mode needs time-based range because series have different time points
         if (comparisonSeries.length > 0) {
             timeScale.setVisibleRange({ from: cutoffStr, to: processedData[processedData.length - 1].time });
         } else {
-            // Stock mode: logical indices match processedData perfectly
             const startIdx = processedData.findIndex(d => d.time >= cutoffStr);
             if (startIdx < 0) {
                 timeScale.fitContent();
@@ -110,9 +116,8 @@
         setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
     }
 
+    // prevent scrolling past data boundaries (skipped in comparison mode where indices don't map 1:1)
     function clampRange(from, to) {
-        // In comparison mode, let the chart handle its own bounds
-        // because logical indices don't map 1:1 to processedData
         if (comparisonSeries.length > 0) {
             return { from, to };
         }
@@ -126,7 +131,7 @@
         return { from: newFrom, to: newTo };
     }
 
-    // Merged time axis for comparison mode (all unique dates from all series, sorted)
+    // union of all unique dates across comparison series, sorted chronologically
     let mergedTimeAxis = [];
 
     function buildMergedTimeAxis(cData) {
@@ -141,6 +146,7 @@
         mergedTimeAxis = Array.from(timeSet).sort();
     }
 
+    // convert pixel x-coordinate to a date string using the appropriate time axis
     function xToDate(x) {
         if (!chart) return null;
         const timeScale = chart.timeScale();
@@ -148,20 +154,19 @@
         if (logical === null) return null;
         const idx = Math.round(logical);
 
-        // In comparison mode, use the merged time axis (matches chart's internal bar indices)
         if (comparisonSeries.length > 0 && mergedTimeAxis.length > 0) {
             if (idx < 0) return mergedTimeAxis[0];
             if (idx >= mergedTimeAxis.length) return mergedTimeAxis[mergedTimeAxis.length - 1];
             return mergedTimeAxis[idx];
         }
 
-        // Stock mode: processedData indices match 1:1
         if (idx < 0 || idx >= processedData.length) return null;
         return processedData[idx].time;
     }
 
     // --- ORANGE RANGE LINES ---
 
+    // position the dashed orange boundary lines for the selected custom date range
     function updateRangeLines() {
         if (!rangeLineStart || !rangeLineEnd || !chart) return;
         if (!customRange || !customRange.start || !customRange.end) {
@@ -171,7 +176,6 @@
         }
 
         const timeScale = chart.timeScale();
-        // Use mergedTimeAxis in comparison mode for accurate time lookup
         const timeSource = (comparisonSeries.length > 0 && mergedTimeAxis.length > 0)
             ? mergedTimeAxis.map(t => ({ time: t }))
             : processedData;
@@ -197,6 +201,7 @@
 
     // --- SCROLL-WHEEL ZOOM ---
 
+    // zoom centered on cursor position, min 3 bars visible
     function handleWheel(event) {
         if (selectMode || !chart || processedData.length === 0) return;
         event.preventDefault();
@@ -225,6 +230,7 @@
         const x = event.clientX - rect.left;
 
         if (selectMode) {
+            // brush selection mode: start drawing range overlay
             isBrushing = true;
             brushStartX = x;
             brushStartTime = xToDate(x);
@@ -234,6 +240,7 @@
                 brushOverlay.style.width = '0px';
             }
         } else {
+            // pan mode: grab and drag the visible range
             const range = chart.timeScale().getVisibleLogicalRange();
             if (!range) return;
             isDragging = true;
@@ -270,17 +277,16 @@
             const x = event.clientX - rect.left;
             const endTime = xToDate(x);
 
+            // finalize brush: zoom to selected range and notify parent
             if (brushStartTime && endTime && brushStartTime !== endTime) {
                 const start = brushStartTime < endTime ? brushStartTime : endTime;
                 const end = brushStartTime < endTime ? endTime : brushStartTime;
 
                 if (comparisonSeries.length > 0) {
-                    // Comparison mode: use time-based range
                     isProgrammaticRangeChange = true;
                     chart.timeScale().setVisibleRange({ from: start, to: end });
                     setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
                 } else {
-                    // Stock mode: use logical indices
                     const startIdx = processedData.findIndex(d => d.time >= start);
                     const endEntries = processedData.filter(d => d.time <= end);
                     const endIdx = endEntries.length > 0 ? processedData.indexOf(endEntries[endEntries.length - 1]) : -1;
@@ -304,6 +310,7 @@
 
     // --- PRICE LINE VISIBILITY ---
 
+    // show sticky label pinned to top/bottom edge when the live price line scrolls off-screen
     function updatePriceLineVisibility() {
         if (!chart || !candleSeries || lastClosePrice === 0 || !stickyLabel) return;
         try {
@@ -333,7 +340,8 @@
         } catch(e) {}
     }
 
-    // Cursor + brush cleanup
+    // --- REACTIVE CURSOR + BRUSH ---
+
     $effect(() => {
         if (chartContainer) chartContainer.style.cursor = selectMode ? 'col-resize' : 'crosshair';
         if (!selectMode && brushOverlay) brushOverlay.style.display = 'none';
@@ -378,6 +386,7 @@
             handleScale: false,
         });
 
+        // hide TradingView branding injected by lightweight-charts
         const nuke = () => {
             chartContainer.querySelectorAll('div, a, span').forEach(el => {
                 if (el.innerText?.includes('TradingView') || el.href?.includes('tradingview')) el.style.display = 'none';
@@ -386,6 +395,8 @@
         nuke();
         observer = new MutationObserver(nuke);
         observer.observe(chartContainer, { childList: true, subtree: true });
+
+        // --- STOCK MODE SERIES ---
 
         candleSeries = chart.addSeries(CandlestickSeries, {
             upColor: 'rgba(34, 197, 94, 0.6)',
@@ -428,6 +439,7 @@
         });
 
         // --- TOOLTIP ---
+
         chart.subscribeCrosshairMove((param) => {
             if (!tooltip || !param.time || !param.point || param.point.x < 0) {
                 if (tooltip) { tooltip.style.display = 'none'; tooltip.style.visibility = 'visible'; }
@@ -440,7 +452,7 @@
                 let hasAnyData = false;
                 for (const cs of comparisonSeries) {
                     const sData = param.seriesData?.get(cs.series);
-                    // For missing data points (sparse series), carry forward last known value
+                    // carry forward last known value for sparse series (different trading calendars)
                     let pct = sData?.value;
                     if (pct === undefined && compareData?.series) {
                         const s = compareData.series.find(s => s.symbol === cs.symbol);
@@ -461,7 +473,6 @@
                     const name = cs.name || COMPARE_NAMES[cs.symbol] || cs.symbol;
                     const sign = pct >= 0 ? '+' : '';
                     const pctColor = pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)';
-                    // Find raw close from compareData
                     let rawClose = '';
                     if (compareData && compareData.series) {
                         const s = compareData.series.find(s => s.symbol === cs.symbol);
@@ -480,7 +491,7 @@
                     `;
                 }
 
-                // Aggregated volume for tooltip
+                // sum volume across all comparison series for this date
                 let volTotal = 0;
                 if (compareData && compareData.series) {
                     const timeStr = String(param.time);
@@ -495,7 +506,7 @@
                     return;
                 }
 
-                // Set HTML first so we can measure actual height
+                // render invisible first to measure actual height for positioning
                 const tooltipWidth = 200;
                 tooltip.style.visibility = 'hidden';
                 tooltip.style.display = 'flex';
@@ -506,7 +517,7 @@
                         ${rows}
                         ${volTotal > 0 ? `<div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5 mt-1"><span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span><span class="text-xs text-purple-400 font-bold">${formatVolume(volTotal)}</span></div>` : ''}
                     </div>`;
-                // Position after render so we know actual height
+                // clamp tooltip within chart bounds
                 { const tw = tooltipWidth, th = tooltip.offsetHeight || 200;
                   const cw = chartContainer.clientWidth, ch = chartContainer.clientHeight;
                   let left = param.point.x + 20, top = param.point.y + 20;
@@ -548,22 +559,22 @@
                 tooltip.innerHTML = `
                     <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[170px] gap-1.5 pointer-events-none">
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
-                        
+
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Open</span>
                             <span class="text-xs text-white/70 font-black">${c}${openPrice.toFixed(2)}</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">High</span>
                             <span class="text-xs text-white/70 font-black">${c}${highPrice.toFixed(2)}</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/40 uppercase font-bold">Low</span>
                             <span class="text-xs text-white/70 font-black">${c}${lowPrice.toFixed(2)}</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
                             <span class="text-xs font-black" style="color: ${candleUp ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)'}">${c}${closePrice.toFixed(2)}</span>
@@ -573,17 +584,17 @@
                             <span class="text-[9px] text-white/40 uppercase font-bold">vs Live</span>
                             <span class="text-[10px] font-black ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
                             <span class="text-[9px] text-cyan-400/60 uppercase font-bold">MA 30</span>
                             <span class="text-xs text-cyan-400 font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4">
                             <span class="text-[9px] text-indigo-400/60 uppercase font-bold">MA 90</span>
                             <span class="text-xs text-indigo-400 font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
                         </div>
-                        
+
                         <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
                             <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
                             <span class="text-xs text-purple-400 font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
@@ -592,11 +603,14 @@
             }
         });
 
+        // --- EVENT LISTENERS ---
+
         chartContainer.addEventListener('wheel', handleWheel, { passive: false });
         chartContainer.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
 
+        // double-click: snap to custom range if set, otherwise reset period
         chartContainer.addEventListener('dblclick', () => {
             if (customRange && customRange.start && customRange.end) {
                 isProgrammaticRangeChange = true;
@@ -631,10 +645,12 @@
         resizer.observe(chartContainer);
     });
 
-    // --- REACTIVE: DATA ---
+    // --- REACTIVE: STOCK DATA ---
+
     $effect(() => {
         const raw = $state.snapshot(data);
         if (candleSeries && raw.length > 0) {
+            // deduplicate and sort by date
             const uniqueMap = new Map();
             raw.forEach(item => uniqueMap.set(item.time, item));
             processedData = Array.from(uniqueMap.values()).sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -647,12 +663,14 @@
             ma30Series.setData(processedData.map(d => ({ time: d.time, value: d.ma30 })));
             ma90Series.setData(processedData.map(d => ({ time: d.time, value: d.ma90 })));
 
+            // highlight volume bars above 80% of max
             const maxVol = Math.max(...processedData.map(d => d.volume));
             volumeSeries.setData(processedData.map(d => ({
                 time: d.time, value: d.volume,
                 color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
             })));
 
+            // update live price dashed line
             if (activePriceLine) { try { candleSeries.removePriceLine(activePriceLine); } catch(e) {} }
             lastClosePrice = processedData[processedData.length - 1].close;
             activePriceLine = candleSeries.createPriceLine({
@@ -660,6 +678,7 @@
                 lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: '',
             });
 
+            // apply period/range only when the underlying dataset changes (new symbol or new data)
             const dataKey = `${processedData[0]?.time}_${processedData.length}`;
             if (dataKey !== lastDataKey) {
                 lastDataKey = dataKey;
@@ -689,6 +708,8 @@
     });
 
     // --- REACTIVE: COMPARISON DATA ---
+
+    // fallback color/name maps for major indices
     const _DEFAULT_COLORS = {
         '^GSPC':     '#e2e8f0',
         '^STOXX50E': '#2563eb',
@@ -710,12 +731,12 @@
 
     let _lastCompareSymbols = '';
 
+    // aggregate volume across all comparison series per date
     function setComparisonVolume(cData) {
         if (hideVolume) {
             volumeSeries.setData([]);
             return;
         }
-        // Aggregate volume across all selected indices per date
         const volMap = new Map();
         for (const s of cData.series) {
             for (const p of s.points) {
@@ -732,10 +753,11 @@
         })));
     }
 
+    // first-time full render: clear stock series, create all comparison line series
     function renderComparisonFull(cData) {
         if (!chart) return;
 
-        // Hide stock-mode series (except volumeSeries — reused for aggregated volume)
+        // hide stock-mode series (volumeSeries reused for aggregated volume)
         if (candleSeries) {
             try {
                 candleSeries.setData([]);
@@ -749,13 +771,12 @@
             } catch(e) {}
         }
 
-        // Remove old comparison series
         comparisonSeries.forEach(cs => {
             try { chart.removeSeries(cs.series); } catch(e) {}
         });
         comparisonSeries.splice(0);
 
-        // Create all series
+        // create a % return line for each index
         cData.series.forEach((s) => {
             const color = COMPARE_COLORS[s.symbol] || '#8b5cf6';
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
@@ -771,6 +792,7 @@
             });
             lineSeries.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
 
+            // axis label showing final % return
             const lastPct = s.points[s.points.length - 1]?.pct ?? 0;
             lineSeries.createPriceLine({
                 price: lastPct, color: color, lineWidth: 0,
@@ -781,7 +803,7 @@
             comparisonSeries.push({ symbol: s.symbol, series: lineSeries, color, name });
         });
 
-        // Zero line
+        // dashed zero baseline
         if (comparisonSeries.length > 0) {
             try {
                 comparisonSeries[0].series.createPriceLine({
@@ -791,20 +813,11 @@
             } catch(e) {}
         }
 
-        // Populate processedData from longest series
-        let longest = cData.series[0].points;
-        for (const s of cData.series) {
-            if (s.points.length > longest.length) longest = s.points;
-        }
-        processedData = longest.map(p => ({ time: p.time, close: p.pct }));
-
-        // Build merged time axis for correct xToDate mapping
         buildMergedTimeAxis(cData);
+        processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
 
-        // Set aggregated volume histogram
         setComparisonVolume(cData);
 
-        // Apply saved period or custom range (same as stock mode on refresh)
         if (currentPeriod) {
             applyPeriodRange(currentPeriod);
         } else if (customRange && customRange.start && customRange.end) {
@@ -813,7 +826,6 @@
             applyPeriodRange('1y');
         }
 
-        // Update reactive legend AFTER all series rendered — fully self-contained, no prop deps
         legendSeries = comparisonSeries.map(cs => ({
             symbol: cs.symbol,
             color: COMPARE_COLORS[cs.symbol] || '#8b5cf6',
@@ -821,34 +833,27 @@
         }));
     }
 
+    // incremental update: atomic rebuild of all series to keep visible range stable
     function updateComparisonSeries(cData) {
         if (!chart) return;
 
-        // Save the current visible TIME range before any modifications
+        // save visible time range before modifications
         let savedFrom = null, savedTo = null;
         try {
             const vr = chart.timeScale().getVisibleRange();
             if (vr) { savedFrom = vr.from; savedTo = vr.to; }
         } catch(e) {}
 
-        const currentSymbols = new Set(comparisonSeries.map(cs => cs.symbol));
-        const newSymbols = new Set(cData.series.map(s => s.symbol));
+        // disable edge constraints during rebuild to prevent auto-clamping
+        chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
 
-        // Remove series that are no longer selected
-        const toRemove = comparisonSeries.filter(cs => !newSymbols.has(cs.symbol));
-        toRemove.forEach(cs => {
+        // full atomic rebuild avoids intermediate states that shift the time axis
+        comparisonSeries.forEach(cs => {
             try { chart.removeSeries(cs.series); } catch(e) {}
         });
-        // Mutate in-place: remove items not in newSymbols
-        for (let i = comparisonSeries.length - 1; i >= 0; i--) {
-            if (!newSymbols.has(comparisonSeries[i].symbol)) {
-                comparisonSeries.splice(i, 1);
-            }
-        }
+        comparisonSeries.splice(0);
 
-        // Add new series
         cData.series.forEach((s) => {
-            if (currentSymbols.has(s.symbol)) return; // already shown
             const color = COMPARE_COLORS[s.symbol] || '#8b5cf6';
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
             const lineSeries = chart.addSeries(LineSeries, {
@@ -873,36 +878,48 @@
             comparisonSeries.push({ symbol: s.symbol, series: lineSeries, color, name });
         });
 
-        // Update processedData from longest series (in case it changed)
-        let longest = cData.series[0].points;
-        for (const s of cData.series) {
-            if (s.points.length > longest.length) longest = s.points;
+        if (comparisonSeries.length > 0) {
+            try {
+                comparisonSeries[0].series.createPriceLine({
+                    price: 0, color: 'rgba(255,255,255,0.15)', lineWidth: 1,
+                    lineStyle: LineStyle.Dashed, axisLabelVisible: false,
+                });
+            } catch(e) {}
         }
-        processedData = longest.map(p => ({ time: p.time, close: p.pct }));
 
-        // Rebuild merged time axis
         buildMergedTimeAxis(cData);
+        processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
 
-        // Update aggregated volume
         setComparisonVolume(cData);
 
-        // Sync reactive legend — fully self-contained
         legendSeries = comparisonSeries.map(cs => ({
             symbol: cs.symbol,
             color: COMPARE_COLORS[cs.symbol] || '#8b5cf6',
             name: COMPARE_NAMES[cs.symbol] || cs.symbol
         }));
 
-        // Restore the exact same visible time range to prevent drift
-        if (savedFrom && savedTo) {
+        // restore visible range via bar-index mapping (time strings snap unpredictably when bars change)
+        if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
             isProgrammaticRangeChange = true;
-            chart.timeScale().setVisibleRange({ from: savedFrom, to: savedTo });
+            let fromIdx = 0;
+            for (let i = 0; i < mergedTimeAxis.length; i++) {
+                if (mergedTimeAxis[i] >= savedFrom) { fromIdx = i; break; }
+            }
+            let toIdx = mergedTimeAxis.length - 1;
+            for (let i = mergedTimeAxis.length - 1; i >= 0; i--) {
+                if (mergedTimeAxis[i] <= savedTo) { toIdx = i; break; }
+            }
+            chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
+        }
+        chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
+        if (savedFrom && savedTo) {
             setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
         }
     }
 
     let _lastCompareDataVersion = 0;
 
+    // react to compareData changes: determine whether to do a full render, incremental update, or in-place data swap
     $effect(async () => {
         const cData = compareData;
         if (!cData || !cData.series || cData.series.length === 0) {
@@ -922,26 +939,47 @@
         const dataVersion = cData._version || 0;
 
         if (newSymbols === _lastCompareSymbols && comparisonSeries.length > 0) {
-            // Same symbols — check if data actually changed
+            // same symbols: update series data in-place if version changed
             if (dataVersion === _lastCompareDataVersion && dataVersion > 0) return;
             _lastCompareDataVersion = dataVersion;
             _lastCompareSymbols = newSymbols;
-            // Data changed but symbols same — just update series data in-place
+
+            let savedFrom = null, savedTo = null;
+            try {
+                const vr = chart.timeScale().getVisibleRange();
+                if (vr) { savedFrom = vr.from; savedTo = vr.to; }
+            } catch(e) {}
+
+            chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
+
             comparisonSeries.forEach(cs => {
                 const s = cData.series.find(s => s.symbol === cs.symbol);
                 if (s) cs.series.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
             });
-            // Rebuild mergedTimeAxis and processedData so xToDate maps correctly
-            // (different indices have different trading calendars)
+            // rebuild merged axis because indices have different trading calendars
             buildMergedTimeAxis(cData);
-            let longest = cData.series[0].points;
-            for (const s of cData.series) {
-                if (s.points.length > longest.length) longest = s.points;
+            processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
+
+            if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
+                isProgrammaticRangeChange = true;
+                let fromIdx = 0;
+                for (let i = 0; i < mergedTimeAxis.length; i++) {
+                    if (mergedTimeAxis[i] >= savedFrom) { fromIdx = i; break; }
+                }
+                let toIdx = mergedTimeAxis.length - 1;
+                for (let i = mergedTimeAxis.length - 1; i >= 0; i--) {
+                    if (mergedTimeAxis[i] <= savedTo) { toIdx = i; break; }
+                }
+                chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
             }
-            processedData = longest.map(p => ({ time: p.time, close: p.pct }));
+            chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
+            if (savedFrom && savedTo) {
+                setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+            }
             return;
         }
 
+        // detect whether this is a full mode switch or incremental index add/remove
         const isFirstLoad = _lastCompareSymbols === '';
         const prevSymbolSet = new Set(_lastCompareSymbols.split(',').filter(Boolean));
         const nextSymbolSet = new Set(newSymbols.split(',').filter(Boolean));
@@ -951,14 +989,14 @@
 
         legendSeries = [];
         if (isCompleteChange) {
-            // Mode switch or first load — full atomic render
             await tick();
             renderComparisonFull(cData);
         } else {
-            // Incremental index add/remove — use updateComparisonSeries to keep view stable
             updateComparisonSeries(cData);
         }
     });
+
+    // --- CLEANUP ---
 
     onDestroy(() => {
         chartContainer?.removeEventListener('wheel', handleWheel);
@@ -968,6 +1006,9 @@
         observer?.disconnect();
         chart?.remove();
     });
+
+    // --- SECTOR ABBREVIATIONS (for legend labels) ---
+
     const SECTOR_ABBREV = {
         'Technology': 'Tech',
         'Financial Services': 'Financials',
@@ -987,7 +1028,6 @@
 <div bind:this={chartContainer} class="w-full h-full relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair">
 
     {#if compareData && compareData.series && compareData.series.length > 0}
-        <!-- Comparison mode legend -->
         <div class="absolute top-4 left-6 z-[110] flex gap-4 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
             {#each legendSeries as s}
                 <div class="flex items-center gap-1.5">
@@ -997,7 +1037,6 @@
             {/each}
         </div>
     {:else}
-        <!-- Stock mode legend -->
         <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
             <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-green-500/60 rounded-[1px]"></div><div class="w-2 h-3 bg-red-500/60 rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest ml-1">OHLC</span></div>
             <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>

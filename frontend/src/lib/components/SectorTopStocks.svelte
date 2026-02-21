@@ -1,10 +1,4 @@
-<!--
-  SectorTopStocks
-  ===============
-  Top 3 / bottom 3 stocks within the currently selected sector, across all
-  selected indices. Mirrors RankingPanel's exact visual style for consistency.
-  Answers: "Tech is up 77%... which specific names drove that?"
--->
+<!-- top/bottom performing stocks within selected sector across indices -->
 
 <script>
     import { browser } from '$app/environment';
@@ -20,6 +14,8 @@
 
     let indices   = $derived($sectorSelectedIndices);
     let sector    = $derived($selectedSector);
+
+    // --- INDEX DISPLAY CONFIG ---
 
     const INDEX_COLORS = {
         sp500:     '#e2e8f0',
@@ -38,12 +34,16 @@
         nifty50:   'NIFTY',
     };
 
+    // --- PERIOD LABEL ---
+
     function fmtDate(d) {
         if (!d) return '';
         const dt = new Date(d + 'T00:00:00');
         return `${dt.getDate()} ${dt.toLocaleDateString('en-GB',{month:'short'})} '${String(dt.getFullYear()).slice(2)}`;
     }
     let isCustom = $derived(!!(customRange && customRange.start));
+
+    // --- DATA LOADING ---
 
     async function load(sec, period, range, idxList) {
         if (!browser || !sec || !idxList || idxList.length === 0) return;
@@ -59,13 +59,12 @@
         }
         if (cache[cacheKey]) { data = cache[cacheKey]; return; }
         loading = true;
-        // Keep existing data visible until new fetch completes (prevents flash)
         try {
             const ctrl = new AbortController();
             const t    = setTimeout(() => ctrl.abort(), 12000);
             const res  = await fetch(url, { signal: ctrl.signal });
             clearTimeout(t);
-            if (res.ok) { const d = await res.json(); cache[cacheKey] = d; data = d; } // atomic swap
+            if (res.ok) { const d = await res.json(); cache[cacheKey] = d; data = d; }
         } catch {}
         loading = false;
     }
@@ -77,8 +76,8 @@
         return Math.max(...items.map(i => Math.abs(i.return_pct || 0)), 1);
     }
 
+    // switch to the stock's parent index and focus it in the sidebar
     function navigateToStock(symbol, indexKey) {
-        // Switch to the index that stock belongs to, then select the symbol
         marketIndex.set(indexKey);
         selectedSymbol.set(symbol);
         requestFocusSymbol(symbol);
@@ -93,7 +92,7 @@
 
 <div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
 
-    <!-- Header — mirrors RankingPanel exactly -->
+    <!-- header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
         <div class="flex items-center gap-2">
             <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
@@ -130,7 +129,7 @@
             {@const botMax = getSubsetMax(data.bottom)}
 
             <div class="flex-1 flex flex-col min-h-0 gap-1">
-                <!-- Top performers -->
+                <!-- top performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 5) as item}
                         {@const width = (Math.abs(item.return_pct) / topMax) * 80}
@@ -158,7 +157,7 @@
 
                 <div class="flex-none h-px bg-white/10 mx-2"></div>
 
-                <!-- Bottom performers -->
+                <!-- bottom performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 5) as item}
                         {@const width = (Math.abs(item.return_pct) / botMax) * 80}

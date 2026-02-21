@@ -1,3 +1,4 @@
+-- ranks sectors by average stock return across all indices over all available data
 WITH AllData AS ({union}),
 PerSymbol AS (
     SELECT symbol, sector,

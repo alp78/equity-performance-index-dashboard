@@ -1,3 +1,4 @@
+-- ranks all symbols in an index by return percent over all available data
 WITH Ranked AS (
     SELECT symbol,
         FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC

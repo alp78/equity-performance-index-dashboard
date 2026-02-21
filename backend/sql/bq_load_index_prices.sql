@@ -1,3 +1,4 @@
+-- loads raw index price data with currency and exchange from a BigQuery table
 SELECT symbol, name, currency, exchange,
     CAST(trade_date AS DATE) as trade_date,
     CAST(open_price AS FLOAT64) as open,

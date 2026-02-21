@@ -1,3 +1,5 @@
+<!-- main dashboard page: orchestrates stock view, overview mode, and sector comparison
+     mode (cross-index and single-index sub-modes) with period/range controls -->
 <script>
     import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, overviewSelectedIndices, INDEX_TICKER_MAP, loadIndexOverviewData, isSectorMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, selectedSectors, sectorsByIndex } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
@@ -11,6 +13,8 @@
     import IndustryBreakdown from '$lib/components/IndustryBreakdown.svelte';
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
     import { onMount, untrack } from 'svelte';
+
+    // --- FETCH UTILITIES ---
 
     async function fetchWithTimeout(url, timeout = 10000, opts = {}) {
         const controller = new AbortController();
@@ -26,11 +30,13 @@
         }
     }
 
-    let fullStockData = $state([]);
-    let allComparisonData = $state(null); // Full data for all 6 indices
-    let comparisonData = $state(null);  // Filtered to selected indices
+    // --- STOCK & COMPARISON STATE ---
 
-    // Derive filtered comparison data from selection
+    let fullStockData = $state([]);
+    let allComparisonData = $state(null);
+    let comparisonData = $state(null);
+
+    // filter allComparisonData down to only the user-selected indices
     $effect(() => {
         const selected = $overviewSelectedIndices;
         const all = allComparisonData;
@@ -50,19 +56,22 @@
     let inOverview = $derived($isOverviewMode);
     let inSectors = $derived($isSectorMode);
 
-    // Sector comparison data
+    // --- SECTOR COMPARISON STATE ---
+
     let sectorComparisonData = $state(null);
     let sectorDataLoading = $state(false);
     let _lastSectorFetchKey = '';
 
-    // Pre-computed sector series: ALL sectors for ALL indices (instant switching cache)
+    // precomputed sector series for all indices — enables instant switching without network calls
     let allSectorSeries = $state(null);
     let allSectorSeriesLoading = $state(false);
 
-    // Per-industry series cache: { sector: { indexKey: { industry: [{time, pct, n}] } } }
+    // per-industry series cache keyed by { sector: { indexKey: { industry: [{time, pct, n}] } } }
     let industrySeriesCache = $state({});
     let industrySeriesLoading = $state(false);
     let _industrySeriesInflight = '';
+
+    // --- SECTOR DISPLAY CONSTANTS ---
 
     const SECTOR_INDEX_COLORS = {
         sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899',
@@ -73,7 +82,7 @@
         nikkei225: 'Nikkei 225', csi300: 'CSI 300', nifty50: 'Nifty 50',
     };
 
-    // Dynamic colors for single-index multi-sector mode
+    // palette and abbreviations for single-index multi-sector chart legends
     const SECTOR_PALETTE = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#3b82f6', '#f97316', '#84cc16', '#a855f7', '#14b8a6'];
     const SECTOR_ABBREV = {
         'Technology': 'Tech', 'Financial Services': 'Financials', 'Healthcare': 'Health',
@@ -89,6 +98,7 @@
         return SECTOR_PALETTE[(idx >= 0 ? idx : ALL_SECTORS.length) % SECTOR_PALETTE.length];
     }
 
+    // map sector/index keys to colors depending on analysis mode
     let sectorCompareColors = $derived((() => {
         if ($sectorAnalysisMode === 'single-index') {
             const colors = {};
@@ -98,6 +108,7 @@
         return SECTOR_INDEX_COLORS;
     })());
 
+    // map sector/index keys to display names depending on analysis mode
     let sectorCompareNames = $derived((() => {
         if ($sectorAnalysisMode === 'single-index') {
             return Object.fromEntries($selectedSectors.map(s => [s, SECTOR_ABBREV[s] || s]));
@@ -107,6 +118,9 @@
 
     let _sectorDataVersion = 0;
 
+    // --- SECTOR DATA LOADING ---
+
+    // fetch and cache all sector time series for every index at once
     async function preloadAllSectorSeries() {
         if (allSectorSeriesLoading || allSectorSeries) return;
         allSectorSeriesLoading = true;
@@ -118,7 +132,7 @@
                 const json = await res.json();
                 allSectorSeries = json.data || {};
 
-                // Retry pending indices after a delay
+                // retry any indices the backend was still computing
                 if (json.pending && json.pending.length > 0) {
                     setTimeout(async () => {
                         try {
@@ -135,7 +149,7 @@
                     }, 10000);
                 }
 
-                // Background pre-warm sub-component caches (fire-and-forget)
+                // pre-warm sub-component table caches in the background
                 if (json.ready && json.ready.length > 0) {
                     setTimeout(() => {
                         for (const idx of json.ready) {
@@ -148,16 +162,17 @@
         allSectorSeriesLoading = false;
     }
 
+    // fetch industry-level time series for a sector, merging into the cache
     async function loadIndustrySeries(sector, indices) {
         if (!sector || !indices || indices.length === 0) return;
-        // Check cache without triggering reactivity in calling $effect
+        // check cache without triggering reactivity in the calling $effect
         const cached = industrySeriesCache[sector];
         if (cached) {
             const missing = indices.filter(idx => !(idx in cached));
             if (missing.length === 0) return;
         }
         const key = `${sector}_${indices.join(',')}`;
-        if (_industrySeriesInflight === key) return;
+        if (_industrySeriesInflight === key) return; // deduplicate concurrent requests
         _industrySeriesInflight = key;
         industrySeriesLoading = true;
         try {
@@ -179,10 +194,9 @@
         _industrySeriesInflight = '';
     }
 
-    /**
-     * Compute a weighted average time series from selected industry series.
-     * Weight = stock_count (n) per industry per day.
-     */
+    // --- INDUSTRY SERIES COMPUTATION ---
+
+    // produce a weighted-average time series from selected industries (weight = stock count per day)
     function computeWeightedIndustrySeries(indexKey, sector, selectedInds) {
         const sectorCache = industrySeriesCache[sector];
         if (!sectorCache) return null;
@@ -215,10 +229,7 @@
         });
     }
 
-    /**
-     * Compute period return from a max-period time series.
-     * return = ((1 + endPct/100) / (1 + startPct/100) - 1) * 100
-     */
+    // compute return over a period by rebasing: ((1 + end%) / (1 + start%) - 1) * 100
     function computeFilteredReturn(series, period, customRng) {
         if (!series || series.length < 2) return null;
 
@@ -245,6 +256,9 @@
         return ((1 + endPct / 100) / (1 + startPct / 100) - 1) * 100;
     }
 
+    // --- SECTOR FETCH ORCHESTRATION ---
+
+    // resolve sector chart data from cache (fast path) or network (slow path)
     async function fetchSectorData(sector, indices, mode, industries, sectors) {
         if (!indices || indices.length === 0) return;
 
@@ -263,12 +277,9 @@
         const fetchKey = `${mode}_${sectorParam}_${indicesParam}_${industriesParam}`;
         if (fetchKey === _lastSectorFetchKey && sectorComparisonData) return;
 
-        // Force chart re-init when symbols stay the same but data source changes
-        // (e.g. single-index switching from stoxx50 to sp500 — sector names are the same)
-        const prevKey = _lastSectorFetchKey;
         _lastSectorFetchKey = fetchKey;
 
-        // --- Fast path: serve from allSectorSeries cache (no network call) ---
+        // fast path: serve from the preloaded allSectorSeries cache (no network)
         if (!industriesParam && allSectorSeries) {
             const series = [];
             let allHit = true;
@@ -304,10 +315,10 @@
             }
         }
 
-        // --- Fast path 2: industry filter active, serve from industrySeriesCache ---
+        // fast path 2: industry filter active — compute weighted series from industrySeriesCache
         if (industriesParam) {
             const sectorForIndustry = mode === 'cross-index' ? sector : null;
-            // Cross-index: filter the selected sector by industries across indices
+            // cross-index: blend selected industries per index
             if (mode === 'cross-index' && industrySeriesCache[sector]) {
                 const series = [];
                 let allHit = true;
@@ -326,8 +337,7 @@
                     return;
                 }
             }
-            // Single-index: for each selected sector, check if it matches the industry filter
-            // (industries are scoped to the active sector only; other sectors use unfiltered data)
+            // single-index: apply industry filter only to the active sector, others use unfiltered data
             if (mode === 'single-index') {
                 const idx = indices[0];
                 const activeSec = $selectedSector;
@@ -358,12 +368,12 @@
                     }
                 }
             }
-            // Cache miss — trigger background load for industry data
+            // cache miss — trigger background fetch so next call hits fast path
             const secToLoad = mode === 'cross-index' ? sector : $selectedSector;
             if (secToLoad) loadIndustrySeries(secToLoad, indices);
         }
 
-        // --- Slow path: network fetch (industry filter active or cache not ready) ---
+        // slow path: network fetch when caches cannot satisfy the request
         sectorDataLoading = true;
         try {
             let url = `${API_BASE_URL}/sector-comparison/data-v2?sector=${encodeURIComponent(sectorParam)}&indices=${indicesParam}&mode=${mode}&period=max`;
@@ -388,23 +398,26 @@
         sectorDataLoading = false;
     }
 
-    // React to sector/index/mode/industry changes
-    // Initialise to the persisted sector so the auto-clear doesn't fire on first load after refresh
+    // --- REACTIVE EFFECTS ---
+
+    // track previous values to detect real changes (initialised from persisted state to avoid false triggers on refresh)
     let _lastSelectedSector = $selectedSector;
     let _lastSectorIndex = ($singleSelectedIndex || [])[0] || '';
     let _lastMode = $sectorAnalysisMode;
+
+    // respond to sector/index/mode/industry selection changes
     $effect(() => {
         if (!inSectors) return;
         const sector = $selectedSector;
         const indices = $sectorAnalysisMode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
         const mode = $sectorAnalysisMode;
-        // On mode switch: track for future use
         if (mode !== _lastMode) {
             _lastMode = mode;
         }
         const industries = $selectedIndustries;
         let sectors = $selectedSectors;
 
+        // on index switch in single-index mode, save current sector selection and restore the saved one
         if (mode === 'single-index') {
             const currentIndex = (indices || [])[0] || '';
             if (currentIndex !== _lastSectorIndex) {
@@ -419,6 +432,7 @@
             }
         }
 
+        // clear industry filter when sector changes to avoid stale cross-sector industry selections
         if (sector !== _lastSelectedSector) {
             _lastSelectedSector = sector;
             if (industries.length > 0) {
@@ -427,18 +441,18 @@
             }
         }
 
-        // untrack: prevent cache reads inside fetchSectorData from re-triggering this effect
+        // untrack prevents cache reads inside fetchSectorData from re-triggering this effect
         untrack(() => fetchSectorData(sector, indices, mode, industries, sectors));
     });
 
-    // Preload all sector series when entering sector mode
+    // preload all sector series on first entry into sector mode
     $effect(() => {
         if (inSectors && !allSectorSeries && !allSectorSeriesLoading) {
             preloadAllSectorSeries();
         }
     });
 
-    // Pre-load industry series when sector changes (background, for instant industry toggling)
+    // eagerly load industry series in background so toggling industries is instant
     $effect(() => {
         if (!inSectors) return;
         const sector = $selectedSector;
@@ -446,11 +460,12 @@
         if (!sector) return;
         const indices = mode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
         if (!indices || indices.length === 0) return;
-        // untrack: prevent cache reads inside loadIndustrySeries from re-triggering this effect
         untrack(() => loadIndustrySeries(sector, indices));
     });
 
-    // Read from localStorage synchronously to prevent button flashing on load
+    // --- PERIOD / RANGE STATE ---
+
+    // read persisted period from localStorage synchronously to prevent button flash on load
     let initialPeriod = '1y';
     let initialRange = null;
 
@@ -473,7 +488,8 @@
     let customRange = $state(initialRange);
     let selectMode = $state(false);
 
-    // Name cache: plain object, not reactive
+    // --- METADATA & DISPLAY NAME ---
+
     let metadataCache = {};
     let metadataFetchId = 0;
     let lastFetchedSymbol = '';
@@ -482,16 +498,17 @@
 
     let currentSymbol = $derived($selectedSymbol);
     let ccy = $derived($currentCurrency);
-    // Track assets from the summary store — updates when index switches
     let assets = $derived($summaryData.assets || []);
 
-    // Display name: metadata → assets → empty (NOT symbol fallback — that's the h1's job)
+    // resolve display name: prefer metadata API, fall back to summary assets, then empty (h1 shows symbol)
     let displayName = $derived((() => {
         if (displayNameText) return displayNameText;
         const asset = assets.find(a => a.symbol === currentSymbol);
         if (asset && asset.name && asset.name !== 0 && asset.name !== currentSymbol) return asset.name;
         return '';
     })());
+
+    // --- PERIOD / RANGE HELPERS ---
 
     function fmtDate(d) {
         if (!d) return '';
@@ -506,7 +523,7 @@
         if (customRange) { customRange = null; selectMode = false; }
         const p = localStorage.getItem('chart_period') || '1y';
         currentPeriod = null;
-        setTimeout(() => { currentPeriod = p; }, 10);
+        setTimeout(() => { currentPeriod = p; }, 10); // force re-render even if same value
         localStorage.removeItem('chart_custom_range');
     }
 
@@ -533,10 +550,12 @@
         localStorage.removeItem('chart_period');
     }
 
+    // --- STOCK DATA LOADING ---
+
     async function fetchStockData(symbol) {
         if (!symbol) return;
 
-        // Fetch metadata — set displayNameText on success
+        // fire-and-forget metadata fetch to populate displayNameText
         const fetchId = ++metadataFetchId;
         fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 8000)
             .then(r => r.ok ? r.json() : null)
@@ -548,7 +567,7 @@
             })
             .catch(() => {});
 
-        // Retry up to 5 times with backoff — backend may be lazy-loading the index
+        // retry with backoff — backend may be lazy-loading the index on first request
         const maxRetries = 5;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
@@ -563,7 +582,6 @@
                         isIndexSwitching = false;
                         return;
                     }
-                    // Empty response = backend still loading index, retry
                     if (attempt < maxRetries - 1) {
                         await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
                         continue;
@@ -581,7 +599,9 @@
         isIndexSwitching = false;
     }
 
-    // Compute industry-filtered return overrides for SectorHeatmap (cross-index mode)
+    // --- INDUSTRY RETURN OVERRIDES FOR SUB-COMPONENTS ---
+
+    // cross-index mode: override heatmap cell values with industry-filtered returns
     let heatmapIndustryOverrides = $derived((() => {
         const industries = $selectedIndustries;
         if (!industries || industries.length === 0) return null;
@@ -603,7 +623,7 @@
         return Object.keys(overrides).length > 0 ? overrides : null;
     })());
 
-    // Compute industry-filtered return override for SectorRankings (single-index mode)
+    // single-index mode: override ranking values with industry-filtered returns
     let rankingsIndustryOverride = $derived((() => {
         const industries = $selectedIndustries;
         if (!industries || industries.length === 0) return null;
@@ -617,8 +637,10 @@
         return { [sector]: Math.round(ret * 10) / 10 };
     })());
 
+    // --- OVERVIEW DATA LOADING ---
+
+    // fetch all 6 indices at once — client-side filtering keeps it responsive
     async function fetchComparisonData() {
-        // Always fetch all 6 indices — filtering happens client-side
         const allTickers = Object.keys(INDEX_TICKER_MAP);
         try {
             const res = await fetchWithTimeout(
@@ -634,11 +656,13 @@
         }
     }
 
+    // --- LIFECYCLE & REACTIVE INDEX/SYMBOL WATCHERS ---
+
     onMount(async () => {
         lastFetchedIndex = $marketIndex;
         lastFetchedSymbol = $selectedSymbol;
 
-        // Keep-alive: ping backend every 4 minutes to prevent Cloud Run container recycling.
+        // ping backend every 4 min to prevent Cloud Run cold starts
         const keepAlive = setInterval(() => {
             fetch(`${API_BASE_URL}/health`).catch(() => {});
         }, 4 * 60 * 1000);
@@ -656,7 +680,7 @@
         return () => clearInterval(keepAlive);
     });
 
-    // React to INDEX changes (including overview)
+    // respond to index changes (stock mode, overview, or sectors)
     $effect(() => {
         const idx = $marketIndex;
         if (idx === lastFetchedIndex) return;
@@ -679,7 +703,7 @@
         }
     });
 
-    // React to SYMBOL changes (stock mode only)
+    // respond to symbol changes in stock mode
     $effect(() => {
         const sym = $selectedSymbol;
         if (!sym || $isOverviewMode) return;
@@ -690,9 +714,8 @@
         selectMode = false;
         fetchStockData(sym);
     });
-    // Index selection changes are handled by the $effect that derives
-    // comparisonData from allComparisonData + overviewSelectedIndices.
-    // No re-fetch needed.
+    // overview index checkbox changes are handled reactively by the $effect that
+    // derives comparisonData from allComparisonData + overviewSelectedIndices
 </script>
 
 <div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30">
@@ -703,6 +726,7 @@
 
     <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0">
 
+        <!-- header: title + period controls -->
         <header class="flex shrink-0 justify-between items-center z-10">
             <div>
                 {#if inOverview}
@@ -778,12 +802,12 @@
             </div>
         </header>
 
+        <!-- main content: chart + bottom panels, layout varies by mode -->
         <div class="{inSectors ? 'gap-4' : 'gap-6'} flex-1 flex flex-col min-h-0 min-w-0 z-0">
             <section class="{inSectors ? 'flex-[9]' : 'flex-[2]'} w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
                 {selectMode ? 'ring-2 ring-orange-500/30' : ''}" >
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
                 {#if inOverview}
-                    <!-- Comparison chart -->
                     {#if comparisonData && comparisonData.series && comparisonData.series.length > 0}
                         <div class="flex-1 min-h-0 min-w-0">
                             <Chart
@@ -806,7 +830,6 @@
                         </div>
                     {/if}
                 {:else if inSectors}
-                    <!-- Sector comparison chart -->
                     {#if sectorComparisonData && sectorComparisonData.series && sectorComparisonData.series.length > 0}
                         <div class="flex-1 min-h-0 min-w-0">
                             <Chart
@@ -861,8 +884,8 @@
                 {/if}
             </section>
 
+            <!-- bottom panels: vary by mode -->
             {#if inOverview}
-                <!-- Overview: Index Performance Table -->
                 <div class="flex-1 min-h-0">
                     <IndexPerformanceTable {currentPeriod} {customRange} />
                 </div>

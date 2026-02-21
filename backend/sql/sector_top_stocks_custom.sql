@@ -1,3 +1,4 @@
+-- returns top stocks by return within a sector for a custom date range
 WITH Filtered AS (
     SELECT symbol, name, sector, close, trade_date
     FROM {table}

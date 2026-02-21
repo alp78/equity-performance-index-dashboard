@@ -1,5 +1,5 @@
+-- returns normalized percent-change time series with forward-fill for selected index symbols
 WITH
--- 1. Raw data per symbol
 raw AS (
     SELECT symbol,
            strftime(trade_date, '%Y-%m-%d') as time,
@@ -10,7 +10,6 @@ raw AS (
       AND close IS NOT NULL AND close > 0
 ),
 
--- 2. Per-symbol base price (first close)
 bases AS (
     SELECT symbol,
            FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY time) as base_close
@@ -18,7 +17,6 @@ bases AS (
     QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time) = 1
 ),
 
--- 3. Per-symbol normalized % change + raw close
 per_sym AS (
     SELECT r.symbol, r.time, r.close, r.volume,
            ((r.close - b.base_close) / b.base_close) * 100 as pct
@@ -26,7 +24,6 @@ per_sym AS (
     JOIN bases b ON r.symbol = b.symbol
 ),
 
--- 4. Unified timeline across ALL selected symbols
 all_dates AS (
     SELECT DISTINCT time FROM per_sym ORDER BY time
 ),
@@ -34,20 +31,17 @@ all_symbols AS (
     SELECT DISTINCT symbol FROM per_sym
 ),
 
--- 5. Full grid: every symbol x every date
 grid AS (
     SELECT s.symbol, d.time
     FROM all_symbols s CROSS JOIN all_dates d
 ),
 
--- 6. Left join actual data onto grid
 with_gaps AS (
     SELECT g.symbol, g.time, p.close, p.volume, p.pct
     FROM grid g
     LEFT JOIN per_sym p ON g.symbol = p.symbol AND g.time = p.time
 ),
 
--- 7. Forward-fill close, pct per symbol; zero-fill volume
 filled AS (
     SELECT symbol, time,
            LAST_VALUE(close IGNORE NULLS) OVER (

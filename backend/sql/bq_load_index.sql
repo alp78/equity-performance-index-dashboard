@@ -1,3 +1,4 @@
+-- loads raw stock data with sector and industry from a BigQuery index table
 SELECT symbol, name, sector, industry,
     CAST(trade_date AS DATE) as trade_date,
     CAST(open_price AS FLOAT64) as open,
