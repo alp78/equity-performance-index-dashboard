@@ -54,13 +54,14 @@
         return `${dt.getDate()} ${dt.toLocaleDateString('en-GB', { month: 'short' })} '${String(dt.getFullYear()).slice(2)}`;
     }
 
+    let isCustom = $derived(!!(customRange && customRange.start));
+    let periodTag = $derived(isCustom ? 'CUSTOM' : (currentPeriod || '1y').toUpperCase());
+
     function headerLabel(period, range) {
         if (range && range.start && range.end) return `${fmtDate(range.start)} → ${fmtDate(range.end)}`;
         if (!period) return '1Y';
         return period.toUpperCase();
     }
-    let isCustom = $derived(!!(customRange && customRange.start));
-    let periodTag = $derived(isCustom ? 'CUSTOM' : (currentPeriod || '1y').toUpperCase());
 
     async function load(period, range) {
         if (!browser) return;
@@ -87,22 +88,20 @@
 
     $effect(() => { load(currentPeriod, customRange); });
 
+    // Sorted by period return descending
     let sortedStats = $derived(
         stats.filter(s => INDEX_META[s.symbol])
              .sort((a, b) => (b.period_return_pct || 0) - (a.period_return_pct || 0))
     );
-
-    // Build a rank map: symbol -> rank index (0-5)
     let rankMap = $derived(
         Object.fromEntries(sortedStats.map((s, i) => [s.symbol, i]))
     );
-
-    // All 6 symbols always rendered, positioned by rank
     let allStats = $derived(
         stats.filter(s => INDEX_META[s.symbol])
     );
 
-    const COL = [13, 11, 10, 11, 8, 11, 9, 9, 18]; // % widths
+    // Column widths: Index | Exchange | Hours | Price | Last Day | YTD | 52W Range | Return | Vol
+    const COL = [13, 10, 10, 11, 9, 9, 17, 11, 10];
 
     function fmt(val, decimals = 2) {
         if (val == null || isNaN(val)) return '—';
@@ -115,7 +114,7 @@
     }
     function fmtCompact(val) {
         if (val == null) return '—';
-        if (val >= 10000) return (val / 1000).toFixed(0) + 'k';
+        if (val >= 10000) return (val / 1000).toFixed(1) + 'k';
         return val.toLocaleString(undefined, { maximumFractionDigits: 0 });
     }
     function rangePosition(current, low, high) {
@@ -136,20 +135,20 @@
         {/if}
     </div>
 
-    <!-- Grid header -->
+    <!-- Column headers: Index | Exchange | Hours | Price | Last Day | YTD | 52W Range | Return | Vol -->
     <div class="grid-header flex items-center text-white/20 uppercase tracking-wider font-black px-2 flex-shrink-0">
         <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left">Index</div>
         <div style="width:{COL[1]}%" class="px-1 text-left">Exchange</div>
         <div style="width:{COL[2]}%" class="px-1 text-right">Hours <span class="text-white/10 font-normal">(CET)</span></div>
-        <div style="width:{COL[3]}%" class="px-1 text-right">PERIOD <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
-        <div style="width:{COL[4]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
-        <div style="width:{COL[5]}%" class="px-1 text-right">Current Price</div>
-        <div style="width:{COL[6]}%" class="px-1 text-right">Last Day</div>
-        <div style="width:{COL[7]}%" class="px-1 text-right">YTD</div>
-        <div style="width:{COL[8]}%" class="px-1 text-center">52W Range</div>
+        <div style="width:{COL[3]}%" class="px-1 text-right">Current Price</div>
+        <div style="width:{COL[4]}%" class="px-1 text-right">Last Day</div>
+        <div style="width:{COL[5]}%" class="px-1 text-right">YTD</div>
+        <div style="width:{COL[6]}%" class="px-1 text-center">52W Range</div>
+        <div style="width:{COL[7]}%" class="px-1 text-right">RETURN <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
+        <div style="width:{COL[8]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
     </div>
 
-    <!-- Rows container — relative, rows absolutely positioned via translateY -->
+    <!-- Rows -->
     <div class="flex-1 min-h-0 overflow-hidden px-2 relative rows-container">
         {#each allStats as row (row.symbol)}
             {@const meta = INDEX_META[row.symbol] || {}}
@@ -188,45 +187,45 @@
                     {mkt.cet || '—'}
                 </div>
 
-                <!-- Period return -->
-                <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
-                    style:color="{row.period_return_pct >= 0 ? 'rgba(34,197,94,1)' : 'rgba(239,68,68,0.95)'}">
-                    {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
-                </div>
-
-                <!-- Volatility -->
-                <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
-                    {fmt(row.volatility_pct, 1)}%
-                </div>
-
                 <!-- Current Price -->
-                <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
+                <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
                     {fmtPrice(row.current_price, meta.ccy || '')}
                 </div>
 
                 <!-- Last Day -->
-                <div style="width:{COL[6]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
+                <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.daily_change_pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.85)'}">
                     {row.daily_change_pct >= 0 ? '+' : ''}{fmt(row.daily_change_pct)}%
                 </div>
 
                 <!-- YTD -->
-                <div style="width:{COL[7]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
+                <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.ytd_return_pct >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'}">
                     {row.ytd_return_pct >= 0 ? '+' : ''}{fmt(row.ytd_return_pct)}%
                 </div>
 
                 <!-- 52W Range -->
-                <div style="width:{COL[8]}%" class="px-1">
-                    <div class="flex items-center gap-1">
-                        <span class="range-num text-white/20 font-mono tabular-nums text-right" style="min-width:32px">{fmtCompact(row.low_52w)}</span>
-                        <div class="flex-1 range-track rounded-full relative overflow-hidden bg-white/[0.06]">
-                            <div class="absolute inset-y-0 left-0 rounded-full" style="width:100%;background:linear-gradient(to right,rgba(239,68,68,0.2),rgba(34,197,94,0.2))"></div>
-                            <div class="absolute top-1/2 range-dot rounded-full border-2 border-white/50"
-                                style="left:{pos}%;transform:translate(-50%,-50%);background:{meta.color};box-shadow:0 0 4px {meta.color}44"></div>
+                <div style="width:{COL[6]}%" class="px-1">
+                    <div class="flex items-center gap-1.5">
+                        <span class="range-num text-white/40 font-mono tabular-nums text-right font-bold" style="min-width:36px">{fmtCompact(row.low_52w)}</span>
+                        <div class="flex-1 range-track rounded-full relative overflow-hidden bg-white/[0.08]">
+                            <div class="absolute inset-y-0 left-0 rounded-full" style="width:100%;background:linear-gradient(to right,rgba(239,68,68,0.25),rgba(34,197,94,0.25))"></div>
+                            <div class="absolute top-1/2 range-dot rounded-full border-2 border-white/60"
+                                style="left:{pos}%;transform:translate(-50%,-50%);background:{meta.color};box-shadow:0 0 6px {meta.color}66"></div>
                         </div>
-                        <span class="range-num text-white/20 font-mono tabular-nums text-left" style="min-width:32px">{fmtCompact(row.high_52w)}</span>
+                        <span class="range-num text-white/40 font-mono tabular-nums text-left font-bold" style="min-width:36px">{fmtCompact(row.high_52w)}</span>
                     </div>
+                </div>
+
+                <!-- Return (period) -->
+                <div style="width:{COL[7]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
+                    style:color="{row.period_return_pct >= 0 ? 'rgba(34,197,94,1)' : 'rgba(239,68,68,0.95)'}">
+                    {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
+                </div>
+
+                <!-- Volatility -->
+                <div style="width:{COL[8]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
+                    {fmt(row.volatility_pct, 1)}%
                 </div>
             </div>
         {/each}
@@ -247,7 +246,7 @@
     .hdr-period { font-size: 9px; }
     .grid-header { font-size: 9px; padding-top: 4px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.03); }
     .grid-header > div { white-space: nowrap; }
-    .period-tag { font-size: 7px; letter-spacing: 0.05em; font-weight: 400; }
+    .period-tag { font-size: 7px; font-weight: 400; }
     .color-bar { width: 3px; height: 16px; }
     .flag-icon { font-size: 0.95rem !important; }
     .idx-name { font-size: 12px; }
@@ -257,7 +256,7 @@
     .val-text { font-size: 12px; }
     .period-text { font-size: 13px; }
     .hours-text { font-size: 11px; }
-    .range-num { font-size: 9px; }
+    .range-num { font-size: 10px; }
     .range-track { height: 4px; }
     .range-dot { width: 7px; height: 7px; }
 
@@ -277,7 +276,7 @@
         .val-text { font-size: 13px; }
         .period-text { font-size: 14px; }
         .hours-text { font-size: 12px; }
-        .range-num { font-size: 10px; }
+        .range-num { font-size: 11px; }
         .range-track { height: 5px; }
         .range-dot { width: 8px; height: 8px; }
     }
@@ -298,7 +297,7 @@
         .val-text { font-size: 15px; }
         .period-text { font-size: 16px; }
         .hours-text { font-size: 14px; }
-        .range-num { font-size: 11px; }
+        .range-num { font-size: 12px; }
         .range-track { height: 7px; }
         .range-dot { width: 10px; height: 10px; }
     }

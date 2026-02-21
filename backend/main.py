@@ -832,6 +832,12 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
                         WHERE symbol = ? AND trade_date >= ?
                         ORDER BY trade_date ASC LIMIT 1
                     """, [sym, start]).fetchone()
+                elif period.lower() == 'max':
+                    period_start = local_db.execute("""
+                        SELECT close FROM index_prices
+                        WHERE symbol = ?
+                        ORDER BY trade_date ASC LIMIT 1
+                    """, [sym]).fetchone()
                 else:
                     days = intervals.get(period.lower(), 365)
                     period_start = local_db.execute(f"""
@@ -870,6 +876,15 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
                             SELECT (close / LAG(close) OVER (ORDER BY trade_date) - 1) as daily_ret
                             FROM index_prices
                             WHERE symbol = ? AND trade_date >= '{start}' AND trade_date <= '{end}'
+                        ) WHERE daily_ret IS NOT NULL
+                    """
+                    vol_row = local_db.execute(vol_query, [sym]).fetchone()
+                elif period.lower() == 'max':
+                    vol_query = """
+                        SELECT STDDEV(daily_ret) * SQRT(252) as volatility FROM (
+                            SELECT (close / LAG(close) OVER (ORDER BY trade_date) - 1) as daily_ret
+                            FROM index_prices
+                            WHERE symbol = ?
                         ) WHERE daily_ret IS NOT NULL
                     """
                     vol_row = local_db.execute(vol_query, [sym]).fetchone()
@@ -951,6 +966,245 @@ async def get_index_price_single(symbol: str, period: str = "max"):
 
     except Exception as e:
         print(f"Index price single error ({symbol}): {e}")
+        return []
+
+
+@app.get("/sector-comparison/data")
+async def get_sector_comparison_data(sector: str = "Technology", indices: str = "", period: str = "max"):
+    """
+    Sector % change time series per index for the sector comparison chart.
+    Returns normalized % change (avg of stocks in sector) per index.
+    indices: comma-separated index keys (e.g. "sp500,stoxx50")
+    """
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list or not sector:
+        return {"series": [], "sector": sector}
+
+    cache_key = f"sector_compare_{sector}_{','.join(sorted(index_list))}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+
+    try:
+        series = []
+        for idx in index_list:
+            if not ensure_index_loaded(idx):
+                continue
+            table = f"prices_{idx}"
+
+            with db_lock:
+                if period.lower() == "max":
+                    df = local_db.execute(f"""
+                        WITH sector_stocks AS (
+                            SELECT symbol, strftime(trade_date, '%Y-%m-%d') as time, CAST(close AS FLOAT) as close
+                            FROM {table}
+                            WHERE sector = ? AND sector IS NOT NULL
+                        ),
+                        daily_avg AS (
+                            SELECT time, AVG(close) as avg_close
+                            FROM sector_stocks
+                            GROUP BY time
+                            ORDER BY time ASC
+                        )
+                        SELECT time, avg_close as close FROM daily_avg
+                    """, [sector]).df()
+                else:
+                    days = intervals.get(period.lower(), 365)
+                    df = local_db.execute(f"""
+                        WITH sector_stocks AS (
+                            SELECT symbol, strftime(trade_date, '%Y-%m-%d') as time, CAST(close AS FLOAT) as close
+                            FROM {table}
+                            WHERE sector = ? AND sector IS NOT NULL
+                              AND trade_date >= CURRENT_DATE - INTERVAL '{days} days'
+                        ),
+                        daily_avg AS (
+                            SELECT time, AVG(close) as avg_close
+                            FROM sector_stocks
+                            GROUP BY time
+                            ORDER BY time ASC
+                        )
+                        SELECT time, avg_close as close FROM daily_avg
+                    """, [sector]).df()
+
+            if df.empty or len(df) < 2:
+                continue
+
+            closes = df['close'].values
+            times = df['time'].values
+            base = closes[0] if closes[0] != 0 else 1
+
+            points = []
+            for i in range(len(closes)):
+                points.append({
+                    "time": str(times[i]),
+                    "pct": float(((closes[i] - base) / base) * 100),
+                    "close": float(closes[i]),
+                })
+
+            # Get display name for index
+            idx_key_map = {v: k for k, v in INDEX_TICKER_TO_KEY.items()}
+            series.append({
+                "indexKey": idx,
+                "points": points,
+            })
+
+        result = {"series": series, "sector": sector}
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Sector comparison data error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"series": [], "sector": sector}
+
+
+@app.get("/sector-comparison/sectors")
+async def get_available_sectors(indices: str = ""):
+    """
+    List all unique sectors across selected indices with stock counts.
+    """
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list:
+        index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
+    if not index_list:
+        return []
+
+    cache_key = f"available_sectors_{','.join(sorted(index_list))}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    try:
+        tables = []
+        for idx in index_list:
+            if ensure_index_loaded(idx):
+                tables.append(f"prices_{idx}")
+        if not tables:
+            return []
+
+        union = " UNION ALL ".join([f"SELECT DISTINCT sector FROM {t} WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')" for t in tables])
+
+        with db_lock:
+            df = local_db.execute(f"""
+                SELECT DISTINCT sector FROM ({union}) ORDER BY sector ASC
+            """).df()
+
+        result = df['sector'].tolist() if not df.empty else []
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Available sectors error: {e}")
+        return []
+
+
+@app.get("/sector-comparison/table")
+async def get_sector_comparison_table(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+    """
+    Sector performance table: each sector's return per index for the given period.
+    Returns sorted by average return descending.
+    """
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list:
+        index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
+    if not index_list:
+        return []
+
+    use_custom = bool(start and end)
+    cache_key = f"sector_table_{','.join(sorted(index_list))}_{start}_{end}" if use_custom else f"sector_table_{','.join(sorted(index_list))}_{period}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    intervals = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+    days = intervals.get(period.lower(), 365)
+
+    try:
+        all_data = {}  # sector -> { indexKey: return_pct }
+
+        for idx in index_list:
+            if not ensure_index_loaded(idx):
+                continue
+            table = f"prices_{idx}"
+
+            with db_lock:
+                if use_custom:
+                    df = local_db.execute(f"""
+                        WITH Filtered AS (
+                            SELECT symbol, sector, close, trade_date
+                            FROM {table}
+                            WHERE trade_date >= '{start}' AND trade_date <= '{end}'
+                              AND sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
+                        ),
+                        PerSymbol AS (
+                            SELECT symbol, sector,
+                                FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                                LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                            FROM Filtered
+                        )
+                        SELECT sector, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as return_pct,
+                            COUNT(DISTINCT symbol) as stock_count
+                        FROM PerSymbol WHERE rn = 1
+                        GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+                    """).df()
+                else:
+                    df = local_db.execute(f"""
+                        WITH Filtered AS (
+                            SELECT symbol, sector, close, trade_date
+                            FROM {table}
+                            WHERE trade_date >= CURRENT_DATE - INTERVAL '{days} days'
+                              AND sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
+                        ),
+                        PerSymbol AS (
+                            SELECT symbol, sector,
+                                FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
+                                LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
+                                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+                            FROM Filtered
+                        )
+                        SELECT sector, AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as return_pct,
+                            COUNT(DISTINCT symbol) as stock_count
+                        FROM PerSymbol WHERE rn = 1
+                        GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+                    """).df()
+
+            if df.empty:
+                continue
+
+            for _, row in df.iterrows():
+                sector = row['sector']
+                if sector not in all_data:
+                    all_data[sector] = {}
+                all_data[sector][idx] = {
+                    "return_pct": round(float(row['return_pct']), 2),
+                    "stock_count": int(row['stock_count']),
+                }
+
+        # Build result sorted by avg return
+        result = []
+        for sector, per_index in all_data.items():
+            returns = [v['return_pct'] for v in per_index.values()]
+            avg_return = sum(returns) / len(returns) if returns else 0
+            result.append({
+                "sector": sector,
+                "avg_return_pct": round(avg_return, 2),
+                "indices": per_index,
+            })
+
+        result.sort(key=lambda x: x['avg_return_pct'], reverse=True)
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Sector comparison table error: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 

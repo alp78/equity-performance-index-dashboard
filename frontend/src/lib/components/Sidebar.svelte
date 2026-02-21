@@ -4,7 +4,7 @@
 
 <script>
     import { onMount } from 'svelte';
-    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest, isOverviewMode, overviewSelectedIndices, loadIndexOverviewData, indexOverviewData, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER } from '$lib/stores.js';
+    import { selectedSymbol, summaryData, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, INDEX_GROUPS, focusSymbolRequest, isOverviewMode, overviewSelectedIndices, loadIndexOverviewData, indexOverviewData, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER, isSectorMode, sectorSelectedIndices, selectedSector } from '$lib/stores.js';
 
     let searchQuery = $state('');
     let dropdownOpen = $state(false);
@@ -18,8 +18,9 @@
     let error = $derived($summaryData.error);
     let currentIndex = $derived($marketIndex);
     let ccy = $derived($currentCurrency);
-    let currentConfig = $derived($isOverviewMode ? { shortLabel: 'INDEX OVERVIEW', currencyCode: '%', currency: '' } : INDEX_CONFIG[currentIndex]);
+    let currentConfig = $derived($isOverviewMode ? { shortLabel: 'GLOBAL INDEX OVERVIEW', currencyCode: '%', currency: '' } : $isSectorMode ? { shortLabel: 'SECTOR ANALYSIS', currencyCode: '%', currency: '' } : INDEX_CONFIG[currentIndex]);
     let inOverview = $derived($isOverviewMode);
+    let inSectors = $derived($isSectorMode);
 
     const INDEX_FLAGS = {
         stoxx50:   'fi fi-eu',
@@ -58,6 +59,50 @@
         openSectors = new Set();
         loadIndexOverviewData();
     }
+
+    function switchToSectors() {
+        marketIndex.set('sectors');
+        dropdownOpen = false;
+        searchQuery = '';
+        openSectors = new Set();
+    }
+
+    function toggleSectorIndex(key) {
+        sectorSelectedIndices.update(list => {
+            if (list.includes(key)) {
+                return list.length > 1 ? list.filter(k => k !== key) : list;
+            }
+            return [...list, key];
+        });
+    }
+
+    // Sector list for the sidebar (fetched once)
+    let availableSectors = $state([]);
+    let sectorsLoaded = $state(false);
+
+    async function loadAvailableSectors() {
+        if (sectorsLoaded) return;
+        try {
+            const allKeys = Object.keys(INDEX_CONFIG).join(',');
+            const res = await fetch(`${import('$lib/config.js').then(m => m.API_BASE_URL)}/sector-comparison/sectors?indices=${allKeys}`);
+            if (res.ok) availableSectors = await res.json();
+        } catch {}
+        sectorsLoaded = true;
+    }
+
+    // Fetch sectors on entering sector mode
+    $effect(() => {
+        if (inSectors && !sectorsLoaded) {
+            // Dynamic import to get API_BASE_URL
+            import('$lib/config.js').then(({ API_BASE_URL }) => {
+                const allKeys = Object.keys(INDEX_CONFIG).join(',');
+                fetch(`${API_BASE_URL}/sector-comparison/sectors?indices=${allKeys}`)
+                    .then(r => r.ok ? r.json() : [])
+                    .then(data => { availableSectors = data; sectorsLoaded = true; })
+                    .catch(() => { sectorsLoaded = true; });
+            });
+        }
+    });
 
     // Build sector → industry → stocks hierarchy
     let sectorTree = $derived((() => {
@@ -205,7 +250,12 @@
                             <circle cx="12" cy="12" r="10" stroke-width="1.5"/>
                             <path stroke-width="1.5" d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
                         </svg>
-                        <span class="text-base font-black text-white/85">INDEX OVERVIEW</span>
+                        <span class="text-base font-black text-white/85">GLOBAL INDEX OVERVIEW</span>
+                    {:else if inSectors}
+                        <svg class="w-6 h-6 text-bloom-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-width="1.5" d="M4 6h4v4H4zM10 6h4v4h-4zM16 6h4v4h-4zM4 14h4v4H4zM10 14h4v4h-4zM16 14h4v4h-4z"/>
+                        </svg>
+                        <span class="text-base font-black text-white/85">SECTOR ANALYSIS</span>
                     {:else}
                         <span class="{INDEX_FLAGS[currentIndex] || ''} fis rounded-sm" style="font-size: 1.4rem;"></span>
                         <span class="text-base font-black text-white/85">{currentConfig?.shortLabel}</span>
@@ -220,7 +270,7 @@
 
             {#if dropdownOpen}
                 <div class="absolute top-full left-0 right-0 mt-2 bg-[#16161e] border border-white/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
-                    <!-- INDEX OVERVIEW option -->
+                    <!-- GLOBAL INDEX OVERVIEW option -->
                     <button
                         onclick={switchToOverview}
                         class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all border-b border-white/10
@@ -231,9 +281,26 @@
                                 <circle cx="12" cy="12" r="10" stroke-width="1.5"/>
                                 <path stroke-width="1.5" d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/>
                             </svg>
-                            <span class="text-[15px] font-bold text-white/80">INDEX OVERVIEW</span>
+                            <span class="text-[15px] font-bold text-white/80">GLOBAL INDEX OVERVIEW</span>
                         </div>
                         {#if inOverview}
+                            <span class="w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
+                        {/if}
+                    </button>
+
+                    <!-- SECTOR ANALYSIS option -->
+                    <button
+                        onclick={switchToSectors}
+                        class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all border-b border-white/10
+                        {inSectors ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
+                    >
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5 text-bloom-accent/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-width="1.5" d="M4 6h4v4H4zM10 6h4v4h-4zM16 6h4v4h-4zM4 14h4v4H4zM10 14h4v4h-4zM16 14h4v4h-4z"/>
+                            </svg>
+                            <span class="text-[15px] font-bold text-white/80">SECTOR ANALYSIS</span>
+                        </div>
+                        {#if inSectors}
                             <span class="w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
                         {/if}
                     </button>
@@ -244,7 +311,7 @@
                             <button
                                 onclick={() => switchIndex(idx.key)}
                                 class="w-full flex items-center justify-between px-4 py-3.5 hover:bg-white/5 transition-all
-                                {idx.key === currentIndex && !inOverview ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
+                                {idx.key === currentIndex && !inOverview && !inSectors ? 'bg-bloom-accent/10 border-l-[3px] border-l-bloom-accent' : 'border-l-[3px] border-l-transparent'}"
                             >
                                 <div class="flex items-center gap-3">
                                     <span class="{INDEX_FLAGS[idx.key] || ''} fis rounded-sm" style="font-size: 1.3rem;"></span>
@@ -253,7 +320,7 @@
                                 <div class="flex items-center gap-2 pr-2">
                                     <span class="text-[13px] font-bold text-cyan-400/80">{idx.currencyCode}</span>
                                     <span class="text-[16px] font-black text-cyan-400/60">{idx.currency}</span>
-                                    {#if idx.key === currentIndex && !inOverview}
+                                    {#if idx.key === currentIndex && !inOverview && !inSectors}
                                         <span class="ml-1 w-2 h-2 rounded-full bg-bloom-accent shadow-[0_0_6px_rgba(168,85,247,0.6)]"></span>
                                     {/if}
                                 </div>
@@ -264,8 +331,8 @@
             {/if}
         </div>
 
-        <!-- SEARCH + EXPAND/COLLAPSE (hidden in overview mode) -->
-        {#if !inOverview}
+        <!-- SEARCH + EXPAND/COLLAPSE (hidden in overview/sector mode) -->
+        {#if !inOverview && !inSectors}
             <div class="flex gap-2">
                 <div class="relative group flex-1">
                     <input type="text" bind:value={searchQuery} placeholder="Search symbol or name..."
@@ -294,8 +361,51 @@
     </div>
 
     <div bind:this={scrollContainer} class="flex-1 overflow-y-auto custom-scrollbar">
-        {#if inOverview}
-            <!-- INDEX OVERVIEW: checkboxes for comparison -->
+        {#if inSectors}
+            <!-- SECTOR ANALYSIS: sector selector + index checkboxes -->
+            <div class="p-4 space-y-4">
+                <!-- Sector selector -->
+                <div>
+                    <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-2">Select sector</div>
+                    <div class="space-y-1 max-h-[280px] overflow-y-auto custom-scrollbar">
+                        {#each (availableSectors.length > 0 ? availableSectors : ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate']) as sec}
+                            <button
+                                onclick={() => selectedSector.set(sec)}
+                                class="w-full text-left px-3 py-2 rounded-lg text-[12px] font-bold transition-all
+                                {$selectedSector === sec ? 'bg-bloom-accent/20 text-bloom-accent border border-bloom-accent/30' : 'text-white/50 hover:bg-white/5 hover:text-white/70 border border-transparent'}"
+                            >{sec}</button>
+                        {/each}
+                    </div>
+                </div>
+
+                <!-- Index checkboxes -->
+                <div>
+                    <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-2">Compare across indices</div>
+                    {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
+                        {@const isSelected = $sectorSelectedIndices.includes(key)}
+                        {@const colors = { sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899', nikkei225: '#f59e0b', csi300: '#ef4444', nifty50: '#22c55e' }}
+                        {@const color = colors[key] || '#8b5cf6'}
+                        <button
+                            onclick={() => toggleSectorIndex(key)}
+                            class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all
+                            {isSelected ? 'bg-white/[0.06] border border-white/10' : 'bg-transparent border border-transparent hover:bg-white/[0.03]'}"
+                        >
+                            <div class="w-3.5 h-3.5 rounded-sm border-2 flex items-center justify-center shrink-0 transition-all"
+                                style="border-color: {color}; background: {isSelected ? color : 'transparent'}">
+                                {#if isSelected}
+                                    <svg class="w-2.5 h-2.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                {/if}
+                            </div>
+                            <span class="{INDEX_FLAGS[key] || ''} fis rounded-sm" style="font-size: 1rem;"></span>
+                            <span class="text-[12px] font-bold text-white/70">{cfg.shortLabel}</span>
+                        </button>
+                    {/each}
+                </div>
+            </div>
+        {:else if inOverview}
+            <!-- GLOBAL INDEX OVERVIEW: checkboxes for comparison -->
             <div class="p-4 space-y-2">
                 <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-3">Select indices to compare</div>
                 {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
