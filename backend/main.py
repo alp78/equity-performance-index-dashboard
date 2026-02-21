@@ -94,7 +94,7 @@ INDEX_LOAD_STATUS: dict = {}
 LATEST_MARKET_DATA: dict = {}
 
 API_CACHE: dict = {}
-CACHE_TTL = 5
+CACHE_TTL = 1800
 
 
 def get_cached_response(cache_key):

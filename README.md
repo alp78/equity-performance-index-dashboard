@@ -28,7 +28,7 @@ Per-stock OHLCV candlestick chart with MA30/MA90 overlays, live price feed, top 
 
 **Ingestion** — A Cloud Function (`sync_stocks`) runs daily, fetching OHLCV data from Yahoo Finance for all index constituents. It performs per-symbol gap detection using exchange calendars (XNYS, XFRA, XLON, XTKS, XSHG, XBOM) to catch interior gaps, not just trailing ones. Data flows: Yahoo Finance → GCS (raw NDJSON staging) → BigQuery (persistent warehouse).
 
-**Backend** — A FastAPI app on Cloud Run hydrates per-index DuckDB in-memory tables from BigQuery on startup, with lazy loading per index. An API response cache (5s TTL) sits in front of DuckDB for hot-path queries. When the Cloud Function completes a sync, it fires a webhook that invalidates the cache and triggers a background DuckDB reload — non-blocking, so stale data is served during the refresh window. All SQL queries are extracted into standalone `.sql` files and loaded with a caching loader.
+**Backend** — A FastAPI app on Cloud Run hydrates per-index DuckDB in-memory tables from BigQuery on startup, with lazy loading per index. An API response cache (30min TTL) sits in front of DuckDB for hot-path queries. When the Cloud Function completes a sync, it fires a webhook that invalidates the cache and triggers a background DuckDB reload — non-blocking, so stale data is served during the refresh window. All SQL queries are extracted into standalone `.sql` files and loaded with a caching loader.
 
 **Real-time feed** — A background task polls Binance and Yahoo Finance every 10 seconds and broadcasts live prices via WebSocket to all connected clients.
 
