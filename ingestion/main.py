@@ -688,17 +688,25 @@ def sync_stocks(request):
         results["index_prices"] = f"Error: {e}"
 
     # --- Notify backend ---
-    if synced_indices:
-        api_url = getenv("BACKEND_API_URL")
-        if api_url:
-            for idx in synced_indices:
-                try:
-                    requests.post(f"{api_url}/api/admin/refresh/{idx}", timeout=(3.05, 5))
-                    logger.info(f"  Webhook → {idx}")
-                except requests.exceptions.ReadTimeout:
-                    pass
-                except Exception as e:
-                    logger.warning(f"  Webhook error {idx}: {e}")
+    api_url = getenv("BACKEND_API_URL")
+    if api_url:
+        for idx in synced_indices:
+            try:
+                requests.post(f"{api_url}/api/admin/refresh/{idx}", timeout=(3.05, 5))
+                logger.info(f"  Webhook → {idx}")
+            except requests.exceptions.ReadTimeout:
+                pass
+            except Exception as e:
+                logger.warning(f"  Webhook error {idx}: {e}")
+
+        if idx_count > 0:
+            try:
+                requests.post(f"{api_url}/api/admin/refresh/index_prices", timeout=(3.05, 5))
+                logger.info(f"  Webhook → index_prices")
+            except requests.exceptions.ReadTimeout:
+                pass
+            except Exception as e:
+                logger.warning(f"  Webhook error index_prices: {e}")
 
     summary = f"Done (target: {target_index}). {total_records} records. {json.dumps(results)}"
     logger.info(f"\n--- {summary} ---")

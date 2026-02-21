@@ -123,7 +123,7 @@
     }
 </script>
 
-<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-hidden shadow-2xl backdrop-blur-md">
+<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
 
     <!-- Header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
@@ -147,7 +147,7 @@
         </span>
     </div>
 
-    <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-hidden">
+    <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-y-auto overflow-x-hidden">
         {#if localRankings && localRankings.selected}
             {@const data = localRankings.selected}
             {@const topMax = getSubsetMax(data.top)}

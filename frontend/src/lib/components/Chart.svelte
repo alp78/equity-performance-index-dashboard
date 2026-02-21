@@ -6,7 +6,7 @@
 -->
 
 <script>
-    import { onMount, onDestroy } from 'svelte';
+    import { onMount, onDestroy, tick } from 'svelte';
     import { createChart, ColorType, CandlestickSeries, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts';
 
     let {
@@ -18,6 +18,9 @@
         onResetPeriod = null,
         onRangeSelect = null,
         compareData = null,
+        compareColors = null,
+        compareNames = null,
+        hideVolume = false,
     } = $props();
 
     let chartContainer;
@@ -29,7 +32,8 @@
 
     let chart;
     let candleSeries, areaSeries, volumeSeries, ma30Series, ma90Series;
-    let comparisonSeries = []; // Array of { symbol, series } for comparison mode
+    let comparisonSeries = []; // Array of { symbol, series } for comparison mode — NEVER reassign, only mutate (splice/push) so closure in subscribeCrosshairMove sees updates
+    let legendSeries = $state([]); // Reactive copy updated only after series are ready — avoids glitch
     let observer;
 
     let processedData = [];
@@ -355,7 +359,7 @@
             },
             rightPriceScale: {
                 borderVisible: false,
-                scaleMargins: { top: 0.1, bottom: 0.3 },
+                scaleMargins: { top: 0.1, bottom: 0.1 },
                 visible: true,
             },
             timeScale: {
@@ -426,19 +430,35 @@
         // --- TOOLTIP ---
         chart.subscribeCrosshairMove((param) => {
             if (!tooltip || !param.time || !param.point || param.point.x < 0) {
-                if (tooltip) tooltip.style.display = 'none';
+                if (tooltip) { tooltip.style.display = 'none'; tooltip.style.visibility = 'visible'; }
                 return;
             }
 
             // --- COMPARISON MODE TOOLTIP ---
             if (comparisonSeries.length > 0) {
                 let rows = '';
+                let hasAnyData = false;
                 for (const cs of comparisonSeries) {
-                    const sData = param.seriesData.get(cs.series);
-                    if (!sData) continue;
-                    const color = COMPARE_COLORS[cs.symbol] || '#8b5cf6';
-                    const name = COMPARE_NAMES[cs.symbol] || cs.symbol;
-                    const pct = sData.value;
+                    const sData = param.seriesData?.get(cs.series);
+                    // For missing data points (sparse series), carry forward last known value
+                    let pct = sData?.value;
+                    if (pct === undefined && compareData?.series) {
+                        const s = compareData.series.find(s => s.symbol === cs.symbol);
+                        if (s) {
+                            const timeStr = String(param.time);
+                            const pts = s.points;
+                            let last = undefined;
+                            for (let i = 0; i < pts.length; i++) {
+                                if (pts[i].time <= timeStr) last = pts[i].pct;
+                                else break;
+                            }
+                            pct = last;
+                        }
+                    }
+                    if (pct === undefined) continue;
+                    hasAnyData = true;
+                    const color = cs.color || COMPARE_COLORS[cs.symbol] || '#8b5cf6';
+                    const name = cs.name || COMPARE_NAMES[cs.symbol] || cs.symbol;
                     const sign = pct >= 0 ? '+' : '';
                     const pctColor = pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)';
                     // Find raw close from compareData
@@ -447,7 +467,7 @@
                         const s = compareData.series.find(s => s.symbol === cs.symbol);
                         if (s) {
                             const pt = s.points.find(p => p.time === param.time);
-                            if (pt) rawClose = pt.close.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
+                            if (pt && pt.close != null) rawClose = pt.close.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
                         }
                     }
                     rows += `
@@ -460,28 +480,42 @@
                     `;
                 }
 
-                // Aggregated volume
-                const vData = param.seriesData.get(volumeSeries);
-                const volRow = vData ? `
-                    <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
-                        <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
-                        <span class="text-xs text-purple-400 font-bold">${formatVolume(vData.value)}</span>
-                    </div>` : '';
+                // Aggregated volume for tooltip
+                let volTotal = 0;
+                if (compareData && compareData.series) {
+                    const timeStr = String(param.time);
+                    for (const s of compareData.series) {
+                        const pt = s.points.find(p => p.time === timeStr);
+                        if (pt && pt.volume) volTotal += pt.volume;
+                    }
+                }
 
+                if (!hasAnyData) {
+                    tooltip.style.display = 'none';
+                    return;
+                }
+
+                // Set HTML first so we can measure actual height
+                const tooltipWidth = 200;
+                tooltip.style.visibility = 'hidden';
                 tooltip.style.display = 'flex';
-                const tooltipWidth = 200, tooltipHeight = 60 + comparisonSeries.length * 50;
-                let left = param.point.x + 20, top = param.point.y + 20;
-                if (left + tooltipWidth > chartContainer.clientWidth) left = param.point.x - tooltipWidth - 20;
-                if (top + tooltipHeight > chartContainer.clientHeight) top = param.point.y - tooltipHeight - 20;
-                tooltip.style.left = `${left}px`;
-                tooltip.style.top = `${top}px`;
 
                 tooltip.innerHTML = `
                     <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[180px] gap-1.5 pointer-events-none">
                         <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
                         ${rows}
-                        ${volRow}
+                        ${volTotal > 0 ? `<div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5 mt-1"><span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span><span class="text-xs text-purple-400 font-bold">${formatVolume(volTotal)}</span></div>` : ''}
                     </div>`;
+                // Position after render so we know actual height
+                { const tw = tooltipWidth, th = tooltip.offsetHeight || 200;
+                  const cw = chartContainer.clientWidth, ch = chartContainer.clientHeight;
+                  let left = param.point.x + 20, top = param.point.y + 20;
+                  if (left + tw > cw) left = param.point.x - tw - 20;
+                  if (top + th > ch) top = Math.max(4, ch - th - 4);
+                  left = Math.max(4, Math.min(left, cw - tw - 4));
+                  tooltip.style.left = `${left}px`;
+                  tooltip.style.top = `${top}px`;
+                  tooltip.style.visibility = 'visible'; }
                 return;
             }
 
@@ -655,7 +689,7 @@
     });
 
     // --- REACTIVE: COMPARISON DATA ---
-    const COMPARE_COLORS = {
+    const _DEFAULT_COLORS = {
         '^GSPC':     '#e2e8f0',
         '^STOXX50E': '#2563eb',
         '^FTSE':     '#ec4899',
@@ -663,7 +697,7 @@
         '000300.SS': '#ef4444',
         '^NSEI':     '#22c55e',
     };
-    const COMPARE_NAMES = {
+    const _DEFAULT_NAMES = {
         '^GSPC':     'S&P 500',
         '^STOXX50E': 'STOXX 50',
         '^FTSE':     'FTSE 100',
@@ -671,10 +705,16 @@
         '000300.SS': 'CSI 300',
         '^NSEI':     'Nifty 50',
     };
+    let COMPARE_COLORS = $derived(compareColors || _DEFAULT_COLORS);
+    let COMPARE_NAMES = $derived(compareNames || _DEFAULT_NAMES);
 
     let _lastCompareSymbols = '';
 
     function setComparisonVolume(cData) {
+        if (hideVolume) {
+            volumeSeries.setData([]);
+            return;
+        }
         // Aggregate volume across all selected indices per date
         const volMap = new Map();
         for (const s of cData.series) {
@@ -713,7 +753,7 @@
         comparisonSeries.forEach(cs => {
             try { chart.removeSeries(cs.series); } catch(e) {}
         });
-        comparisonSeries = [];
+        comparisonSeries.splice(0);
 
         // Create all series
         cData.series.forEach((s) => {
@@ -721,7 +761,7 @@
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
             const lineSeries = chart.addSeries(LineSeries, {
                 color: color,
-                lineWidth: 2,
+                lineWidth: 1,
                 title: '',
                 lastValueVisible: false,
                 priceLineVisible: false,
@@ -735,10 +775,10 @@
             lineSeries.createPriceLine({
                 price: lastPct, color: color, lineWidth: 0,
                 lineStyle: LineStyle.Solid, axisLabelVisible: true,
-                title: name, lineVisible: false,
+                title: '', lineVisible: false,
             });
 
-            comparisonSeries.push({ symbol: s.symbol, series: lineSeries });
+            comparisonSeries.push({ symbol: s.symbol, series: lineSeries, color, name });
         });
 
         // Zero line
@@ -772,6 +812,13 @@
         } else {
             applyPeriodRange('1y');
         }
+
+        // Update reactive legend AFTER all series rendered — fully self-contained, no prop deps
+        legendSeries = comparisonSeries.map(cs => ({
+            symbol: cs.symbol,
+            color: COMPARE_COLORS[cs.symbol] || '#8b5cf6',
+            name: COMPARE_NAMES[cs.symbol] || cs.symbol
+        }));
     }
 
     function updateComparisonSeries(cData) {
@@ -792,7 +839,12 @@
         toRemove.forEach(cs => {
             try { chart.removeSeries(cs.series); } catch(e) {}
         });
-        comparisonSeries = comparisonSeries.filter(cs => newSymbols.has(cs.symbol));
+        // Mutate in-place: remove items not in newSymbols
+        for (let i = comparisonSeries.length - 1; i >= 0; i--) {
+            if (!newSymbols.has(comparisonSeries[i].symbol)) {
+                comparisonSeries.splice(i, 1);
+            }
+        }
 
         // Add new series
         cData.series.forEach((s) => {
@@ -801,7 +853,7 @@
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
             const lineSeries = chart.addSeries(LineSeries, {
                 color: color,
-                lineWidth: 2,
+                lineWidth: 1,
                 title: '',
                 lastValueVisible: false,
                 priceLineVisible: false,
@@ -815,10 +867,10 @@
             lineSeries.createPriceLine({
                 price: lastPct, color: color, lineWidth: 0,
                 lineStyle: LineStyle.Solid, axisLabelVisible: true,
-                title: name, lineVisible: false,
+                title: '', lineVisible: false,
             });
 
-            comparisonSeries.push({ symbol: s.symbol, series: lineSeries });
+            comparisonSeries.push({ symbol: s.symbol, series: lineSeries, color, name });
         });
 
         // Update processedData from longest series (in case it changed)
@@ -834,6 +886,13 @@
         // Update aggregated volume
         setComparisonVolume(cData);
 
+        // Sync reactive legend — fully self-contained
+        legendSeries = comparisonSeries.map(cs => ({
+            symbol: cs.symbol,
+            color: COMPARE_COLORS[cs.symbol] || '#8b5cf6',
+            name: COMPARE_NAMES[cs.symbol] || cs.symbol
+        }));
+
         // Restore the exact same visible time range to prevent drift
         if (savedFrom && savedTo) {
             isProgrammaticRangeChange = true;
@@ -842,7 +901,9 @@
         }
     }
 
-    $effect(() => {
+    let _lastCompareDataVersion = 0;
+
+    $effect(async () => {
         const cData = compareData;
         if (!cData || !cData.series || cData.series.length === 0) {
             if (chart) {
@@ -850,22 +911,43 @@
                     try { chart.removeSeries(cs.series); } catch(e) {}
                 });
             }
-            comparisonSeries = [];
+            comparisonSeries.splice(0);
             mergedTimeAxis = [];
             _lastCompareSymbols = '';
+            _lastCompareDataVersion = 0;
             return;
         }
 
         const newSymbols = cData.series.map(s => s.symbol).sort().join(',');
-        if (newSymbols === _lastCompareSymbols) return; // Same symbols, skip
+        const dataVersion = cData._version || 0;
+
+        if (newSymbols === _lastCompareSymbols && comparisonSeries.length > 0) {
+            // Same symbols — check if data actually changed
+            if (dataVersion === _lastCompareDataVersion && dataVersion > 0) return;
+            _lastCompareDataVersion = dataVersion;
+            _lastCompareSymbols = newSymbols;
+            // Data changed but symbols same — just update series data in-place
+            comparisonSeries.forEach(cs => {
+                const s = cData.series.find(s => s.symbol === cs.symbol);
+                if (s) cs.series.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
+            });
+            return;
+        }
 
         const isFirstLoad = _lastCompareSymbols === '';
+        const prevSymbolSet = new Set(_lastCompareSymbols.split(',').filter(Boolean));
+        const nextSymbolSet = new Set(newSymbols.split(',').filter(Boolean));
+        const isCompleteChange = isFirstLoad || [...prevSymbolSet].every(s => !nextSymbolSet.has(s));
         _lastCompareSymbols = newSymbols;
+        _lastCompareDataVersion = dataVersion;
 
-        if (isFirstLoad) {
+        legendSeries = [];
+        if (isCompleteChange) {
+            // Mode switch or first load — full atomic render
+            await tick();
             renderComparisonFull(cData);
         } else {
-            // Toggle: only add/remove the changed series, don't touch the view
+            // Incremental index add/remove — use updateComparisonSeries to keep view stable
             updateComparisonSeries(cData);
         }
     });
@@ -878,17 +960,31 @@
         observer?.disconnect();
         chart?.remove();
     });
+    const SECTOR_ABBREV = {
+        'Technology': 'Tech',
+        'Financial Services': 'Financials',
+        'Healthcare': 'Health',
+        'Industrials': 'Industls',
+        'Consumer Cyclical': 'Cons Cyc',
+        'Communication Services': 'Comms',
+        'Consumer Defensive': 'Cons Def',
+        'Basic Materials': 'Materials',
+        'Real Estate': 'Real Est',
+        'Energy': 'Energy',
+        'Utilities': 'Utilities'
+    };
+    function abbrevSector(name) { return SECTOR_ABBREV[name] || name; }
 </script>
 
-<div bind:this={chartContainer} class="w-full h-full min-h-[500px] relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="transition: none !important; cursor: crosshair;">
+<div bind:this={chartContainer} class="w-full h-full relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair">
 
     {#if compareData && compareData.series && compareData.series.length > 0}
         <!-- Comparison mode legend -->
         <div class="absolute top-4 left-6 z-[110] flex gap-4 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
-            {#each compareData.series as s}
+            {#each legendSeries as s}
                 <div class="flex items-center gap-1.5">
-                    <div class="w-4 h-[2px] rounded-full" style="background: {COMPARE_COLORS[s.symbol] || '#8b5cf6'}"></div>
-                    <span class="text-[9px] uppercase font-black tracking-widest" style="color: {COMPARE_COLORS[s.symbol] || '#8b5cf6'}">{COMPARE_NAMES[s.symbol] || s.symbol}</span>
+                    <div class="w-4 h-[2px] rounded-full" style="background: {s.color}"></div>
+                    <span class="text-[9px] uppercase font-black tracking-widest" style="color: {s.color}">{s.name}</span>
                 </div>
             {/each}
         </div>

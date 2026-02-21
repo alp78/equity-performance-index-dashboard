@@ -203,23 +203,23 @@
     onDestroy(() => socket?.close());
 </script>
 
-<div class="flex flex-col h-full bg-white/5 rounded-3xl p-5 border border-white/5 shadow-2xl backdrop-blur-md overflow-hidden">
+<div class="flex flex-col h-full bg-white/5 rounded-3xl p-5 border border-white/5 shadow-2xl backdrop-blur-md overflow-x-hidden">
 
-    <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
+    <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3 flex-shrink-0">
         <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">{resolvedTitle}</h3>
         <span class="text-[11px] font-black uppercase tracking-wider mt-1
             {hasRealSubtitle ? 'text-bloom-accent' : 'text-transparent select-none'}"
         >{hasRealSubtitle ? resolvedSubtitle : 'PLACEHOLDER'}</span>
     </div>
 
-    <div class="flex-1 grid grid-rows-3 gap-2">
+    <div class="flex-1 flex flex-col overflow-y-auto overflow-x-hidden gap-2 min-h-0">
         {#each resolvedSymbols as symbol}
             {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0 }}
             {@const status = getStatus(symbol, data)}
             {@const hasData = data.price > 0}
             {@const ccy = getCurrency(symbol)}
 
-            <div class="flex items-center justify-between group py-1">
+            <div class="flex items-center justify-between group py-1 flex-shrink-0">
                 <div class="flex flex-col">
                     {#if dynamicByIndex}
                         <button

@@ -143,7 +143,7 @@
         <div style="width:{COL[3]}%" class="px-1 text-right">Current Price</div>
         <div style="width:{COL[4]}%" class="px-1 text-right">Last Day</div>
         <div style="width:{COL[5]}%" class="px-1 text-right">YTD</div>
-        <div style="width:{COL[6]}%" class="px-1 text-center">52W Range</div>
+        <div style="width:{COL[6]}%" class="px-1 pl-6 text-right">52W Range</div>
         <div style="width:{COL[7]}%" class="px-1 text-right">RETURN <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
         <div style="width:{COL[8]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
     </div>
@@ -205,13 +205,13 @@
                 </div>
 
                 <!-- 52W Range -->
-                <div style="width:{COL[6]}%" class="px-1">
+                <div style="width:{COL[6]}%" class="px-1 pl-6">
                     <div class="flex items-center gap-1.5">
                         <span class="range-num text-white/40 font-mono tabular-nums text-right font-bold" style="min-width:36px">{fmtCompact(row.low_52w)}</span>
                         <div class="flex-1 range-track rounded-full relative overflow-hidden bg-white/[0.08]">
                             <div class="absolute inset-y-0 left-0 rounded-full" style="width:100%;background:linear-gradient(to right,rgba(239,68,68,0.25),rgba(34,197,94,0.25))"></div>
-                            <div class="absolute top-1/2 range-dot rounded-full border-2 border-white/60"
-                                style="left:{pos}%;transform:translate(-50%,-50%);background:{meta.color};box-shadow:0 0 6px {meta.color}66"></div>
+                            <div class="absolute top-1/2 range-tick bg-white/80"
+                                style="left:{pos}%;transform:translate(-50%,-50%)"></div>
                         </div>
                         <span class="range-num text-white/40 font-mono tabular-nums text-left font-bold" style="min-width:36px">{fmtCompact(row.high_52w)}</span>
                     </div>
@@ -258,7 +258,7 @@
     .hours-text { font-size: 11px; }
     .range-num { font-size: 10px; }
     .range-track { height: 4px; }
-    .range-dot { width: 7px; height: 7px; }
+    .range-tick { width: 2px; height: 10px; border-radius: 1px; }
 
     /* ---- Medium (220–320px) ---- */
     @container (min-height: 220px) {
@@ -278,7 +278,7 @@
         .hours-text { font-size: 12px; }
         .range-num { font-size: 11px; }
         .range-track { height: 5px; }
-        .range-dot { width: 8px; height: 8px; }
+        .range-tick { width: 2px; height: 12px; border-radius: 1px; }
     }
 
     /* ---- Large (>320px) ---- */
@@ -299,6 +299,6 @@
         .hours-text { font-size: 14px; }
         .range-num { font-size: 12px; }
         .range-track { height: 7px; }
-        .range-dot { width: 10px; height: 10px; }
+        .range-tick { width: 2px; height: 14px; border-radius: 1px; }
     }
 </style>

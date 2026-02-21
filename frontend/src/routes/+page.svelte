@@ -1,11 +1,14 @@
 <script>
-    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, overviewSelectedIndices, INDEX_TICKER_MAP, loadIndexOverviewData, isSectorMode, sectorSelectedIndices, selectedSector } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, overviewSelectedIndices, INDEX_TICKER_MAP, loadIndexOverviewData, isSectorMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, selectedSectors, sectorsByIndex } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
     import Chart from '$lib/components/Chart.svelte';
     import RankingPanel from '$lib/components/RankingPanel.svelte';
     import IndexPerformanceTable from '$lib/components/IndexPerformanceTable.svelte';
-    import SectorPerformanceTable from '$lib/components/SectorPerformanceTable.svelte';
+    import SectorHeatmap from '$lib/components/SectorHeatmap.svelte';
+    import SectorTopStocks from '$lib/components/SectorTopStocks.svelte';
+    import SectorRankings from '$lib/components/SectorRankings.svelte';
+    import IndustryBreakdown from '$lib/components/IndustryBreakdown.svelte';
     import LiveIndicators from '$lib/components/LiveIndicators.svelte';
     import { onMount, untrack } from 'svelte';
 
@@ -61,27 +64,78 @@
         nikkei225: 'Nikkei 225', csi300: 'CSI 300', nifty50: 'Nifty 50',
     };
 
-    async function fetchSectorData(sector, indices) {
-        if (!sector || !indices || indices.length === 0) return;
-        const fetchKey = `${sector}_${indices.join(',')}`;
+    // Dynamic colors for single-index multi-sector mode
+    const SECTOR_PALETTE = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#3b82f6', '#f97316', '#84cc16', '#a855f7', '#14b8a6'];
+    const SECTOR_ABBREV = {
+        'Technology': 'Tech', 'Financial Services': 'Financials', 'Healthcare': 'Health',
+        'Industrials': 'Industls', 'Consumer Cyclical': 'Cons Cyc',
+        'Communication Services': 'Comms', 'Consumer Defensive': 'Cons Def',
+        'Basic Materials': 'Materials', 'Real Estate': 'Real Est',
+        'Energy': 'Energy', 'Utilities': 'Utilities'
+    };
+    const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
+
+    function getSectorColor(sec) {
+        const idx = ALL_SECTORS.indexOf(sec);
+        return SECTOR_PALETTE[(idx >= 0 ? idx : ALL_SECTORS.length) % SECTOR_PALETTE.length];
+    }
+
+    let sectorCompareColors = $derived((() => {
+        if ($sectorAnalysisMode === 'single-index') {
+            const colors = {};
+            $selectedSectors.forEach(sec => { colors[sec] = getSectorColor(sec); });
+            return colors;
+        }
+        return SECTOR_INDEX_COLORS;
+    })());
+
+    let sectorCompareNames = $derived((() => {
+        if ($sectorAnalysisMode === 'single-index') {
+            return Object.fromEntries($selectedSectors.map(s => [s, SECTOR_ABBREV[s] || s]));
+        }
+        return SECTOR_INDEX_NAMES;
+    })());
+
+    let _sectorDataVersion = 0;
+
+    async function fetchSectorData(sector, indices, mode, industries, sectors) {
+        if (!indices || indices.length === 0) return;
+
+        let sectorParam, indicesParam, industriesParam;
+        if (mode === 'single-index') {
+            if (!sectors || sectors.length === 0) return;
+            sectorParam = sectors.join(',');
+            indicesParam = indices.join(',');
+        } else {
+            if (!sector) return;
+            sectorParam = sector;
+            indicesParam = indices.join(',');
+        }
+        industriesParam = industries && industries.length > 0 ? industries.join(',') : '';
+
+        const fetchKey = `${mode}_${sectorParam}_${indicesParam}_${industriesParam}`;
         if (fetchKey === _lastSectorFetchKey && sectorComparisonData) return;
+
+        // Force chart re-init when symbols stay the same but data source changes
+        // (e.g. single-index switching from stoxx50 to sp500 — sector names are the same)
+        const prevKey = _lastSectorFetchKey;
         _lastSectorFetchKey = fetchKey;
-        sectorComparisonData = null; // Clear to trigger chart re-render
+
         sectorDataLoading = true;
         try {
-            const res = await fetchWithTimeout(
-                `${API_BASE_URL}/sector-comparison/data?sector=${encodeURIComponent(sector)}&indices=${indices.join(',')}&period=max`,
-                12000
-            );
+            let url = `${API_BASE_URL}/sector-comparison/data-v2?sector=${encodeURIComponent(sectorParam)}&indices=${indicesParam}&mode=${mode}&period=max`;
+            if (industriesParam) url += `&industries=${encodeURIComponent(industriesParam)}`;
+            const res = await fetchWithTimeout(url, 15000);
             if (res.ok) {
                 const data = await res.json();
-                // Transform to comparison chart format: { series: [{symbol, points}] }
                 if (data.series && data.series.length > 0) {
+                    _sectorDataVersion++;
                     sectorComparisonData = {
                         series: data.series.map(s => ({
-                            symbol: s.indexKey, // Used as key by Chart
+                            symbol: s.symbol,
                             points: s.points,
-                        }))
+                        })),
+                        _version: _sectorDataVersion,
                     };
                 } else {
                     sectorComparisonData = null;
@@ -91,12 +145,45 @@
         sectorDataLoading = false;
     }
 
-    // React to sector/index changes
+    // React to sector/index/mode/industry changes
+    // Initialise to the persisted sector so the auto-clear doesn't fire on first load after refresh
+    let _lastSelectedSector = $selectedSector;
+    let _lastSectorIndex = ($singleSelectedIndex || [])[0] || '';
+    let _lastMode = $sectorAnalysisMode;
     $effect(() => {
         if (!inSectors) return;
         const sector = $selectedSector;
-        const indices = $sectorSelectedIndices;
-        fetchSectorData(sector, indices);
+        const indices = $sectorAnalysisMode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
+        const mode = $sectorAnalysisMode;
+        // On mode switch: track for future use
+        if (mode !== _lastMode) {
+            _lastMode = mode;
+        }
+        const industries = $selectedIndustries;
+        const sectors = $selectedSectors;
+
+        if (mode === 'single-index') {
+            const currentIndex = (indices || [])[0] || '';
+            if (currentIndex !== _lastSectorIndex) {
+                if (_lastSectorIndex) {
+                    sectorsByIndex.update(m => ({ ...m, [_lastSectorIndex]: sectors }));
+                }
+                _lastSectorIndex = currentIndex;
+                const saved = $sectorsByIndex[currentIndex];
+                selectedSectors.set(saved && saved.length > 0 ? saved : ALL_SECTORS);
+                return;
+            }
+        }
+
+        if (mode === 'cross-index' && sector !== _lastSelectedSector) {
+            _lastSelectedSector = sector;
+            if (industries.length > 0) {
+                selectedIndustries.set([]);
+                return;
+            }
+        }
+
+        fetchSectorData(sector, indices, mode, industries, sectors);
     });
 
     // Read from localStorage synchronously to prevent button flashing on load
@@ -324,10 +411,31 @@
                         {$overviewSelectedIndices.length} indices selected · Normalized % change
                     </span>
                 {:else if inSectors}
-                    <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">SECTOR ANALYSIS</h1>
-                    <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 text-white/30">
-                        <span class="text-bloom-accent">{$selectedSector}</span> · {$sectorSelectedIndices.length} indices · Normalized % change
-                    </span>
+                    {@const sectorFlagMap = { sp500: 'fi fi-us', stoxx50: 'fi fi-eu', ftse100: 'fi fi-gb', nikkei225: 'fi fi-jp', csi300: 'fi fi-cn', nifty50: 'fi fi-in' }}
+                    {#if $sectorAnalysisMode === 'single-index'}
+                        {@const idxKey = $singleSelectedIndex[0] || 'sp500'}
+                        {@const idxCfg = INDEX_CONFIG[idxKey]}
+                        <div class="flex items-center gap-4">
+                            <span class="{sectorFlagMap[idxKey] || ''} fis rounded-sm" style="font-size: 2.2rem;"></span>
+                            <div>
+                                <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{idxCfg?.shortLabel || idxKey}</h1>
+                                <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
+                                    {$selectedSectors.length} sectors · Normalized % change
+                                </span>
+                            </div>
+                        </div>
+                    {:else}
+                        <div>
+                            <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSector || 'SECTOR ANALYSIS'}</h1>
+                            <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
+                                {$sectorSelectedIndices.length} indices
+                                {#if $selectedIndustries.length > 0}
+                                    · <span class="text-orange-400/70">{$selectedIndustries.length} industries</span>
+                                {/if}
+                                · Normalized % change
+                            </span>
+                        </div>
+                    {/if}
                 {:else}
                     <h1 class="text-5xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
                     <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
@@ -370,9 +478,9 @@
             </div>
         </header>
 
-        <div class="flex-1 flex flex-col gap-6 min-h-0 min-w-0 z-0">
-            <section class="flex-[2] min-h-0 w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
-                {selectMode ? 'ring-2 ring-orange-500/30' : ''}">
+        <div class="{inSectors ? 'gap-4' : 'gap-6'} flex-1 flex flex-col min-h-0 min-w-0 z-0">
+            <section class="{inSectors ? 'flex-[9]' : 'flex-[2]'} w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
+                {selectMode ? 'ring-2 ring-orange-500/30' : ''}" >
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
                 {#if inOverview}
                     <!-- Comparison chart -->
@@ -408,8 +516,9 @@
                                 {customRange}
                                 currency="%"
                                 compareData={sectorComparisonData}
-                                compareColors={SECTOR_INDEX_COLORS}
-                                compareNames={SECTOR_INDEX_NAMES}
+                                compareColors={sectorCompareColors}
+                                compareNames={sectorCompareNames}
+                                hideVolume={true}
                                 onResetPeriod={handleResetPeriod}
                                 onRangeSelect={handleRangeSelect}
                             />
@@ -458,10 +567,25 @@
                     <IndexPerformanceTable {currentPeriod} {customRange} />
                 </div>
             {:else if inSectors}
-                <!-- Sector: Sector Performance Table -->
-                <div class="flex-1 min-h-0">
-                    <SectorPerformanceTable {currentPeriod} {customRange} />
-                </div>
+                {#if $sectorAnalysisMode === 'single-index'}
+                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0">
+                        <div class="col-span-5 min-h-0">
+                            <SectorRankings {currentPeriod} {customRange} />
+                        </div>
+                        <div class="col-span-7 min-h-0">
+                            <IndustryBreakdown {currentPeriod} {customRange} />
+                        </div>
+                    </div>
+                {:else}
+                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
+                        <div class="col-span-8 min-h-0">
+                            <SectorHeatmap {currentPeriod} {customRange} />
+                        </div>
+                        <div class="col-span-4 min-h-0">
+                            <SectorTopStocks {currentPeriod} {customRange} />
+                        </div>
+                    </div>
+                {/if}
             {:else}
                 <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
                     <div class="col-span-4 min-h-0 flex flex-col">

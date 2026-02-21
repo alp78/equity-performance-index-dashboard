@@ -100,7 +100,7 @@ export const INDEX_GROUPS = [
 const _storedIndex = browser ? (() => {
     try {
         const v = localStorage.getItem('dash_index');
-        return (v && (INDEX_CONFIG[v] || v === 'overview')) ? v : 'stoxx50';
+        return (v && (INDEX_CONFIG[v] || v === 'overview' || v === 'sectors')) ? v : 'stoxx50';
     } catch { return 'stoxx50'; }
 })() : 'stoxx50';
 
@@ -123,8 +123,70 @@ const _storedOverviewIndices = browser ? (() => {
 
 export const overviewSelectedIndices = writable(_storedOverviewIndices);
 
+// Sector mode stores
+// Cross-index mode: multiple indices selected
+const _storedSectorIndices = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_sector_indices');
+        return v ? JSON.parse(v) : ['sp500', 'stoxx50'];
+    } catch { return ['sp500', 'stoxx50']; }
+})() : ['sp500', 'stoxx50'];
+
+// Single-index mode: one index selected (separate store so they don't interfere)
+const _storedSingleIndex = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_single_index');
+        return v ? JSON.parse(v) : ['stoxx50'];
+    } catch { return ['stoxx50']; }
+})() : ['stoxx50'];
+
+const _storedSelectedSector = browser ? (() => {
+    try {
+        return localStorage.getItem('dash_selected_sector') || 'Technology';
+    } catch { return 'Technology'; }
+})() : 'Technology';
+
+export const sectorSelectedIndices = writable(_storedSectorIndices);  // cross-index mode
+export const singleSelectedIndex   = writable(_storedSingleIndex);    // single-index mode
+export const selectedSector = writable(_storedSelectedSector);
+
+// Sector analysis: mode, selected industries, multi-sector selection
+const _storedSectorMode = browser ? (() => {
+    try { return localStorage.getItem('dash_sector_mode') || 'cross-index'; } catch { return 'cross-index'; }
+})() : 'cross-index';
+
+const _storedSectorIndustries = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_sector_industries');
+        return v ? JSON.parse(v) : [];
+    } catch { return []; }
+})() : [];
+
+// All 11 sectors — used as default for unvisited indices
+export const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
+
+// Per-index sector selections: { sp500: [...], stoxx50: [...], ... }
+const _storedSectorsByIndex = browser ? (() => {
+    try {
+        const v = localStorage.getItem('dash_sectors_by_index');
+        return v ? JSON.parse(v) : {};
+    } catch { return {}; }
+})() : {};
+
+// Current index for single-index mode — default to stoxx50 on first visit
+const _currentSingleIndex = _storedSectorIndices[0] || 'stoxx50';
+
+// Load initial sectors for current index — default to ALL sectors for unvisited indices
+const _initialSectors = _storedSectorsByIndex[_currentSingleIndex] || ALL_SECTORS;
+
+export const sectorAnalysisMode = writable(_storedSectorMode);
+export const selectedIndustries = writable(_storedSectorIndustries);
+export const selectedSectors = writable(_initialSectors);
+export const sectorsByIndex = writable(_storedSectorsByIndex);
+
 // Derived: are we in overview mode?
 export const isOverviewMode = derived(marketIndex, ($idx) => $idx === 'overview');
+export const isSectorMode = derived(marketIndex, ($idx) => $idx === 'sectors');
 
 // Persist on change (after initial creation)
 if (browser) {
@@ -137,10 +199,31 @@ if (browser) {
     overviewSelectedIndices.subscribe(val => {
         try { localStorage.setItem('dash_overview_indices', JSON.stringify(val)); } catch {}
     });
+    sectorSelectedIndices.subscribe(val => {
+        try { localStorage.setItem('dash_sector_indices', JSON.stringify(val)); } catch {}
+    });
+    singleSelectedIndex.subscribe(val => {
+        try { localStorage.setItem('dash_single_index', JSON.stringify(val)); } catch {}
+    });
+    selectedSector.subscribe(val => {
+        try { localStorage.setItem('dash_selected_sector', val); } catch {}
+    });
+    sectorAnalysisMode.subscribe(val => {
+        try { localStorage.setItem('dash_sector_mode', val); } catch {}
+    });
+    selectedIndustries.subscribe(val => {
+        try { localStorage.setItem('dash_sector_industries', JSON.stringify(val)); } catch {}
+    });
+    selectedSectors.subscribe(val => {
+        try { localStorage.setItem('dash_selected_sectors', JSON.stringify(val)); } catch {}
+    });
+    sectorsByIndex.subscribe(val => {
+        try { localStorage.setItem('dash_sectors_by_index', JSON.stringify(val)); } catch {}
+    });
 }
 
 export const currentCurrency = derived(marketIndex, ($idx) =>
-    $idx === 'overview' ? '%' : (INDEX_CONFIG[$idx]?.currency || '$')
+    ($idx === 'overview' || $idx === 'sectors') ? '%' : (INDEX_CONFIG[$idx]?.currency || '$')
 );
 
 export const summaryData = writable({
