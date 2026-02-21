@@ -59,6 +59,11 @@
     let allSectorSeries = $state(null);
     let allSectorSeriesLoading = $state(false);
 
+    // Per-industry series cache: { sector: { indexKey: { industry: [{time, pct, n}] } } }
+    let industrySeriesCache = $state({});
+    let industrySeriesLoading = $state(false);
+    let _industrySeriesInflight = '';
+
     const SECTOR_INDEX_COLORS = {
         sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899',
         nikkei225: '#f59e0b', csi300: '#ef4444', nifty50: '#22c55e',
@@ -143,6 +148,102 @@
         allSectorSeriesLoading = false;
     }
 
+    async function loadIndustrySeries(sector, indices) {
+        if (!sector || !indices || indices.length === 0) return;
+        // Already fully cached for this sector?
+        if (industrySeriesCache[sector]) {
+            const missing = indices.filter(idx => !(idx in industrySeriesCache[sector]));
+            if (missing.length === 0) return;
+        }
+        const key = `${sector}_${indices.join(',')}`;
+        if (_industrySeriesInflight === key) return;
+        _industrySeriesInflight = key;
+        industrySeriesLoading = true;
+        try {
+            const res = await fetchWithTimeout(
+                `${API_BASE_URL}/sector-comparison/industry-series?sector=${encodeURIComponent(sector)}&indices=${indices.join(',')}`,
+                20000
+            );
+            if (res.ok) {
+                const json = await res.json();
+                if (json.data) {
+                    industrySeriesCache = {
+                        ...industrySeriesCache,
+                        [sector]: { ...(industrySeriesCache[sector] || {}), ...json.data },
+                    };
+                }
+            }
+        } catch {}
+        industrySeriesLoading = false;
+        _industrySeriesInflight = '';
+    }
+
+    /**
+     * Compute a weighted average time series from selected industry series.
+     * Weight = stock_count (n) per industry per day.
+     */
+    function computeWeightedIndustrySeries(indexKey, sector, selectedInds) {
+        const sectorCache = industrySeriesCache[sector];
+        if (!sectorCache) return null;
+        const indexData = sectorCache[indexKey];
+        if (!indexData) return null;
+
+        const selectedSeries = selectedInds.map(ind => indexData[ind]).filter(Boolean);
+        if (selectedSeries.length === 0) return null;
+        if (selectedSeries.length === 1) {
+            return selectedSeries[0].map(pt => ({ time: pt.time, pct: pt.pct }));
+        }
+
+        const timeMap = new Map();
+        for (const series of selectedSeries) {
+            for (const pt of series) {
+                const entry = timeMap.get(pt.time);
+                if (entry) {
+                    entry.weightedSum += pt.pct * pt.n;
+                    entry.totalWeight += pt.n;
+                } else {
+                    timeMap.set(pt.time, { weightedSum: pt.pct * pt.n, totalWeight: pt.n });
+                }
+            }
+        }
+
+        const times = [...timeMap.keys()].sort();
+        return times.map(t => {
+            const entry = timeMap.get(t);
+            return { time: t, pct: entry.totalWeight > 0 ? entry.weightedSum / entry.totalWeight : 0 };
+        });
+    }
+
+    /**
+     * Compute period return from a max-period time series.
+     * return = ((1 + endPct/100) / (1 + startPct/100) - 1) * 100
+     */
+    function computeFilteredReturn(series, period, customRng) {
+        if (!series || series.length < 2) return null;
+
+        let startIdx = 0;
+        let endIdx = series.length - 1;
+
+        if (customRng?.start) {
+            startIdx = series.findIndex(p => p.time >= customRng.start);
+            const endI = series.findIndex(p => p.time > customRng.end);
+            endIdx = endI >= 0 ? endI - 1 : series.length - 1;
+            if (startIdx < 0) startIdx = 0;
+        } else if (period && period.toLowerCase() !== 'max') {
+            const INTERVALS = { '1w': 7, '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '5y': 1825 };
+            const days = INTERVALS[period.toLowerCase()] || 365;
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - days);
+            const cutoffStr = cutoff.toISOString().slice(0, 10);
+            startIdx = series.findIndex(p => p.time >= cutoffStr);
+            if (startIdx < 0) startIdx = 0;
+        }
+
+        const startPct = series[startIdx].pct;
+        const endPct = series[endIdx].pct;
+        return ((1 + endPct / 100) / (1 + startPct / 100) - 1) * 100;
+    }
+
     async function fetchSectorData(sector, indices, mode, industries, sectors) {
         if (!indices || indices.length === 0) return;
 
@@ -202,6 +303,65 @@
             }
         }
 
+        // --- Fast path 2: industry filter active, serve from industrySeriesCache ---
+        if (industriesParam) {
+            const sectorForIndustry = mode === 'cross-index' ? sector : null;
+            // Cross-index: filter the selected sector by industries across indices
+            if (mode === 'cross-index' && industrySeriesCache[sector]) {
+                const series = [];
+                let allHit = true;
+                for (const idx of indices) {
+                    const weighted = computeWeightedIndustrySeries(idx, sector, industries);
+                    if (!weighted || weighted.length < 2) { allHit = false; break; }
+                    series.push({ symbol: idx, points: weighted });
+                }
+                if (allHit && series.length > 0) {
+                    _sectorDataVersion++;
+                    sectorComparisonData = {
+                        series: series.map(s => ({ symbol: s.symbol, points: s.points })),
+                        _version: _sectorDataVersion,
+                    };
+                    sectorDataLoading = false;
+                    return;
+                }
+            }
+            // Single-index: for each selected sector, check if it matches the industry filter
+            // (industries are scoped to the active sector only; other sectors use unfiltered data)
+            if (mode === 'single-index') {
+                const idx = indices[0];
+                const activeSec = $selectedSector;
+                const hasIndustryCache = industrySeriesCache[activeSec]?.[idx];
+                const hasSectorCache = allSectorSeries?.[idx];
+                if (hasIndustryCache && hasSectorCache) {
+                    const series = [];
+                    let allHit = true;
+                    for (const sec of sectors) {
+                        if (sec === activeSec) {
+                            const weighted = computeWeightedIndustrySeries(idx, sec, industries);
+                            if (!weighted || weighted.length < 2) { allHit = false; break; }
+                            series.push({ symbol: sec, points: weighted });
+                        } else {
+                            const secData = hasSectorCache[sec];
+                            if (!secData) continue;
+                            series.push({ symbol: sec, points: secData });
+                        }
+                    }
+                    if (allHit && series.length > 0) {
+                        _sectorDataVersion++;
+                        sectorComparisonData = {
+                            series: series.map(s => ({ symbol: s.symbol, points: s.points })),
+                            _version: _sectorDataVersion,
+                        };
+                        sectorDataLoading = false;
+                        return;
+                    }
+                }
+            }
+            // Cache miss — trigger background load for industry data
+            const secToLoad = mode === 'cross-index' ? sector : $selectedSector;
+            if (secToLoad) loadIndustrySeries(secToLoad, indices);
+        }
+
         // --- Slow path: network fetch (industry filter active or cache not ready) ---
         sectorDataLoading = true;
         try {
@@ -257,7 +417,7 @@
             }
         }
 
-        if (mode === 'cross-index' && sector !== _lastSelectedSector) {
+        if (sector !== _lastSelectedSector) {
             _lastSelectedSector = sector;
             if (industries.length > 0) {
                 selectedIndustries.set([]);
@@ -273,6 +433,17 @@
         if (inSectors && !allSectorSeries && !allSectorSeriesLoading) {
             preloadAllSectorSeries();
         }
+    });
+
+    // Pre-load industry series when sector changes (background, for instant industry toggling)
+    $effect(() => {
+        if (!inSectors) return;
+        const sector = $selectedSector;
+        const mode = $sectorAnalysisMode;
+        if (!sector) return;
+        const indices = mode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
+        if (!indices || indices.length === 0) return;
+        loadIndustrySeries(sector, indices);
     });
 
     // Read from localStorage synchronously to prevent button flashing on load
@@ -405,6 +576,42 @@
         isInitialLoading = false;
         isIndexSwitching = false;
     }
+
+    // Compute industry-filtered return overrides for SectorHeatmap (cross-index mode)
+    let heatmapIndustryOverrides = $derived((() => {
+        const industries = $selectedIndustries;
+        if (!industries || industries.length === 0) return null;
+        const sector = $selectedSector;
+        const sectorCache = industrySeriesCache[sector];
+        if (!sectorCache) return null;
+        const indices = $sectorSelectedIndices;
+        const overrides = {};
+        for (const idx of indices) {
+            const weighted = computeWeightedIndustrySeries(idx, sector, industries);
+            if (weighted && weighted.length >= 2) {
+                const ret = computeFilteredReturn(weighted, currentPeriod, customRange);
+                if (ret !== null) {
+                    if (!overrides[sector]) overrides[sector] = {};
+                    overrides[sector][idx] = Math.round(ret * 10) / 10;
+                }
+            }
+        }
+        return Object.keys(overrides).length > 0 ? overrides : null;
+    })());
+
+    // Compute industry-filtered return override for SectorRankings (single-index mode)
+    let rankingsIndustryOverride = $derived((() => {
+        const industries = $selectedIndustries;
+        if (!industries || industries.length === 0) return null;
+        const sector = $selectedSector;
+        const idx = ($singleSelectedIndex || [])[0];
+        if (!idx || !sector) return null;
+        const weighted = computeWeightedIndustrySeries(idx, sector, industries);
+        if (!weighted || weighted.length < 2) return null;
+        const ret = computeFilteredReturn(weighted, currentPeriod, customRange);
+        if (ret === null) return null;
+        return { [sector]: Math.round(ret * 10) / 10 };
+    })());
 
     async function fetchComparisonData() {
         // Always fetch all 6 indices — filtering happens client-side
@@ -659,7 +866,7 @@
                 {#if $sectorAnalysisMode === 'single-index'}
                     <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0">
                         <div class="col-span-5 min-h-0">
-                            <SectorRankings {currentPeriod} {customRange} />
+                            <SectorRankings {currentPeriod} {customRange} industryReturnOverride={rankingsIndustryOverride} />
                         </div>
                         <div class="col-span-7 min-h-0">
                             <IndustryBreakdown {currentPeriod} {customRange} />
@@ -668,7 +875,7 @@
                 {:else}
                     <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
                         <div class="col-span-8 min-h-0">
-                            <SectorHeatmap {currentPeriod} {customRange} />
+                            <SectorHeatmap {currentPeriod} {customRange} industryOverrides={heatmapIndustryOverrides} />
                         </div>
                         <div class="col-span-4 min-h-0">
                             <SectorTopStocks {currentPeriod} {customRange} />

@@ -7,9 +7,25 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { singleSelectedIndex, selectedSector } from '$lib/stores.js';
+    import { singleSelectedIndex, selectedSector, selectedIndustries } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
+
+    let selected = $derived(new Set($selectedIndustries || []));
+    let hasSelection = $derived(selected.size > 0);
+
+    function toggleIndustry(industry) {
+        selectedIndustries.update(list => {
+            if (list.includes(industry)) {
+                return list.filter(i => i !== industry);
+            }
+            return [...list, industry];
+        });
+    }
+
+    function clearIndustrySelection() {
+        selectedIndustries.set([]);
+    }
 
     let rows     = $state([]);
     let loading  = $state(false);
@@ -77,9 +93,19 @@
                 {sector || '—'}
             </span>
         </div>
-        {#if loading}
-            <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1 flex-shrink-0"></div>
-        {/if}
+        <div class="flex items-center gap-2">
+            {#if hasSelection}
+                <button
+                    class="text-[9px] font-black text-orange-400/80 uppercase tracking-wider hover:text-orange-300 transition-colors"
+                    onclick={clearIndustrySelection}
+                >
+                    Clear ({selected.size})
+                </button>
+            {/if}
+            {#if loading}
+                <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1 flex-shrink-0"></div>
+            {/if}
+        </div>
     </div>
 
     <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-4 py-2 flex flex-col justify-start gap-2"
@@ -92,25 +118,35 @@
         {/if}
 
         {#each rows as row (row.industry)}
-            {@const pos      = (row.return_pct ?? 0) >= 0}
-            {@const barColor = pos ? 'rgba(34,197,94,0.75)' : 'rgba(239,68,68,0.7)'}
-            {@const valColor = pos ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.85)'}
+            {@const pos        = (row.return_pct ?? 0) >= 0}
+            {@const barColor   = pos ? 'rgba(34,197,94,0.75)' : 'rgba(239,68,68,0.7)'}
+            {@const valColor   = pos ? 'rgba(34,197,94,0.9)'  : 'rgba(239,68,68,0.85)'}
+            {@const isSelected = selected.has(row.industry)}
+            {@const isDimmed   = hasSelection && !isSelected}
 
-            <div class="row-item w-full flex items-center gap-2 px-2 rounded-lg">
-                <span class="ind-name font-bold text-white/50 truncate flex-shrink-0" style="width:42%">
+            <button
+                class="row-item w-full flex items-center gap-2 px-2 rounded-lg cursor-pointer transition-all duration-150
+                    {isSelected ? 'bg-orange-500/10 ring-1 ring-orange-500/30' : 'hover:bg-white/[0.02]'}"
+                onclick={() => toggleIndustry(row.industry)}
+            >
+                <div class="w-1.5 h-1.5 rounded-full flex-shrink-0 transition-all duration-150"
+                     style="background:{isSelected ? '#f97316' : 'transparent'}; border: 1px solid {isSelected ? '#f97316' : 'rgba(255,255,255,0.1)'}"></div>
+                <span class="ind-name font-bold truncate flex-shrink-0 transition-opacity duration-150"
+                      style="width:40%; color:{isSelected ? 'rgba(255,255,255,0.9)' : isDimmed ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.5)'}">
                     {row.industry}
                 </span>
                 <div class="flex-1 flex items-center gap-2 min-w-0">
                     <div class="flex-1 h-[9px] rounded-full bg-white/[0.05] overflow-hidden min-w-0">
                         <div class="h-full rounded-full transition-all duration-500"
-                             style="width:{barW(row.return_pct)}; background:{barColor}"></div>
+                             style="width:{barW(row.return_pct)}; background:{barColor}; opacity:{isDimmed ? 0.3 : 1}"></div>
                     </div>
-                    <span class="ind-val font-black font-mono tabular-nums flex-shrink-0" style="color:{valColor}">
+                    <span class="ind-val font-black font-mono tabular-nums flex-shrink-0 transition-opacity duration-150"
+                          style="color:{valColor}; opacity:{isDimmed ? 0.4 : 1}">
                         {fmt(row.return_pct)}
                     </span>
                 </div>
                 <span class="ind-ct font-bold tabular-nums text-white/20 flex-shrink-0">{row.stock_count}</span>
-            </div>
+            </button>
         {/each}
     </div>
 </div>

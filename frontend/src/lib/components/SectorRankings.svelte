@@ -8,7 +8,7 @@
     import { API_BASE_URL } from '$lib/config.js';
     import { singleSelectedIndex, selectedSector, selectedSectors, INDEX_CONFIG } from '$lib/stores.js';
 
-    let { currentPeriod = '1y', customRange = null } = $props();
+    let { currentPeriod = '1y', customRange = null, industryReturnOverride = null } = $props();
 
     const ALL_SECTORS = [
         'Technology', 'Financial Services', 'Healthcare', 'Industrials',
@@ -84,12 +84,19 @@
 
     $effect(() => { load(currentPeriod, customRange, indexKey); });
 
-    // Filter to selected sectors only, maintain rank order
-    let filteredRows = $derived(
-        $selectedSectors && $selectedSectors.length > 0
+    // Filter to selected sectors only, apply industry overrides, re-sort
+    let filteredRows = $derived((() => {
+        let base = $selectedSectors && $selectedSectors.length > 0
             ? rows.filter(r => $selectedSectors.includes(r.sector))
-            : rows
-    );
+            : rows;
+        if (!industryReturnOverride) return base;
+        return base.map(row => {
+            if (industryReturnOverride[row.sector] !== undefined) {
+                return { ...row, return_pct: industryReturnOverride[row.sector], _filtered: true };
+            }
+            return row;
+        }).sort((a, b) => (b.return_pct ?? 0) - (a.return_pct ?? 0));
+    })());
 
     // If active sector is deselected, fall back to first in filtered list
     $effect(() => {
@@ -134,7 +141,7 @@
                 onclick={() => selectedSector.set(row.sector)}
             >
                 <div class="w-1.5 h-1.5 rounded-full flex-shrink-0 transition-all duration-150"
-                     style="background:{isActive ? color : 'rgba(255,255,255,0.15)'}"></div>
+                     style="background:{isActive ? color : 'rgba(255,255,255,0.15)'}; {row._filtered ? 'box-shadow: 0 0 4px rgba(249,115,22,0.6)' : ''}"></div>
                 <span class="sector-name font-bold flex-shrink-0 truncate text-left transition-colors duration-150"
                       style="width:38%; color:{isActive ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.45)'}">
                     {row.sector}

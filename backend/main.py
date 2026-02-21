@@ -92,6 +92,7 @@ db_lock = threading.Lock()
 
 INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
+INDUSTRY_SERIES_STATUS: dict = {}
 LATEST_MARKET_DATA: dict = {}
 
 API_CACHE: dict = {}
@@ -281,6 +282,43 @@ def _precompute_sector_series(index_key):
         print(f"  [{index_key}] Sector series precompute error: {e}")
 
 
+def _precompute_industry_series(index_key):
+    """Pre-compute normalized % change time series for ALL industries in an index.
+    Stores result in industry_series_{index_key} DuckDB table for instant lookups."""
+    table_name = f"prices_{index_key}"
+    series_table = f"industry_series_{index_key}"
+
+    INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": True}
+    t0 = time.time()
+
+    try:
+        precompute_sql = sql("precompute_all_industry_series.sql").replace("{table}", table_name)
+
+        with db_lock:
+            local_db.execute(f"DROP TABLE IF EXISTS {series_table}")
+            local_db.execute(f"CREATE TABLE {series_table} AS {precompute_sql}")
+            local_db.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{series_table}_sector ON {series_table} (sector)"
+            )
+            local_db.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{series_table}_si ON {series_table} (sector, industry)"
+            )
+
+        with db_lock:
+            row_count = local_db.execute(f"SELECT COUNT(*) FROM {series_table}").fetchone()[0]
+            industry_count = local_db.execute(
+                f"SELECT COUNT(DISTINCT industry) FROM {series_table}"
+            ).fetchone()[0]
+
+        INDUSTRY_SERIES_STATUS[index_key] = {"ready": True, "computing": False}
+        print(f"  [{index_key}] Industry series precomputed: {industry_count} industries, "
+              f"{row_count} rows in {time.time() - t0:.1f}s")
+
+    except Exception as e:
+        INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
+        print(f"  [{index_key}] Industry series precompute error: {e}")
+
+
 def _prewarm_sector_caches(index_key):
     """Pre-warm API_CACHE for /sector-comparison/table so Heatmap/Rankings load instantly."""
     table = f"prices_{index_key}"
@@ -382,6 +420,7 @@ def ensure_index_loaded(index_key):
         }
         if row_count > 0:
             _precompute_sector_series(index_key)
+            _precompute_industry_series(index_key)
             _prewarm_sector_caches(index_key)
 
     import concurrent.futures
@@ -395,6 +434,7 @@ async def refresh_single_index(index_key):
     print(f"Refreshing index: {index_key}")
     invalidate_index_cache(index_key)
     SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
+    INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
     loop = asyncio.get_event_loop()
     row_count = await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
@@ -403,6 +443,7 @@ async def refresh_single_index(index_key):
     }
     if row_count > 0:
         await loop.run_in_executor(None, lambda: _precompute_sector_series(index_key))
+        await loop.run_in_executor(None, lambda: _precompute_industry_series(index_key))
         await loop.run_in_executor(None, lambda: _prewarm_sector_caches(index_key))
     invalidate_index_cache(index_key)
 
@@ -1268,6 +1309,73 @@ async def get_all_sector_series(indices: str = ""):
             ready_indices.append(idx)
         except Exception as e:
             print(f"  all-series: error reading {idx}: {e}")
+            pending_indices.append(idx)
+
+    return {"data": result, "ready": ready_indices, "pending": pending_indices}
+
+
+@app.get("/sector-comparison/industry-series")
+async def get_industry_series(sector: str = "", indices: str = ""):
+    """Return pre-computed industry time series for ONE sector across requested indices.
+    Used by frontend for instant industry filtering."""
+    if not sector:
+        return {"data": {}, "ready": [], "pending": []}
+
+    if indices and indices.lower() != "all":
+        index_list = [i.strip() for i in indices.split(",")
+                      if i.strip() and i.strip() in MARKET_INDICES]
+    else:
+        index_list = [k for k, v in INDUSTRY_SERIES_STATUS.items() if v.get("ready")]
+
+    if not index_list:
+        return {"data": {}, "ready": [], "pending": []}
+
+    result = {}
+    ready_indices = []
+    pending_indices = []
+
+    for idx in index_list:
+        status = INDUSTRY_SERIES_STATUS.get(idx, {})
+        if not status.get("ready"):
+            pending_indices.append(idx)
+            continue
+
+        series_table = f"industry_series_{idx}"
+        try:
+            with db_lock:
+                df = local_db.execute(
+                    f"SELECT industry, time, pct, stock_count FROM {series_table} "
+                    f"WHERE sector = ? ORDER BY industry, time",
+                    [sector]
+                ).df()
+
+            if df.empty:
+                ready_indices.append(idx)
+                result[idx] = {}
+                continue
+
+            idx_data = {}
+            current_industry = None
+            points = []
+            for _, row in df.iterrows():
+                ind = row["industry"]
+                if ind != current_industry:
+                    if current_industry is not None:
+                        idx_data[current_industry] = points
+                    current_industry = ind
+                    points = []
+                points.append({
+                    "time": str(row["time"]),
+                    "pct": round(float(row["pct"]), 4),
+                    "n": int(row["stock_count"]),
+                })
+            if current_industry is not None:
+                idx_data[current_industry] = points
+
+            result[idx] = idx_data
+            ready_indices.append(idx)
+        except Exception as e:
+            print(f"  industry-series: error reading {idx}/{sector}: {e}")
             pending_indices.append(idx)
 
     return {"data": result, "ready": ready_indices, "pending": pending_indices}
