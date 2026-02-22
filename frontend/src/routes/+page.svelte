@@ -56,6 +56,14 @@
     let inOverview = $derived($isOverviewMode);
     let inSectors = $derived($isSectorMode);
 
+    // --- BACKEND STARTUP GATE ---
+    // poll /health until backend reports ready before loading any data
+
+    let backendReady = $state(false);
+    let startupProgress = $state('');
+    let startupDone = $state([]);
+    let startupLoading = $state([]);
+
     // --- SECTOR COMPARISON STATE ---
 
     let sectorComparisonData = $state(null);
@@ -502,6 +510,7 @@
     // respond to sector/index/mode/industry selection changes
     // gated on allSectorSeries so the chart waits for cached data instead of firing a slow-path API call
     $effect(() => {
+        if (!backendReady) return;
         if (!inSectors) return;
         if (!allSectorSeries) return;
         const sector = $selectedSector;
@@ -565,14 +574,14 @@
 
     // preload all sector series on first entry into sector mode
     $effect(() => {
-        if (inSectors && !allSectorSeries && !allSectorSeriesLoading) {
+        if (backendReady && inSectors && !allSectorSeries && !allSectorSeriesLoading) {
             preloadAllSectorSeries();
         }
     });
 
     // preload industry series when a sector is selected so toggles are instant from the start
     $effect(() => {
-        if (!inSectors) return;
+        if (!backendReady || !inSectors) return;
         const sector = $selectedSector;
         const mode = $sectorAnalysisMode;
         const indices = mode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
@@ -583,7 +592,7 @@
     // preload all stock returns for cross-index mode so top stocks update instantly.
     // re-fetches when period changes (custom ranges fall back to API in SectorTopStocks).
     $effect(() => {
-        if (!inSectors || $sectorAnalysisMode !== 'cross-index') return;
+        if (!backendReady || !inSectors || $sectorAnalysisMode !== 'cross-index') return;
         const period = currentPeriod;
         if (!period) return; // custom range — skip preload
         preloadTopStocks(period);
@@ -771,6 +780,24 @@
         lastFetchedIndex = $marketIndex;
         lastFetchedSymbol = $selectedSymbol;
 
+        // wait for backend to finish startup before loading any data
+        while (!backendReady) {
+            try {
+                const res = await fetchWithTimeout(`${API_BASE_URL}/health`, 5000);
+                if (res.ok) {
+                    const health = await res.json();
+                    startupProgress = health.progress || '';
+                    startupDone = health.done || [];
+                    startupLoading = health.loading || [];
+                    if (health.status === 'ready') {
+                        backendReady = true;
+                        break;
+                    }
+                }
+            } catch {}
+            await new Promise(r => setTimeout(r, 3000));
+        }
+
         // ping backend every 4 min to prevent Cloud Run cold starts
         const keepAlive = setInterval(() => {
             fetch(`${API_BASE_URL}/health`).catch(() => {});
@@ -794,6 +821,7 @@
 
     // respond to index changes (stock mode, overview, or sectors)
     $effect(() => {
+        if (!backendReady) return;
         const idx = $marketIndex;
         if (idx === lastFetchedIndex) return;
         lastFetchedIndex = idx;
@@ -824,6 +852,7 @@
 
     // respond to symbol changes in stock mode
     $effect(() => {
+        if (!backendReady) return;
         const sym = $selectedSymbol;
         if (!sym || $isOverviewMode || $isSectorMode) return;
         if (sym === lastFetchedSymbol) return;
@@ -837,6 +866,7 @@
     // derives comparisonData from allComparisonData + overviewSelectedIndices
 </script>
 
+{#if backendReady}
 <div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30">
 
     <div class="w-[460px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
@@ -1052,3 +1082,39 @@
         </div>
     </main>
 </div>
+{:else}
+<!-- startup loading screen — shown while backend is warming up -->
+<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] items-center justify-center font-sans">
+    <div class="flex flex-col items-center gap-6 max-w-md w-full px-8">
+        <div class="w-10 h-10 border-2 border-white/10 border-t-purple-500 rounded-full animate-spin"></div>
+        <div class="text-center">
+            <h2 class="text-lg font-black text-white/70 uppercase tracking-widest mb-1">Loading Data</h2>
+            <p class="text-xs text-white/30 font-bold uppercase tracking-wider">{startupProgress || 'Connecting...'}</p>
+        </div>
+        {#if startupDone.length > 0}
+            {@const parts = startupProgress.split('/')}
+            {@const pctDone = parts.length === 2 ? (Number(parts[0]) / Number(parts[1]) * 100) : 0}
+            <div class="w-full">
+                <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
+                    <div class="h-full bg-purple-500 rounded-full transition-all duration-500"
+                         style="width: {pctDone}%"></div>
+                </div>
+                <div class="mt-4 max-h-48 overflow-y-auto space-y-1">
+                    {#each startupLoading as item}
+                        <div class="flex items-center gap-2 text-[10px] font-bold text-orange-400/70 uppercase tracking-wider">
+                            <div class="w-2 h-2 border border-orange-400/50 border-t-orange-400 rounded-full animate-spin flex-shrink-0"></div>
+                            {item}
+                        </div>
+                    {/each}
+                    {#each startupDone.slice(-6) as item}
+                        <div class="flex items-center gap-2 text-[10px] font-bold text-white/20 uppercase tracking-wider">
+                            <div class="w-2 h-2 rounded-full bg-green-500/40 flex-shrink-0"></div>
+                            {item}
+                        </div>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+    </div>
+</div>
+{/if}

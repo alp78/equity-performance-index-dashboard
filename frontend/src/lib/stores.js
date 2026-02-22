@@ -137,9 +137,9 @@ const _storedSingleIndex = browser ? (() => {
 
 const _storedSelectedSector = browser ? (() => {
     try {
-        return sessionStorage.getItem('dash_selected_sector') || 'Technology';
-    } catch { return 'Technology'; }
-})() : 'Technology';
+        return sessionStorage.getItem('dash_selected_sector') || 'Basic Materials';
+    } catch { return 'Basic Materials'; }
+})() : 'Basic Materials';
 
 export const sectorSelectedIndices = writable(_storedSectorIndices);
 export const singleSelectedIndex   = writable(_storedSingleIndex);
@@ -156,7 +156,7 @@ const _storedSectorIndustries = browser ? (() => {
     } catch { return []; }
 })() : [];
 
-export const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
+export const ALL_SECTORS = ['Basic Materials', 'Communication Services', 'Consumer Cyclical', 'Consumer Defensive', 'Energy', 'Financial Services', 'Healthcare', 'Industrials', 'Real Estate', 'Technology', 'Utilities'];
 
 // per-index sector checkbox state: { sp500: [...], stoxx50: [...] }
 const _storedSectorsByIndex = browser ? (() => {

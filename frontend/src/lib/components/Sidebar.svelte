@@ -82,8 +82,10 @@
     let _lastEffectSector = '';
     let _lastEffectMode = '';
     // per-mode selected sector so switching modes doesn't overwrite the other mode's selection
-    let _crossSector = $selectedSector || 'Technology';
-    let _singleSector = 'Technology';
+    let _crossSector = $selectedSector || 'Basic Materials';
+    let _singleSector = $selectedSector || 'Basic Materials';
+    // true when user has never explicitly navigated to sector mode this session
+    let _sectorDefaultNeeded = !sessionStorage.getItem('dash_sector_visited');
     let sectorPanelOpen = $state(new Set());
     // cache: { compositeKey: [{industry, total}] }
     let allSectorIndustries = $state({});
@@ -401,7 +403,20 @@
                 const allKeys = Object.keys(INDEX_CONFIG).join(',');
                 fetch(`${API_BASE_URL}/sector-comparison/sectors?indices=${allKeys}`)
                     .then(r => r.ok ? r.json() : [])
-                    .then(data => { availableSectors = data; sectorsLoaded = true; })
+                    .then(data => {
+                        availableSectors = data;
+                        sectorsLoaded = true;
+                        // default to first sector in list order on fresh session
+                        if (data.length > 0 && _sectorDefaultNeeded) {
+                            _sectorDefaultNeeded = false;
+                            try { sessionStorage.setItem('dash_sector_visited', '1'); } catch {}
+                            const first = data[0];
+                            selectedSector.set(first);
+                            _crossSector = first;
+                            _singleSector = first;
+                            _lastEffectSector = '';
+                        }
+                    })
                     .catch(() => { sectorsLoaded = true; });
             });
         }
@@ -830,7 +845,7 @@
                 {#if $sectorAnalysisMode === 'cross-index'}
                     <!-- cross-index sector tree -->
                     <div class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar">
-                        {#each (availableSectors.length > 0 ? availableSectors : ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate']) as sec}
+                        {#each (availableSectors.length > 0 ? availableSectors : ['Basic Materials', 'Communication Services', 'Consumer Cyclical', 'Consumer Defensive', 'Energy', 'Financial Services', 'Healthcare', 'Industrials', 'Real Estate', 'Technology', 'Utilities']) as sec}
                             {@const isOpen = sectorPanelOpen.has(sec)}
                             {@const isActive = $selectedSector === sec}
                             {@const isCurrent = isOpen && isActive}
@@ -966,7 +981,7 @@
                                     {@const isSectorActive = $selectedSectors.includes(sec)}
                                     {@const isSelectedSec = $selectedSector === sec}
                                     {@const sectorPalette = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#3b82f6', '#f97316', '#84cc16', '#a855f7', '#14b8a6']}
-                                    {@const allSectorsRef = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate']}
+                                    {@const allSectorsRef = ['Basic Materials', 'Communication Services', 'Consumer Cyclical', 'Consumer Defensive', 'Energy', 'Financial Services', 'Healthcare', 'Industrials', 'Real Estate', 'Technology', 'Utilities']}
                                     {@const stableIdx = allSectorsRef.indexOf(sec)}
                                     {@const sColor = sectorPalette[(stableIdx >= 0 ? stableIdx : sIdx) % sectorPalette.length]}
                                     {@const secStockCount = (() => {
