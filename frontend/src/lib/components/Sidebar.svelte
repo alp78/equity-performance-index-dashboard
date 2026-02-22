@@ -1242,15 +1242,15 @@
             </div>
         {:else if inOverview}
             <!-- index overview: checkboxes for comparison -->
-            <div class="p-4 space-y-2">
-                <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-3">Select indices to compare</div>
+            <div class="p-3 space-y-1">
+                <div class="text-[10px] font-black text-white/30 uppercase tracking-widest mb-2 px-1">Select indices to compare</div>
                 {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
                     {@const ticker = INDEX_KEY_TO_TICKER[key]}
                     {@const asset = overviewAssets.find(a => a.symbol === ticker)}
                     {@const isSelected = $overviewSelectedIndices.includes(ticker)}
                     <button
                         onclick={() => toggleOverviewIndex(ticker)}
-                        class="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl transition-all
+                        class="w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all
                         {isSelected ? 'bg-white/[0.06] border border-white/10' : 'bg-transparent border border-transparent hover:bg-white/[0.03]'}"
                     >
                         <div class="w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-all

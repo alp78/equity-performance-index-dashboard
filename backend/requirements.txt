@@ -9,3 +9,4 @@ pandas
 pyarrow
 yfinance
 lxml
+python-dotenv

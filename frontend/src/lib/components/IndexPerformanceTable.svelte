@@ -13,22 +13,22 @@
     let cache = {};
     let now = $state(new Date());
 
-    // refresh clock every 30s for market open/closed recalculation
+    // refresh clock every 15s for local time + market open/closed
     $effect(() => {
         if (!browser) return;
-        const iv = setInterval(() => { now = new Date(); }, 30000);
+        const iv = setInterval(() => { now = new Date(); }, 15000);
         return () => clearInterval(iv);
     });
 
     // --- INDEX METADATA ---
 
     const MARKET_HOURS = {
-        'US':  { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  cet: '15:30 – 22:00' },
-        'EU':  { tz: 'Europe/Berlin',     open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, cet: '09:00 – 17:30' },
-        'UK':  { tz: 'Europe/London',     open: { h: 8, m: 0 },  close: { h: 16, m: 30 }, cet: '09:00 – 17:30' },
-        'JP':  { tz: 'Asia/Tokyo',        open: { h: 9, m: 0 },  close: { h: 15, m: 0 },  cet: '01:00 – 07:00' },
-        'CN':  { tz: 'Asia/Shanghai',     open: { h: 9, m: 30 }, close: { h: 15, m: 0 },  cet: '02:30 – 08:00' },
-        'IN':  { tz: 'Asia/Kolkata',      open: { h: 9, m: 15 }, close: { h: 15, m: 30 }, cet: '04:45 – 11:00' },
+        'US':  { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  cet: '15:30-22:00' },
+        'EU':  { tz: 'Europe/Berlin',     open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, cet: '09:00-17:30' },
+        'UK':  { tz: 'Europe/London',     open: { h: 8, m: 0 },  close: { h: 16, m: 30 }, cet: '09:00-17:30' },
+        'JP':  { tz: 'Asia/Tokyo',        open: { h: 9, m: 0 },  close: { h: 15, m: 0 },  cet: '01:00-07:00' },
+        'CN':  { tz: 'Asia/Shanghai',     open: { h: 9, m: 30 }, close: { h: 15, m: 0 },  cet: '02:30-08:00' },
+        'IN':  { tz: 'Asia/Kolkata',      open: { h: 9, m: 15 }, close: { h: 15, m: 30 }, cet: '04:45-11:00' },
     };
 
     const INDEX_META = {
@@ -54,6 +54,17 @@
         } catch { return false; }
     }
 
+    function localTime(marketKey, time) {
+        const market = MARKET_HOURS[marketKey];
+        if (!market || !market.tz) return { day: '', h: '—', m: '' };
+        try {
+            const day = time.toLocaleDateString('en-US', { timeZone: market.tz, weekday: 'short' });
+            const hm = time.toLocaleTimeString('en-GB', { timeZone: market.tz, hour: '2-digit', minute: '2-digit', hour12: false });
+            const [h, m] = hm.split(':');
+            return { day, h, m };
+        } catch { return { day: '', h: '—', m: '' }; }
+    }
+
     // --- PERIOD LABEL ---
 
     function fmtDate(d) {
@@ -73,6 +84,8 @@
 
     // --- DATA LOADING ---
 
+    let _retryTimer;
+
     async function load(period, range) {
         if (!browser) return;
         let url, cacheKey;
@@ -91,13 +104,28 @@
             const timeout = setTimeout(() => controller.abort(), 10000);
             const res = await fetch(url, { signal: controller.signal });
             clearTimeout(timeout);
-            if (res.ok) { const data = await res.json(); cache[cacheKey] = data; stats = data; }
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.length > 0) {
+                    cache[cacheKey] = data;
+                    stats = data;
+                    hasEverLoaded = true;
+                    loading = false;
+                    return;
+                }
+            }
         } catch (e) {}
         loading = false;
-        hasEverLoaded = true;
+        // Empty result — backend may still be loading, retry in 3s
+        if (stats.length === 0) {
+            if (_retryTimer) clearTimeout(_retryTimer);
+            _retryTimer = setTimeout(() => load(period, range), 3000);
+        } else {
+            hasEverLoaded = true;
+        }
     }
 
-    $effect(() => { load(currentPeriod, customRange); });
+    $effect(() => { load(currentPeriod, customRange); return () => { if (_retryTimer) clearTimeout(_retryTimer); }; });
 
     // --- DERIVED TABLE DATA ---
     // sorted by period return desc; rank map drives animated row reordering
@@ -114,7 +142,7 @@
 
     // --- FORMATTERS ---
 
-    const COL = [13, 10, 10, 11, 9, 9, 17, 11, 10];
+    const COL = [12, 9, 9, 8, 10, 8, 8, 16, 11, 9];
 
     function fmt(val, decimals = 2) {
         if (val == null || isNaN(val)) return '—';
@@ -142,7 +170,7 @@
     <!-- header -->
     <div class="flex items-center justify-between px-6 flex-shrink-0 header-row">
         <div class="flex items-center gap-3">
-            <h3 class="hdr-title font-black text-white/30 uppercase">Index Performance</h3>
+            <h3 class="hdr-title font-black text-white/30 uppercase">Index Performance Table</h3>
             <span class="hdr-period font-bold text-orange-400/80 uppercase tracking-wider">{headerLabel(currentPeriod, customRange)}</span>
         </div>
         {#if loading}
@@ -154,13 +182,14 @@
     <div class="grid-header flex items-center text-white/20 uppercase tracking-wider font-black px-2 flex-shrink-0">
         <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left">Index</div>
         <div style="width:{COL[1]}%" class="px-1 text-left">Exchange</div>
-        <div style="width:{COL[2]}%" class="px-1 text-right">Hours <span class="text-white/10 font-normal">(CET)</span></div>
-        <div style="width:{COL[3]}%" class="px-1 text-right">Current Price</div>
-        <div style="width:{COL[4]}%" class="px-1 text-right">Last Day</div>
-        <div style="width:{COL[5]}%" class="px-1 text-right">YTD</div>
-        <div style="width:{COL[6]}%" class="px-1 pl-6 text-right">52W Range</div>
-        <div style="width:{COL[7]}%" class="px-1 text-right">RETURN <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
-        <div style="width:{COL[8]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
+        <div style="width:{COL[2]}%" class="px-1 text-right">Open Hours</div>
+        <div style="width:{COL[3]}%" class="px-1 text-right">Local Time</div>
+        <div style="width:{COL[4]}%" class="px-1 text-right">Current Price</div>
+        <div style="width:{COL[5]}%" class="px-1 text-right">Last Day</div>
+        <div style="width:{COL[6]}%" class="px-1 text-right">YTD</div>
+        <div style="width:{COL[7]}%" class="px-1 pl-6 text-right">52W Range</div>
+        <div style="width:{COL[8]}%" class="px-1 text-right">RETURN <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
+        <div style="width:{COL[9]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
     </div>
 
     <!-- data rows — absolutely positioned for animated rank reordering -->
@@ -171,6 +200,7 @@
             {@const isSelected = selected.has(row.symbol)}
             {@const pos = rangePosition(row.current_price, row.low_52w, row.high_52w)}
             {@const open = isMarketOpen(meta.market, now)}
+            {@const lt = localTime(meta.market, now)}
             {@const rank = rankMap[row.symbol] ?? 0}
             <div
                 class="data-row absolute left-0 right-0 flex items-center border-t border-white/[0.04]"
@@ -187,34 +217,38 @@
                 <div style="width:{COL[1]}%" class="px-1">
                     <div class="flex items-center gap-1.5">
                         <span class="font-bold text-white/40 exch-text">{row.exchange || '—'}</span>
-                        <div class="flex items-center gap-1">
-                            <div class="status-dot rounded-full flex-shrink-0 {open ? 'bg-green-500' : 'bg-red-500/60'}"
-                                style="{open ? 'box-shadow: 0 0 5px rgba(34,197,94,0.5)' : ''}"></div>
-                            <span class="status-text font-bold uppercase {open ? 'text-green-400/80' : 'text-red-400/40'}">{open ? 'LIVE' : 'CLOSED'}</span>
+                        <div class="flex items-center gap-0.5">
+                            <div class="status-dot-sm rounded-full flex-shrink-0 {open ? 'bg-green-500' : 'bg-red-500/60'}"
+                                style="{open ? 'box-shadow: 0 0 4px rgba(34,197,94,0.5)' : ''}"></div>
+                            <span class="status-text-sm font-bold uppercase {open ? 'text-green-400/80' : 'text-red-400/40'}">{open ? 'LIVE' : 'CLOSED'}</span>
                         </div>
                     </div>
                 </div>
 
-                <div style="width:{COL[2]}%" class="px-1 text-right text-white/25 font-mono tabular-nums font-medium hours-text">
+                <div style="width:{COL[2]}%" class="px-1 text-right text-white/50 font-mono tabular-nums font-medium local-time-text">
                     {mkt.cet || '—'}
                 </div>
 
-                <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
+                <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums font-bold local-time-text {open ? 'text-white/70' : 'text-white/40'}">
+                    {lt.day} {lt.h}<span class="colon-blink">:</span>{lt.m}
+                </div>
+
+                <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
                     {fmtPrice(row.current_price, meta.ccy || '')}
                 </div>
 
-                <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
+                <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.daily_change_pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.85)'}">
                     {row.daily_change_pct >= 0 ? '+' : ''}{fmt(row.daily_change_pct)}%
                 </div>
 
-                <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
+                <div style="width:{COL[6]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
                     style:color="{row.ytd_return_pct >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'}">
                     {row.ytd_return_pct >= 0 ? '+' : ''}{fmt(row.ytd_return_pct)}%
                 </div>
 
                 <!-- 52-week range bar with tick at current price position -->
-                <div style="width:{COL[6]}%" class="px-1 pl-6">
+                <div style="width:{COL[7]}%" class="px-1 pl-6">
                     <div class="flex items-center gap-1.5">
                         <span class="range-num text-white/40 font-mono tabular-nums text-right font-bold" style="min-width:36px">{fmtCompact(row.low_52w)}</span>
                         <div class="flex-1 range-track rounded-full relative overflow-hidden bg-white/[0.08]">
@@ -226,23 +260,21 @@
                     </div>
                 </div>
 
-                <div style="width:{COL[7]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
+                <div style="width:{COL[8]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
                     style:color="{row.period_return_pct >= 0 ? 'rgba(34,197,94,1)' : 'rgba(239,68,68,0.95)'}">
                     {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
                 </div>
 
-                <div style="width:{COL[8]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
+                <div style="width:{COL[9]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
                     {fmt(row.volatility_pct, 1)}%
                 </div>
             </div>
         {/each}
 
-        {#if allStats.length === 0 && !loading && !hasEverLoaded}
+        {#if allStats.length === 0}
             <div class="absolute inset-0 flex items-center justify-center">
                 <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
-        {:else if allStats.length === 0 && !loading && hasEverLoaded}
-            <div class="absolute inset-0 flex items-center justify-center text-white/15 text-[11px] font-bold uppercase tracking-widest">No data available</div>
         {/if}
     </div>
 </div>
@@ -262,11 +294,13 @@
     .flag-icon { font-size: 0.95rem !important; }
     .idx-name { font-size: 12px; }
     .exch-text { font-size: 11px; }
-    .status-dot { width: 6px; height: 6px; }
-    .status-text { font-size: 8px; letter-spacing: -0.02em; }
+    .status-dot-sm { width: 4px; height: 4px; }
+    .status-text-sm { font-size: 7px; letter-spacing: -0.02em; }
+    .colon-blink { animation: colonBlink 1s step-end infinite; }
+    @keyframes colonBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
     .val-text { font-size: 12px; }
     .period-text { font-size: 13px; }
-    .hours-text { font-size: 11px; }
+    .local-time-text { font-size: 10px; }
     .range-num { font-size: 10px; }
     .range-track { height: 4px; }
     .range-tick { width: 2px; height: 10px; border-radius: 1px; }
@@ -282,11 +316,11 @@
         .flag-icon { font-size: 1.1rem !important; }
         .idx-name { font-size: 13px; }
         .exch-text { font-size: 12px; }
-        .status-dot { width: 7px; height: 7px; }
-        .status-text { font-size: 9px; }
+        .status-dot-sm { width: 5px; height: 5px; }
+        .status-text-sm { font-size: 8px; }
         .val-text { font-size: 13px; }
         .period-text { font-size: 14px; }
-        .hours-text { font-size: 12px; }
+        .local-time-text { font-size: 11px; }
         .range-num { font-size: 11px; }
         .range-track { height: 5px; }
         .range-tick { width: 2px; height: 12px; border-radius: 1px; }
@@ -303,11 +337,11 @@
         .flag-icon { font-size: 1.25rem !important; }
         .idx-name { font-size: 15px; }
         .exch-text { font-size: 14px; }
-        .status-dot { width: 8px; height: 8px; }
-        .status-text { font-size: 10px; }
+        .status-dot-sm { width: 6px; height: 6px; }
+        .status-text-sm { font-size: 9px; }
         .val-text { font-size: 15px; }
         .period-text { font-size: 16px; }
-        .hours-text { font-size: 14px; }
+        .local-time-text { font-size: 12px; }
         .range-num { font-size: 12px; }
         .range-track { height: 7px; }
         .range-tick { width: 2px; height: 14px; border-radius: 1px; }

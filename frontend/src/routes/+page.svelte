@@ -7,6 +7,7 @@
     import Chart from '$lib/components/Chart.svelte';
     import RankingPanel from '$lib/components/RankingPanel.svelte';
     import IndexPerformanceTable from '$lib/components/IndexPerformanceTable.svelte';
+    import NewsFeed from '$lib/components/NewsFeed.svelte';
     import SectorHeatmap from '$lib/components/SectorHeatmap.svelte';
     import SectorTopStocks from '$lib/components/SectorTopStocks.svelte';
     import SectorRankings from '$lib/components/SectorRankings.svelte';
@@ -923,6 +924,41 @@
 
     // --- MOBILE SIDEBAR STATE ---
     let sidebarOpen = $state(false);
+
+    // --- NEWS FEED RESIZE ---
+    let newsFeedHeight = $state(280);
+    let useFlexNewsFeed = $state(true);
+    let _nfResizing = false;
+    let _nfStartY = 0;
+    let _nfStartH = 0;
+
+    function startNewsResize(e) {
+        _nfResizing = true;
+        _nfStartY = e.clientY;
+        _nfStartH = newsFeedHeight;
+        document.addEventListener('mousemove', onNewsResize);
+        document.addEventListener('mouseup', stopNewsResize);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    }
+    function onNewsResize(e) {
+        if (!_nfResizing) return;
+        const delta = _nfStartY - e.clientY;
+        newsFeedHeight = Math.max(150, Math.min(600, _nfStartH + delta));
+    }
+    function stopNewsResize() {
+        _nfResizing = false;
+        document.removeEventListener('mousemove', onNewsResize);
+        document.removeEventListener('mouseup', stopNewsResize);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        useFlexNewsFeed = false;
+        try { sessionStorage.setItem('news_feed_height', String(newsFeedHeight)); } catch {}
+    }
+
+    // restore saved height
+    try { const h = sessionStorage.getItem('news_feed_height'); if (h) { newsFeedHeight = Number(h); useFlexNewsFeed = false; } } catch {}
     function toggleSidebar() { sidebarOpen = !sidebarOpen; }
     function closeSidebar() { sidebarOpen = false; }
 </script>
@@ -954,10 +990,25 @@
         ></button>
     {/if}
 
-    <div class="w-[460px] h-full shrink-0 z-[40] shadow-2xl shadow-black/50
+    <div class="w-[460px] h-full shrink-0 z-[40] shadow-2xl shadow-black/50 flex flex-col
         max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300
         {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
-        <Sidebar />
+        <div class="{inOverview && useFlexNewsFeed ? 'shrink-0' : 'flex-1'} min-h-0">
+            <Sidebar />
+        </div>
+        {#if inOverview}
+            <!-- resize handle -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+                onmousedown={startNewsResize}
+                class="shrink-0 h-2 cursor-row-resize hover:bg-white/10 active:bg-white/15 transition-colors flex items-center justify-center group"
+            >
+                <div class="w-10 h-[3px] rounded-full bg-white/10 group-hover:bg-white/25 transition-colors"></div>
+            </div>
+            <div class="{useFlexNewsFeed ? 'flex-1' : 'shrink-0'} overflow-hidden border-t border-white/5 min-h-0" style="{useFlexNewsFeed ? '' : `height: ${newsFeedHeight}px`}">
+                <NewsFeed />
+            </div>
+        {/if}
     </div>
 
     <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0

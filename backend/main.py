@@ -20,11 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
 from urllib.parse import unquote
 from contextlib import asynccontextmanager, contextmanager
+from dotenv import load_dotenv
 
+load_dotenv()
 
 # --- CONFIGURATION ---
 
 PROJECT_ID = getenv("PROJECT_ID")
+FINNHUB_API_KEY = getenv("FINNHUB_API_KEY")
 
 MARKET_INDICES = {
     "stoxx50":   {"table_id": f"{PROJECT_ID}.stock_exchange.stoxx50_prices" if PROJECT_ID else None},
@@ -114,6 +117,7 @@ INDEX_PRICES_ROW_COUNT: int = 0
 LATEST_MARKET_DATA: dict = {}
 STARTUP_TIME: float = 0.0
 STARTUP_DONE_TIME: float = 0.0
+NEWS_PRELOAD_STATUS: dict = {}  # {"loading": bool, "ready": bool, "count": int}
 
 API_CACHE: dict = {}
 ALL_SERIES_CACHE: dict = {}
@@ -767,6 +771,21 @@ async def background_startup():
     STARTUP_TIME = time.time()
     await preload_all_indices()
     STARTUP_DONE_TIME = time.time()
+    # Preload news feed in background so it's cached before first request
+    asyncio.create_task(_preload_news())
+
+
+async def _preload_news():
+    NEWS_PRELOAD_STATUS["loading"] = True
+    try:
+        result = await get_news()
+        count = len(result) if result else 0
+        NEWS_PRELOAD_STATUS["ready"] = True
+        NEWS_PRELOAD_STATUS["count"] = count
+        print(f"News feed preloaded ({count} articles)")
+    except Exception as e:
+        print(f"News preload error: {e}")
+    NEWS_PRELOAD_STATUS["loading"] = False
 
 
 # --- APP INITIALIZATION ---
@@ -810,8 +829,8 @@ async def health():
     """Return detailed loading progress and readiness status."""
     loaded = {k: v for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")}
     total_indices = len(MARKET_INDICES)
-    # each index has 5 steps (load, sector series, industry series, stock returns, prewarm) + 1 for index_prices
-    total_steps = total_indices * 5 + 1
+    # each index has 5 steps (load, sector series, industry series, stock returns, prewarm) + 1 for index_prices + 1 for news
+    total_steps = total_indices * 5 + 2
 
     done = []
     loading = []
@@ -860,6 +879,12 @@ async def health():
         total_rows += INDEX_PRICES_ROW_COUNT
     elif any(v.get("loaded") for v in INDEX_LOAD_STATUS.values()):
         loading.append("index prices")
+
+    if NEWS_PRELOAD_STATUS.get("ready"):
+        nc = NEWS_PRELOAD_STATUS.get("count", 0)
+        done.append(f"news feed ({nc:,} articles)")
+    elif NEWS_PRELOAD_STATUS.get("loading"):
+        loading.append("news feed")
 
     completed = len(done)
     all_done = completed == total_steps
@@ -2303,6 +2328,167 @@ async def metadata(symbol: str):
         return {"symbol": symbol, "name": res[0] if res else symbol}
     except:
         return {"symbol": symbol, "name": symbol}
+
+
+# --- NEWS FEED (FINNHUB) ---
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Key tickers per index for company-news fetching (US-listed / ADRs for best coverage)
+NEWS_INDEX_TICKERS = {
+    'sp500':    ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'TSLA', 'META', 'AMZN', 'JPM'],
+    'stoxx50':  ['SAP', 'ASML', 'TTE', 'SIEGY', 'SNY', 'DEO', 'NVS'],
+    'ftse100':  ['AZN', 'SHEL', 'BP', 'HSBC', 'GSK', 'RIO', 'UL'],
+    'nikkei225': ['TM', 'SONY', 'MUFG', 'HMC'],
+    'csi300':   ['BABA', 'PDD', 'JD', 'BIDU', 'NIO'],
+    'nifty50':  ['INFY', 'WIT', 'HDB', 'IBN', 'TTM'],
+}
+
+INDEX_FLAG_MAP = {
+    'sp500': 'us', 'stoxx50': 'eu', 'ftse100': 'gb',
+    'nikkei225': 'jp', 'csi300': 'cn', 'nifty50': 'in',
+}
+
+# Fallback keyword matching for general news articles
+KEYWORD_INDEX_MAP = [
+    (['S&P', 'Wall Street', 'Nasdaq', 'Dow Jones', 'NYSE', 'Fed ', 'Federal Reserve',
+      'Treasury', 'US economy', 'US stock', 'Silicon Valley'], 'sp500'),
+    (['Europe', 'European', 'ECB', 'Euro Stoxx', 'Eurozone', 'EU ', 'Frankfurt',
+      'Paris stock', 'Amsterdam', 'DAX ', 'Airbus', 'LVMH', 'Siemens', 'Deutsche Bank',
+      'BNP Paribas', 'Allianz', 'STOXX'], 'stoxx50'),
+    (['UK ', 'Britain', 'British', 'FTSE', 'London Stock', 'Bank of England', 'BOE '], 'ftse100'),
+    (['Japan', 'Japanese', 'Nikkei', 'Tokyo', 'Bank of Japan', 'BOJ'], 'nikkei225'),
+    (['China', 'Chinese', 'Shanghai', 'Beijing', 'CSI', 'Hang Seng', 'PBOC', 'Hong Kong'], 'csi300'),
+    (['India', 'Indian', 'Nifty', 'Mumbai', 'Sensex', 'BSE', 'NSE', 'Rupee'], 'nifty50'),
+]
+
+# Ticker-to-index mapping for resolving general news 'related' field
+NEWS_TICKER_INDEX = {}
+for _idx, _tickers in NEWS_INDEX_TICKERS.items():
+    for _t in _tickers:
+        NEWS_TICKER_INDEX[_t] = _idx
+
+def _resolve_news_index(article):
+    """Map a Finnhub news article to an index key via related tickers or headline keywords."""
+    related = article.get('related', '')
+    if related:
+        for ticker in related.split(','):
+            ticker = ticker.strip().upper()
+            idx = NEWS_TICKER_INDEX.get(ticker)
+            if idx:
+                return idx
+    headline = (article.get('headline', '') + ' ' + article.get('summary', '')).upper()
+    for keywords, idx in KEYWORD_INDEX_MAP:
+        for kw in keywords:
+            if kw.upper() in headline:
+                return idx
+    return None
+
+def _fetch_company_news(ticker, index_key, from_date, to_date):
+    """Fetch company news from Finnhub for a single ticker."""
+    try:
+        resp = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={"symbol": ticker, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            return [(item, index_key) for item in resp.json()]
+    except Exception:
+        pass
+    return []
+
+@app.get("/news")
+async def get_news():
+    cache_key = "news_3m"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    if not FINNHUB_API_KEY:
+        return []
+
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        three_months_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+
+        articles = []
+        seen = set()
+
+        # 1) Fetch company news for key tickers per index (parallel)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = []
+            for index_key, tickers in NEWS_INDEX_TICKERS.items():
+                for ticker in tickers:
+                    futures.append(executor.submit(
+                        _fetch_company_news, ticker, index_key, three_months_ago, today
+                    ))
+            for future in as_completed(futures):
+                for item, idx in future.result():
+                    headline = item.get("headline", "")
+                    if not headline or headline in seen:
+                        continue
+                    seen.add(headline)
+                    articles.append({
+                        "headline": headline,
+                        "source": item.get("source", ""),
+                        "datetime": item.get("datetime", 0),
+                        "url": item.get("url", ""),
+                        "index": idx,
+                    })
+
+        # 2) Also fetch general + merger news for broader coverage
+        for category in ("general", "merger"):
+            try:
+                resp = requests.get(
+                    "https://finnhub.io/api/v1/news",
+                    params={"category": category, "token": FINNHUB_API_KEY},
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    for item in resp.json():
+                        headline = item.get("headline", "")
+                        if not headline or headline in seen:
+                            continue
+                        seen.add(headline)
+                        idx = _resolve_news_index(item)
+                        if not idx:
+                            continue
+                        articles.append({
+                            "headline": headline,
+                            "source": item.get("source", ""),
+                            "datetime": item.get("datetime", 0),
+                            "url": item.get("url", ""),
+                            "index": idx,
+                        })
+            except Exception:
+                pass
+
+        # Sort all articles by date, no quota filtering
+        articles.sort(key=lambda x: x["datetime"], reverse=True)
+        set_cached_response(cache_key, articles)
+        per_index = {}
+        for a in articles:
+            per_index.setdefault(a["index"], []).append(a)
+        counts = {idx: len(items) for idx, items in per_index.items()}
+        print(f"News: {len(articles)} articles — {counts}")
+        return articles
+    except Exception as e:
+        print(f"News fetch error: {e}")
+        return []
+
+
+@app.get("/news/latest")
+async def get_news_latest(since: int = 0):
+    """Return only articles newer than `since` (unix timestamp) from the cached news."""
+    cache_key = "news_3m"
+    cached = get_cached_response(cache_key)
+    if not cached:
+        # No cache yet — trigger a full fetch so next call has data
+        cached = await get_news()
+    if not cached or since == 0:
+        return cached or []
+    return [a for a in cached if a["datetime"] > since]
 
 
 if __name__ == "__main__":
