@@ -397,7 +397,7 @@
                         >
                             <span class="fi {INDEX_FLAG[key]} fis rounded-sm" style="font-size: 0.8rem;"></span>
                             {INDEX_LABEL[key]}
-                            <span class="ml-auto" style="opacity: 0.5">({indexCounts[key] || 0})</span>
+                            <span class="ml-auto text-white/30">({indexCounts[key] || 0})</span>
                         </button>
                     {/each}
                 </div>
