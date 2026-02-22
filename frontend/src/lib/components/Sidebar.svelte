@@ -479,6 +479,10 @@
         if (inSectors && $sectorAnalysisMode !== _lastEffectMode) {
             _lastEffectMode = $sectorAnalysisMode;
             _lastEffectSector = '';
+            // preload all sector industry data so stock counts appear immediately
+            if ($sectorAnalysisMode === 'single-index' && singleOpenIndex) {
+                _loadSingleIndexData(singleOpenIndex);
+            }
         }
         // cross-index: when selectedSector changes (from heatmap or sidebar), expand only it, scroll
         if (inSectors && $selectedSector && $sectorAnalysisMode === 'cross-index') {
