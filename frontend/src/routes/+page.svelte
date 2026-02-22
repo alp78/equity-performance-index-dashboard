@@ -128,6 +128,7 @@
     })());
 
     let _sectorDataVersion = 0;
+    let _allSeriesVersion = $state(0);
 
     // --- SECTOR DATA LOADING ---
 
@@ -157,8 +158,10 @@
                             );
                             if (retryRes.ok) {
                                 const retryJson = await retryRes.json();
-                                if (retryJson.data) {
+                                if (retryJson.data && Object.keys(retryJson.data).length > 0) {
                                     allSectorSeries = { ...allSectorSeries, ...retryJson.data };
+                                    _allSeriesVersion++;
+                                    _lastSectorFetchKey = '';
                                 }
                                 pending = retryJson.pending || [];
                             }
@@ -220,21 +223,33 @@
                 const json = await res.json();
                 if (json.data) {
                     topStocksCache = json.data;
-                    // retry pending indices after delay
+                    // retry pending indices with escalating delays
                     if (json.pending && json.pending.length > 0) {
-                        setTimeout(async () => {
+                        let pending = [...json.pending];
+                        let attempt = 0;
+                        const maxAttempts = 5;
+                        const delays = [5000, 8000, 12000, 15000, 20000];
+                        const retryPending = async () => {
+                            if (pending.length === 0 || attempt >= maxAttempts) return;
+                            if (_topStocksCachePeriod !== period) return; // period changed, abort
                             try {
                                 const retryRes = await fetchWithTimeout(
                                     `${API_BASE_URL}/sector-comparison/all-top-stocks?period=${period}`, 15000
                                 );
                                 if (retryRes.ok) {
                                     const retryJson = await retryRes.json();
-                                    if (retryJson.data) {
+                                    if (retryJson.data && Object.keys(retryJson.data).length > 0) {
                                         topStocksCache = { ...topStocksCache, ...retryJson.data };
                                     }
+                                    pending = retryJson.pending || [];
                                 }
                             } catch {}
-                        }, 10000);
+                            if (pending.length > 0) {
+                                attempt++;
+                                setTimeout(retryPending, delays[Math.min(attempt, delays.length - 1)]);
+                            }
+                        };
+                        setTimeout(retryPending, delays[0]);
                     }
                 }
             }
@@ -267,24 +282,44 @@
             return result;
         }
 
-        const timeMap = new Map();
+        // build unified timeline from all selected industries
+        const allTimes = new Set();
         for (const series of selectedSeries) {
-            for (const pt of series) {
-                const entry = timeMap.get(pt.time);
-                if (entry) {
-                    entry.weightedSum += pt.pct * pt.n;
-                    entry.totalWeight += pt.n;
-                } else {
-                    timeMap.set(pt.time, { weightedSum: pt.pct * pt.n, totalWeight: pt.n });
+            for (const pt of series) allTimes.add(pt.time);
+        }
+        const times = [...allTimes].sort();
+
+        // forward-fill each industry series to the unified timeline
+        // so composition doesn't change date-to-date (avoids spikes)
+        const filledSeries = selectedSeries.map(series => {
+            const map = new Map();
+            for (const pt of series) map.set(pt.time, pt);
+            const filled = new Array(times.length);
+            let lastPct = null;
+            let lastN = null;
+            for (let i = 0; i < times.length; i++) {
+                const pt = map.get(times[i]);
+                if (pt) { lastPct = pt.pct; lastN = pt.n; }
+                filled[i] = lastPct !== null ? { pct: lastPct, n: lastN } : null;
+            }
+            return filled;
+        });
+
+        // compute weighted average across forward-filled series
+        const result = [];
+        for (let i = 0; i < times.length; i++) {
+            let weightedSum = 0;
+            let totalWeight = 0;
+            for (const filled of filledSeries) {
+                const pt = filled[i];
+                if (pt) {
+                    weightedSum += pt.pct * pt.n;
+                    totalWeight += pt.n;
                 }
             }
-        }
-
-        const times = [...timeMap.keys()].sort();
-        const result = new Array(times.length);
-        for (let i = 0; i < times.length; i++) {
-            const entry = timeMap.get(times[i]);
-            result[i] = { time: times[i], pct: entry.totalWeight > 0 ? entry.weightedSum / entry.totalWeight : 0 };
+            if (totalWeight > 0) {
+                result.push({ time: times[i], pct: weightedSum / totalWeight });
+            }
         }
 
         // cap cache at 100 entries to bound memory
@@ -348,7 +383,7 @@
                 .map(([k, v]) => `${k}:${[...v].sort().join('+')}`)
                 .join('|');
         }
-        const fetchKey = `${mode}_${sectorParam}_${indicesParam}_${industriesParam}_${allFiltersKey}`;
+        const fetchKey = `${mode}_${sectorParam}_${indicesParam}_${industriesParam}_${allFiltersKey}_v${_allSeriesVersion}`;
         if (fetchKey === _lastSectorFetchKey && sectorComparisonData) return;
 
         _lastSectorFetchKey = fetchKey;
@@ -562,9 +597,10 @@
             // filters via singleModeIndustries store and syncs them to selectedIndustries
         }
 
-        // track the industry-series cache version so this effect re-fires when new data arrives
-        // (but NOT on every individual cache mutation — only once per loadIndustrySeries completion).
-        // clear the fetch dedup key so fetchSectorData re-evaluates with updated cache.
+        // track cache versions so this effect re-fires when new data arrives from retries.
+        // _allSeriesVersion increments when preloadAllSectorSeries retries bring in more indices.
+        // _industrySeriesCacheVersion increments when loadIndustrySeries completes.
+        const _asv = _allSeriesVersion;
         const _icv = _industrySeriesCacheVersion;
         if (_icv > 0) _lastSectorFetchKey = '';
 
@@ -903,7 +939,13 @@
                             <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
                                 {$sectorSelectedIndices.length} indices
                                 {#if $selectedIndustries.length > 0}
-                                    · <span class="text-orange-400/70">{$selectedIndustries.length} industries</span>
+                                    {@const totalInds = (() => { const sc = industrySeriesCache[$selectedSector]; if (!sc) return 0; const s = new Set(); for (const idx of Object.values(sc)) for (const k of Object.keys(idx)) s.add(k); return s.size; })()}
+                                    · <span class="text-orange-400/70">{$selectedIndustries.length}{totalInds ? ` of ${totalInds}` : ''} industries</span>
+                                {:else}
+                                    {@const totalInds = (() => { const sc = industrySeriesCache[$selectedSector]; if (!sc) return 0; const s = new Set(); for (const idx of Object.values(sc)) for (const k of Object.keys(idx)) s.add(k); return s.size; })()}
+                                    {#if totalInds > 0}
+                                        · <span class="text-orange-400/70">{totalInds} industries</span>
+                                    {/if}
                                 {/if}
                                 · Normalized % change
                             </span>
@@ -1048,11 +1090,11 @@
                 </div>
             {:else if inSectors}
                 {#if $sectorAnalysisMode === 'single-index'}
-                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0">
-                        <div class="col-span-5 min-h-0">
+                    <div class="flex-[11] grid grid-cols-2 gap-4 min-h-0">
+                        <div class="min-h-0">
                             <SectorRankings {currentPeriod} {customRange} industryReturnOverride={rankingsIndustryOverride} />
                         </div>
-                        <div class="col-span-7 min-h-0">
+                        <div class="min-h-0">
                             <IndustryBreakdown {currentPeriod} {customRange} />
                         </div>
                     </div>

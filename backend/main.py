@@ -349,7 +349,9 @@ def _precompute_stock_returns(index_key):
 
     try:
         all_dfs = []
-        with db_rwlock.read():
+        # Use write lock for entire block — DuckDB is not safe for concurrent
+        # reads from multiple threads on the same connection.
+        with db_rwlock.write():
             for period_name, days in PERIODS.items():
                 df = local_db.execute(
                     sql("precompute_stock_returns.sql")
@@ -367,20 +369,23 @@ def _precompute_stock_returns(index_key):
                 df["period"] = "max"
                 all_dfs.append(df)
 
-        if all_dfs:
-            import pandas as pd
-            combined = pd.concat(all_dfs, ignore_index=True)
-            with db_rwlock.write():
+            if all_dfs:
+                import pandas as pd
+                combined = pd.concat(all_dfs, ignore_index=True)
                 local_db.execute(f"DROP TABLE IF EXISTS {result_table}")
                 local_db.execute(f"CREATE TABLE {result_table} AS SELECT * FROM combined")
                 local_db.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{result_table}_sp ON {result_table} (sector, period)"
                 )
-            total_rows = len(combined)
+
+        if all_dfs:
+            total_rows = sum(len(df) for df in all_dfs)
             STOCK_RETURNS_STATUS[index_key] = {"ready": True, "computing": False, "rows": total_rows}
             print(f"  [{index_key}] Stock returns precomputed: {total_rows} rows in {time.time() - t0:.1f}s")
         else:
-            STOCK_RETURNS_STATUS[index_key] = {"ready": True, "computing": False, "rows": 0}
+            # no data returned — mark NOT ready so endpoint doesn't try to query non-existent table
+            STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False, "rows": 0}
+            print(f"  [{index_key}] Stock returns: no data returned from prices table")
 
     except Exception as e:
         STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False}
@@ -397,7 +402,7 @@ def _prewarm_sector_caches(index_key):
     try:
         for period_label in ["max", "5y", "1y", "6mo", "3mo", "1mo", "1w"]:
             cache_key = f"sector_table_{index_key}_{period_label}"
-            with db_rwlock.read():
+            with db_rwlock.write():
                 df = _sector_returns_df(table, False, period_label, "", "")
             if df.empty:
                 continue
@@ -1797,6 +1802,11 @@ async def get_all_top_stocks(period: str = "1y"):
         result_table = f"stock_returns_{idx}"
         try:
             with db_rwlock.read():
+                # verify table exists before querying
+                tables = [r[0] for r in local_db.execute("SHOW TABLES").fetchall()]
+                if result_table not in tables:
+                    pending.append(idx)
+                    continue
                 df = local_db.execute(
                     f"SELECT symbol, name, industry, sector, return_pct FROM {result_table} WHERE period = ?",
                     [period.lower()]
