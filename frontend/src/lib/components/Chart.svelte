@@ -38,6 +38,7 @@
     // reactive copy updated only after series are ready to avoid render glitch
     let legendSeries = $state([]);
     let observer;
+    let resizer;
 
     // --- INTERNAL STATE ---
 
@@ -636,7 +637,8 @@
             updateRangeLines();
         });
 
-        const resizer = new ResizeObserver(() => {
+        resizer = new ResizeObserver(() => {
+            if (!chartContainer) return;
             chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
             if (currentVisibleRange) chart.timeScale().setVisibleLogicalRange(currentVisibleRange);
             updatePriceLineVisibility();
@@ -1024,6 +1026,7 @@
         chartContainer?.removeEventListener('mousedown', handleMouseDown);
         window?.removeEventListener('mousemove', handleMouseMove);
         window?.removeEventListener('mouseup', handleMouseUp);
+        resizer?.disconnect();
         observer?.disconnect();
         chart?.remove();
     });
