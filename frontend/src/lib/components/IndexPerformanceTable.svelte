@@ -182,7 +182,7 @@
     <div class="grid-header flex items-center text-white/20 uppercase tracking-wider font-black px-2 flex-shrink-0">
         <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left">Index</div>
         <div style="width:{COL[1]}%" class="px-1 text-left">Exchange</div>
-        <div style="width:{COL[2]}%" class="px-1 text-right">Open Hours</div>
+        <div style="width:{COL[2]}%" class="px-1 text-right">CET Hours</div>
         <div style="width:{COL[3]}%" class="px-1 text-right">Local Time</div>
         <div style="width:{COL[4]}%" class="px-1 text-right">Current Price</div>
         <div style="width:{COL[5]}%" class="px-1 text-right">Last Day</div>

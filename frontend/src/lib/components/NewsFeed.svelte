@@ -1,5 +1,5 @@
 <script>
-    import { onMount, onDestroy } from 'svelte';
+    import { onMount, onDestroy, tick } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
 
     let articles = $state([]);
@@ -8,6 +8,7 @@
     let scrollContainer = $state(null);
     let autoScrolling = true;
     let animFrame;
+    let scrollInterval;
     let pollTimer;
     let resumeTimer;
 
@@ -231,22 +232,24 @@
     }
 
     function startAutoScroll() {
+        if (scrollInterval) clearInterval(scrollInterval);
         if (!scrollContainer) return;
-        const speed = 0.3;
-        function step() {
+        // skip if element is hidden (display:none → 0 dimensions)
+        if (scrollContainer.clientHeight === 0) return;
+        scrollInterval = setInterval(() => {
             if (!autoScrolling || !scrollContainer) return;
-            scrollContainer.scrollTop += speed;
+            if (scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) return;
+            scrollContainer.scrollTop += 1;
             if (scrollContainer.scrollTop >= scrollContainer.scrollHeight - scrollContainer.clientHeight - 1) {
                 scrollContainer.scrollTop = 0;
             }
-            animFrame = requestAnimationFrame(step);
-        }
-        animFrame = requestAnimationFrame(step);
+        }, 50);
     }
 
     function pauseScroll() {
         autoScrolling = false;
         if (animFrame) cancelAnimationFrame(animFrame);
+        if (scrollInterval) { clearInterval(scrollInterval); scrollInterval = null; }
         if (resumeTimer) clearTimeout(resumeTimer);
     }
 
@@ -259,19 +262,20 @@
     }
 
     onMount(() => {
-        fetchNewsFull().then(() => { startAutoScroll(); });
+        fetchNewsFull().then(async () => { await tick(); startAutoScroll(); });
         pollTimer = setInterval(fetchNewsLatest, 60000);
     });
 
     onDestroy(() => {
         if (animFrame) cancelAnimationFrame(animFrame);
+        if (scrollInterval) clearInterval(scrollInterval);
         if (pollTimer) clearInterval(pollTimer);
         if (resumeTimer) clearTimeout(resumeTimer);
         if (newClearTimer) clearTimeout(newClearTimer);
     });
 </script>
 
-<div class="flex flex-col h-full overflow-hidden">
+<div class="flex flex-col h-full flex-1 overflow-hidden">
     <!-- header -->
     <div class="flex items-center justify-between px-4 py-2.5 shrink-0">
         <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">NEWS FEED</h3>

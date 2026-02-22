@@ -993,7 +993,7 @@
     <div class="w-[460px] h-full shrink-0 z-[40] shadow-2xl shadow-black/50 flex flex-col
         max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300
         {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
-        <div class="{inOverview && useFlexNewsFeed ? 'shrink-0' : 'flex-1'} min-h-0">
+        <div class="flex-1 min-h-0 overflow-hidden">
             <Sidebar />
         </div>
         {#if inOverview}
@@ -1001,11 +1001,11 @@
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
                 onmousedown={startNewsResize}
-                class="shrink-0 h-2 cursor-row-resize hover:bg-white/10 active:bg-white/15 transition-colors flex items-center justify-center group"
+                class="shrink-0 h-2 cursor-row-resize hover:bg-white/10 active:bg-white/15 transition-colors flex items-center justify-center group max-lg:hidden"
             >
                 <div class="w-10 h-[3px] rounded-full bg-white/10 group-hover:bg-white/25 transition-colors"></div>
             </div>
-            <div class="{useFlexNewsFeed ? 'flex-1' : 'shrink-0'} overflow-hidden border-t border-white/5 min-h-0" style="{useFlexNewsFeed ? '' : `height: ${newsFeedHeight}px`}">
+            <div class="{useFlexNewsFeed ? 'flex-1' : 'shrink-0'} flex flex-col overflow-hidden border-t border-white/5 min-h-0 max-lg:hidden" style="{useFlexNewsFeed ? '' : `height: ${newsFeedHeight}px`}">
                 <NewsFeed />
             </div>
         {/if}
@@ -1191,8 +1191,11 @@
 
             <!-- bottom panels: vary by mode -->
             {#if inOverview}
-                <div class="flex-1 min-h-0 max-lg:flex-none max-lg:min-h-[300px]">
+                <div class="flex-1 min-h-0 max-lg:flex-none max-lg:h-[350px]">
                     <IndexPerformanceTable {currentPeriod} {customRange} />
+                </div>
+                <div class="hidden max-lg:block max-lg:h-[400px]">
+                    <NewsFeed />
                 </div>
             {:else if inSectors}
                 {#if $sectorAnalysisMode === 'single-index'}
