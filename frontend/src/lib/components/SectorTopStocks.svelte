@@ -6,14 +6,62 @@
     import { sectorSelectedIndices, selectedSector, marketIndex, selectedSymbol, summaryData } from '$lib/stores.js';
     import { requestFocusSymbol } from '$lib/stores.js';
 
-    let { currentPeriod = '1y', customRange = null } = $props();
+    let { currentPeriod = '1y', customRange = null, industryFilter = null, topStocksCache = null } = $props();
 
-    let data    = $state(null);
+    // API-fetched data (fallback for custom ranges or when cache not available)
+    let apiData    = $state(null);
     let loading = $state(false);
-    let cache   = {};
+    let apiCache   = {};
 
     let indices   = $derived($sectorSelectedIndices);
     let sector    = $derived($selectedSector);
+
+    // derive display data: prefer preloaded cache, fall back to API-fetched data
+    let filteredData = $derived((() => {
+        const sec = sector;
+        const idxList = indices;
+        const filter = industryFilter;
+        const isCustom = !!(customRange && customRange.start);
+
+        // fast path: combine from preloaded cache (standard periods only)
+        if (!isCustom && topStocksCache && sec && idxList && idxList.length > 0) {
+            const stocks = [];
+            for (const idx of idxList) {
+                const idxStocks = topStocksCache[idx];
+                if (!idxStocks) continue;
+                for (const s of idxStocks) {
+                    if (s.sector === sec) {
+                        stocks.push({ ...s, index_key: idx });
+                    }
+                }
+            }
+            // apply industry filter
+            const filtered = filter && filter.length > 0
+                ? stocks.filter(s => new Set(filter).has(s.industry))
+                : stocks;
+            filtered.sort((a, b) => b.return_pct - a.return_pct);
+            const n = 5;
+            if (filtered.length === 0) return { top: [], bottom: [] };
+            // prevent overlap: split at midpoint when fewer than 2n stocks
+            const half = Math.ceil(filtered.length / 2);
+            const topN = Math.min(n, half);
+            const botN = Math.min(n, filtered.length - topN);
+            return { top: filtered.slice(0, topN), bottom: botN > 0 ? filtered.slice(-botN).reverse() : [] };
+        }
+
+        // slow path: use API-fetched data
+        if (!apiData) return null;
+        if (!filter || filter.length === 0) return apiData;
+        const allowed = new Set(filter);
+        const all = [...(apiData.top || []), ...(apiData.bottom || [])].filter(s => allowed.has(s.industry));
+        all.sort((a, b) => b.return_pct - a.return_pct);
+        const n = 5;
+        if (all.length === 0) return { top: [], bottom: [] };
+        const half = Math.ceil(all.length / 2);
+        const topN = Math.min(n, half);
+        const botN = Math.min(n, all.length - topN);
+        return { top: all.slice(0, topN), bottom: botN > 0 ? all.slice(-botN).reverse() : [] };
+    })());
 
     // --- INDEX DISPLAY CONFIG ---
 
@@ -43,28 +91,30 @@
     }
     let isCustom = $derived(!!(customRange && customRange.start));
 
-    // --- DATA LOADING ---
+    // --- DATA LOADING (fallback for custom ranges) ---
 
     async function load(sec, period, range, idxList) {
         if (!browser || !sec || !idxList || idxList.length === 0) return;
+        // skip API call when preloaded cache covers this request
+        if (!range?.start && topStocksCache) return;
         const idxStr = idxList.join(',');
         let url, cacheKey;
         if (range && range.start && range.end) {
             cacheKey = `topstocks_${sec}_${idxStr}_${range.start}_${range.end}`;
-            url = `${API_BASE_URL}/sector-comparison/top-stocks?sector=${encodeURIComponent(sec)}&indices=${idxStr}&start=${range.start}&end=${range.end}&n=5`;
+            url = `${API_BASE_URL}/sector-comparison/top-stocks?sector=${encodeURIComponent(sec)}&indices=${idxStr}&start=${range.start}&end=${range.end}&n=20`;
         } else {
             const p = period || '1y';
             cacheKey = `topstocks_${sec}_${idxStr}_${p}`;
-            url = `${API_BASE_URL}/sector-comparison/top-stocks?sector=${encodeURIComponent(sec)}&indices=${idxStr}&period=${p}&n=5`;
+            url = `${API_BASE_URL}/sector-comparison/top-stocks?sector=${encodeURIComponent(sec)}&indices=${idxStr}&period=${p}&n=20`;
         }
-        if (cache[cacheKey]) { data = cache[cacheKey]; return; }
+        if (apiCache[cacheKey]) { apiData = apiCache[cacheKey]; return; }
         loading = true;
         try {
             const ctrl = new AbortController();
             const t    = setTimeout(() => ctrl.abort(), 12000);
             const res  = await fetch(url, { signal: ctrl.signal });
             clearTimeout(t);
-            if (res.ok) { const d = await res.json(); cache[cacheKey] = d; data = d; }
+            if (res.ok) { const d = await res.json(); apiCache[cacheKey] = d; apiData = d; }
         } catch {}
         loading = false;
     }
@@ -114,7 +164,7 @@
     </div>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-y-auto overflow-x-hidden">
-        {#if !data && loading}
+        {#if !filteredData && loading}
             <div class="flex-1 flex items-center justify-center">
                 <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
@@ -124,14 +174,14 @@
                     Select a sector
                 </span>
             </div>
-        {:else if data}
-            {@const topMax = getSubsetMax(data.top)}
-            {@const botMax = getSubsetMax(data.bottom)}
+        {:else if filteredData}
+            {@const topMax = getSubsetMax(filteredData.top)}
+            {@const botMax = getSubsetMax(filteredData.bottom)}
 
             <div class="flex-1 flex flex-col min-h-0 gap-1">
                 <!-- top performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
-                    {#each (data.top || []).slice(0, 5) as item}
+                    {#each (filteredData.top || []).slice(0, 5) as item}
                         {@const width = (Math.abs(item.return_pct) / topMax) * 80}
                         {@const idxColor = INDEX_COLORS[item.index_key] || '#8b5cf6'}
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">
@@ -159,7 +209,7 @@
 
                 <!-- bottom performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
-                    {#each (data.bottom || []).slice(0, 5) as item}
+                    {#each (filteredData.bottom || []).slice(0, 5) as item}
                         {@const width = (Math.abs(item.return_pct) / botMax) * 80}
                         {@const idxColor = INDEX_COLORS[item.index_key] || '#8b5cf6'}
                         <div class="flex items-center w-full gap-2 flex-1 min-h-0">

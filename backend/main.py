@@ -13,6 +13,7 @@ import yfinance as yf
 import time
 import threading
 from datetime import datetime, timezone, timedelta
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
@@ -73,6 +74,7 @@ db_lock = threading.Lock()
 INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
 INDUSTRY_SERIES_STATUS: dict = {}
+STOCK_RETURNS_STATUS: dict = {}
 INDEX_PRICES_ROW_COUNT: int = 0
 LATEST_MARKET_DATA: dict = {}
 STARTUP_TIME: float = 0.0
@@ -185,6 +187,12 @@ def _load_index_from_bq(index_key):
             local_db.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{index_key} ON {table_name} (symbol, trade_date)"
             )
+            local_db.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{index_key}_sector ON {table_name} (sector)"
+            )
+            local_db.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{index_key}_si ON {table_name} (sector, industry)"
+            )
             local_db.execute(f"DROP TABLE IF EXISTS {latest_table}")
             local_db.execute(
                 sql("duckdb_create_latest_table.sql")
@@ -234,8 +242,6 @@ def _precompute_sector_series(index_key):
             local_db.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{series_table}_sector ON {series_table} (sector)"
             )
-
-        with db_lock:
             row_count = local_db.execute(f"SELECT COUNT(*) FROM {series_table}").fetchone()[0]
             sector_count = local_db.execute(
                 f"SELECT COUNT(DISTINCT sector) FROM {series_table}"
@@ -270,8 +276,6 @@ def _precompute_industry_series(index_key):
             local_db.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{series_table}_si ON {series_table} (sector, industry)"
             )
-
-        with db_lock:
             row_count = local_db.execute(f"SELECT COUNT(*) FROM {series_table}").fetchone()[0]
             industry_count = local_db.execute(
                 f"SELECT COUNT(DISTINCT industry) FROM {series_table}"
@@ -284,6 +288,55 @@ def _precompute_industry_series(index_key):
     except Exception as e:
         INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
         print(f"  [{index_key}] Industry series precompute error: {e}")
+
+
+def _precompute_stock_returns(index_key):
+    """Precompute per-stock returns for all sectors × standard periods into stock_returns_{index}."""
+    table = f"prices_{index_key}"
+    result_table = f"stock_returns_{index_key}"
+    STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": True}
+    t0 = time.time()
+
+    PERIODS = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
+
+    try:
+        all_dfs = []
+        with db_lock:
+            for period_name, days in PERIODS.items():
+                df = local_db.execute(
+                    sql("precompute_stock_returns.sql")
+                    .replace("{table}", table)
+                    .replace("{days}", str(days))
+                ).df()
+                if not df.empty:
+                    df["period"] = period_name
+                    all_dfs.append(df)
+
+            df = local_db.execute(
+                sql("precompute_stock_returns_max.sql").replace("{table}", table)
+            ).df()
+            if not df.empty:
+                df["period"] = "max"
+                all_dfs.append(df)
+
+        if all_dfs:
+            import pandas as pd
+            combined = pd.concat(all_dfs, ignore_index=True)
+            with db_lock:
+                local_db.execute(f"DROP TABLE IF EXISTS {result_table}")
+                local_db.execute(f"CREATE TABLE {result_table} AS SELECT * FROM combined")
+                local_db.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{result_table}_sp ON {result_table} (sector, period)"
+                )
+            total_rows = len(combined)
+            STOCK_RETURNS_STATUS[index_key] = {"ready": True, "computing": False, "rows": total_rows}
+            print(f"  [{index_key}] Stock returns precomputed: {total_rows} rows in {time.time() - t0:.1f}s")
+        else:
+            STOCK_RETURNS_STATUS[index_key] = {"ready": True, "computing": False, "rows": 0}
+
+    except Exception as e:
+        STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False}
+        print(f"  [{index_key}] Stock returns precompute error: {e}")
 
 
 def _prewarm_sector_caches(index_key):
@@ -300,11 +353,10 @@ def _prewarm_sector_caches(index_key):
                 continue
 
             all_data = {}
-            for _, row in df.iterrows():
-                sector = row["sector"]
-                all_data[sector] = {
-                    "return_pct": round(float(row["return_pct"]), 2),
-                    "stock_count": int(row["stock_count"]),
+            for rec in df.to_dict("records"):
+                all_data[rec["sector"]] = {
+                    "return_pct": round(float(rec["return_pct"]), 2),
+                    "stock_count": int(rec["stock_count"]),
                 }
 
             result = []
@@ -389,6 +441,7 @@ def ensure_index_loaded(index_key):
         if row_count > 0:
             _precompute_sector_series(index_key)
             _precompute_industry_series(index_key)
+            _precompute_stock_returns(index_key)
             _prewarm_sector_caches(index_key)
 
     import concurrent.futures
@@ -403,6 +456,7 @@ async def refresh_single_index(index_key):
     invalidate_index_cache(index_key)
     SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
+    STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False}
     INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
     loop = asyncio.get_event_loop()
     row_count = await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
@@ -412,6 +466,7 @@ async def refresh_single_index(index_key):
     if row_count > 0:
         await loop.run_in_executor(None, lambda: _precompute_sector_series(index_key))
         await loop.run_in_executor(None, lambda: _precompute_industry_series(index_key))
+        await loop.run_in_executor(None, lambda: _precompute_stock_returns(index_key))
         await loop.run_in_executor(None, lambda: _prewarm_sector_caches(index_key))
     invalidate_index_cache(index_key)
 
@@ -741,11 +796,27 @@ async def health():
             return f"{m}m{sec:.0f}s" if sec >= 1 else f"{m}m"
         return f"{s:.0f}s"
 
+    # process memory (RSS) — works on Linux/Cloud Run via /proc, fallback for other OS
+    mem_mb = None
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    mem_mb = int(line.split()[1]) / 1024  # kB → MB
+                    break
+    except Exception:
+        try:
+            import resource
+            mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # kB → MB on Linux
+        except Exception:
+            pass
+
     result = {
         "status": "ready" if all_done else "warming_up",
         "progress": f"{completed}/{total_steps}",
         "indices_loaded": len(loaded),
         "total_rows": fmt_rows(total_rows),
+        "memory": f"{mem_mb:.0f} MB" if mem_mb else "n/a",
         "done": done,
     }
 
@@ -879,14 +950,13 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
             sym_df = df[df["symbol"] == sym]
             if sym_df.empty:
                 continue
+            times = sym_df["time"].astype(str).values
+            closes = sym_df["close"].values
+            pcts = sym_df["pct"].values
+            vols = sym_df["volume"].fillna(0).astype(int).values
             points = [
-                {
-                    "time": str(row["time"]),
-                    "close": float(row["close"]),
-                    "pct": float(row["pct"]),
-                    "volume": int(row["volume"]) if not pd.isna(row["volume"]) else 0,
-                }
-                for _, row in sym_df.iterrows()
+                {"time": times[i], "close": float(closes[i]), "pct": float(pcts[i]), "volume": int(vols[i])}
+                for i in range(len(times))
             ]
             series.append({
                 "symbol": sym,
@@ -1166,11 +1236,11 @@ async def get_sector_industries(sector: str = "", indices: str = ""):
                 ).df()
             if df.empty:
                 continue
-            for _, row in df.iterrows():
-                ind = row["industry"]
+            for rec in df.to_dict("records"):
+                ind = rec["industry"]
                 if ind not in all_industries:
                     all_industries[ind] = {}
-                all_industries[ind][idx] = int(row["cnt"])
+                all_industries[ind][idx] = int(rec["cnt"])
 
         result = [{"industry": k, "indices": v, "total": sum(v.values())} for k, v in all_industries.items()]
         result.sort(key=lambda x: x["total"], reverse=True)
@@ -1221,7 +1291,7 @@ async def get_sector_comparison_data_v2(
                         ).df()
                     if df.empty or len(df) < 2:
                         continue
-                    points = [{"time": str(r["time"]), "pct": float(r["pct"])} for _, r in df.iterrows()]
+                    points = [{"time": str(t), "pct": float(p)} for t, p in zip(df["time"].values, df["pct"].values)]
                     series.append({"symbol": idx, "points": points})
 
             elif mode == "single-index":
@@ -1237,7 +1307,7 @@ async def get_sector_comparison_data_v2(
                             ).df()
                         if df.empty or len(df) < 2:
                             continue
-                        points = [{"time": str(r["time"]), "pct": float(r["pct"])} for _, r in df.iterrows()]
+                        points = [{"time": str(t), "pct": float(p)} for t, p in zip(df["time"].values, df["pct"].values)]
                         series.append({"symbol": sec, "points": points})
 
             if all_ready and series:
@@ -1333,20 +1403,12 @@ async def get_all_sector_series(indices: str = ""):
             if df.empty:
                 continue
 
-            # group rows by sector without extra queries
             idx_data = {}
-            current_sector = None
-            points = []
-            for _, row in df.iterrows():
-                s = row["sector"]
-                if s != current_sector:
-                    if current_sector is not None:
-                        idx_data[current_sector] = points
-                    current_sector = s
-                    points = []
-                points.append({"time": str(row["time"]), "pct": float(row["pct"])})
-            if current_sector is not None:
-                idx_data[current_sector] = points
+            for sector, group in df.groupby("sector", sort=False):
+                idx_data[sector] = [
+                    {"time": str(t), "pct": float(p)}
+                    for t, p in zip(group["time"].values, group["pct"].values)
+                ]
 
             result[idx] = idx_data
             ready_indices.append(idx)
@@ -1396,24 +1458,12 @@ async def get_industry_series(sector: str = "", indices: str = ""):
                 result[idx] = {}
                 continue
 
-            # group rows by industry without extra queries
             idx_data = {}
-            current_industry = None
-            points = []
-            for _, row in df.iterrows():
-                ind = row["industry"]
-                if ind != current_industry:
-                    if current_industry is not None:
-                        idx_data[current_industry] = points
-                    current_industry = ind
-                    points = []
-                points.append({
-                    "time": str(row["time"]),
-                    "pct": round(float(row["pct"]), 4),
-                    "n": int(row["stock_count"]),
-                })
-            if current_industry is not None:
-                idx_data[current_industry] = points
+            for industry, group in df.groupby("industry", sort=False):
+                idx_data[industry] = [
+                    {"time": str(t), "pct": round(float(p), 4), "n": int(n)}
+                    for t, p, n in zip(group["time"].values, group["pct"].values, group["stock_count"].values)
+                ]
 
             result[idx] = idx_data
             ready_indices.append(idx)
@@ -1452,9 +1502,8 @@ async def get_sector_histogram(indices: str = "", period: str = "1y", start: str
                 df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end)
             if df.empty:
                 continue
-            for _, row in df.iterrows():
-                sec = row["sector"]
-                sector_returns.setdefault(sec, []).append(float(row["return_pct"]))
+            for rec in df.to_dict("records"):
+                sector_returns.setdefault(rec["sector"], []).append(float(rec["return_pct"]))
 
         result = [
             {"sector": sec, "return_pct": round(sum(r) / len(r), 2)}
@@ -1497,11 +1546,10 @@ async def get_sector_comparison_table(indices: str = "", period: str = "1y", sta
                 df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end)
             if df.empty:
                 continue
-            for _, row in df.iterrows():
-                sector = row["sector"]
-                all_data.setdefault(sector, {})[idx] = {
-                    "return_pct": round(float(row["return_pct"]), 2),
-                    "stock_count": int(row["stock_count"]),
+            for rec in df.to_dict("records"):
+                all_data.setdefault(rec["sector"], {})[idx] = {
+                    "return_pct": round(float(rec["return_pct"]), 2),
+                    "stock_count": int(rec["stock_count"]),
                 }
 
         result = []
@@ -1576,11 +1624,12 @@ async def get_sector_top_stocks(
 
             if df.empty:
                 continue
-            for _, row in df.iterrows():
+            for rec in df.to_dict("records"):
                 all_rows.append({
-                    "symbol": row["symbol"],
-                    "name": row["name"] if row["name"] and row["name"] != "0" else "",
-                    "return_pct": round(float(row["return_pct"]), 2),
+                    "symbol": rec["symbol"],
+                    "name": rec["name"] if rec["name"] and rec["name"] != "0" else "",
+                    "industry": rec.get("industry", "") or "",
+                    "return_pct": round(float(rec["return_pct"]), 2),
                     "index_key": idx,
                 })
 
@@ -1596,6 +1645,45 @@ async def get_sector_top_stocks(
         print(f"Sector top stocks error: {e}")
         import traceback; traceback.print_exc()
         return {"top": [], "bottom": []}
+
+
+@app.get("/sector-comparison/all-top-stocks")
+async def get_all_top_stocks(period: str = "1y"):
+    """Return precomputed stock returns for all indices, all sectors, for a given period."""
+    data = {}
+    ready = []
+    pending = []
+
+    for idx in MARKET_INDICES:
+        status = STOCK_RETURNS_STATUS.get(idx, {})
+        if not status.get("ready"):
+            pending.append(idx)
+            continue
+
+        result_table = f"stock_returns_{idx}"
+        try:
+            with db_lock:
+                df = local_db.execute(
+                    f"SELECT symbol, name, industry, sector, return_pct FROM {result_table} WHERE period = ?",
+                    [period.lower()]
+                ).df()
+
+            rows = []
+            for rec in df.to_dict("records"):
+                rows.append({
+                    "symbol": rec["symbol"],
+                    "name": rec["name"] if rec["name"] and str(rec["name"]) != "0" else "",
+                    "industry": rec.get("industry", "") or "",
+                    "sector": rec["sector"],
+                    "return_pct": round(float(rec["return_pct"]), 2),
+                })
+            data[idx] = rows
+            ready.append(idx)
+        except Exception as e:
+            print(f"Error reading stock returns for {idx}: {e}")
+            pending.append(idx)
+
+    return {"data": data, "ready": ready, "pending": pending}
 
 
 @app.get("/sector-comparison/industry-breakdown")
@@ -1651,11 +1739,11 @@ async def get_industry_breakdown(
 
         result = [
             {
-                "industry": row["industry"],
-                "return_pct": round(float(row["return_pct"]), 2),
-                "stock_count": int(row["stock_count"]),
+                "industry": rec["industry"],
+                "return_pct": round(float(rec["return_pct"]), 2),
+                "stock_count": int(rec["stock_count"]),
             }
-            for _, row in df.iterrows()
+            for rec in df.to_dict("records")
         ]
         set_cached_response(cache_key, result)
         return result

@@ -88,18 +88,18 @@ export const INDEX_GROUPS = [
 ];
 
 // --- PERSISTED STORES ---
-// all stores restore from localStorage on page load
+// all stores restore from sessionStorage on page load (clears when browser is closed)
 
 const _storedIndex = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_index');
+        const v = sessionStorage.getItem('dash_index');
         return (v && (INDEX_CONFIG[v] || v === 'overview' || v === 'sectors')) ? v : 'stoxx50';
     } catch { return 'stoxx50'; }
 })() : 'stoxx50';
 
 const _storedSymbol = browser ? (() => {
     try {
-        return localStorage.getItem('dash_symbol') || INDEX_CONFIG[_storedIndex]?.defaultSymbol || 'ASML.AS';
+        return sessionStorage.getItem('dash_symbol') || INDEX_CONFIG[_storedIndex]?.defaultSymbol || 'ASML.AS';
     } catch { return 'ASML.AS'; }
 })() : 'ASML.AS';
 
@@ -109,7 +109,7 @@ export const marketIndex = writable(_storedIndex);
 // overview mode: selected index tickers for comparison chart
 const _storedOverviewIndices = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_overview_indices');
+        const v = sessionStorage.getItem('dash_overview_indices');
         return v ? JSON.parse(v) : ['^GSPC', '^STOXX50E'];
     } catch { return ['^GSPC', '^STOXX50E']; }
 })() : ['^GSPC', '^STOXX50E'];
@@ -119,21 +119,21 @@ export const overviewSelectedIndices = writable(_storedOverviewIndices);
 // sector mode: cross-index uses multiple indices, single-index uses one
 const _storedSectorIndices = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_sector_indices');
+        const v = sessionStorage.getItem('dash_sector_indices');
         return v ? JSON.parse(v) : ['sp500', 'stoxx50'];
     } catch { return ['sp500', 'stoxx50']; }
 })() : ['sp500', 'stoxx50'];
 
 const _storedSingleIndex = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_single_index');
+        const v = sessionStorage.getItem('dash_single_index');
         return v ? JSON.parse(v) : ['stoxx50'];
     } catch { return ['stoxx50']; }
 })() : ['stoxx50'];
 
 const _storedSelectedSector = browser ? (() => {
     try {
-        return localStorage.getItem('dash_selected_sector') || 'Technology';
+        return sessionStorage.getItem('dash_selected_sector') || 'Technology';
     } catch { return 'Technology'; }
 })() : 'Technology';
 
@@ -142,12 +142,12 @@ export const singleSelectedIndex   = writable(_storedSingleIndex);
 export const selectedSector = writable(_storedSelectedSector);
 
 const _storedSectorMode = browser ? (() => {
-    try { return localStorage.getItem('dash_sector_mode') || 'cross-index'; } catch { return 'cross-index'; }
+    try { return sessionStorage.getItem('dash_sector_mode') || 'cross-index'; } catch { return 'cross-index'; }
 })() : 'cross-index';
 
 const _storedSectorIndustries = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_sector_industries');
+        const v = sessionStorage.getItem('dash_sector_industries');
         return v ? JSON.parse(v) : [];
     } catch { return []; }
 })() : [];
@@ -157,7 +157,7 @@ export const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'I
 // per-index sector checkbox state: { sp500: [...], stoxx50: [...] }
 const _storedSectorsByIndex = browser ? (() => {
     try {
-        const v = localStorage.getItem('dash_sectors_by_index');
+        const v = sessionStorage.getItem('dash_sectors_by_index');
         return v ? JSON.parse(v) : {};
     } catch { return {}; }
 })() : {};
@@ -165,8 +165,28 @@ const _storedSectorsByIndex = browser ? (() => {
 const _currentSingleIndex = _storedSectorIndices[0] || 'stoxx50';
 const _initialSectors = _storedSectorsByIndex[_currentSingleIndex] || ALL_SECTORS;
 
+// per-sector industry selection for cross-index mode: { sectorName: [industryNames] }
+// empty array = all selected (same convention as singleSelectedIndustries)
+const _storedCrossIndustries = browser ? (() => {
+    try {
+        const v = sessionStorage.getItem('dash_cross_industries');
+        return v ? JSON.parse(v) : {};
+    } catch { return {}; }
+})() : {};
+
+// per-sector industry selection for single-index mode: { sectorName: [industryNames] }
+// empty array or absent = all selected
+const _storedSingleIndustries = browser ? (() => {
+    try {
+        const v = sessionStorage.getItem('dash_single_industries');
+        return v ? JSON.parse(v) : {};
+    } catch { return {}; }
+})() : {};
+
 export const sectorAnalysisMode = writable(_storedSectorMode);
 export const selectedIndustries = writable(_storedSectorIndustries);
+export const crossSelectedIndustries = writable(_storedCrossIndustries);
+export const singleModeIndustries = writable(_storedSingleIndustries);
 export const selectedSectors = writable(_initialSectors);
 export const sectorsByIndex = writable(_storedSectorsByIndex);
 
@@ -179,38 +199,44 @@ export const currentCurrency = derived(marketIndex, ($idx) =>
 );
 
 // --- PERSISTENCE ---
-// subscribe to each store and sync to localStorage on change
+// subscribe to each store and sync to sessionStorage on change
 
 if (browser) {
     marketIndex.subscribe(val => {
-        try { localStorage.setItem('dash_index', val); } catch {}
+        try { sessionStorage.setItem('dash_index', val); } catch {}
     });
     selectedSymbol.subscribe(val => {
-        try { localStorage.setItem('dash_symbol', val); } catch {}
+        try { sessionStorage.setItem('dash_symbol', val); } catch {}
     });
     overviewSelectedIndices.subscribe(val => {
-        try { localStorage.setItem('dash_overview_indices', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_overview_indices', JSON.stringify(val)); } catch {}
     });
     sectorSelectedIndices.subscribe(val => {
-        try { localStorage.setItem('dash_sector_indices', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_sector_indices', JSON.stringify(val)); } catch {}
     });
     singleSelectedIndex.subscribe(val => {
-        try { localStorage.setItem('dash_single_index', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_single_index', JSON.stringify(val)); } catch {}
     });
     selectedSector.subscribe(val => {
-        try { localStorage.setItem('dash_selected_sector', val); } catch {}
+        try { sessionStorage.setItem('dash_selected_sector', val); } catch {}
     });
     sectorAnalysisMode.subscribe(val => {
-        try { localStorage.setItem('dash_sector_mode', val); } catch {}
+        try { sessionStorage.setItem('dash_sector_mode', val); } catch {}
     });
     selectedIndustries.subscribe(val => {
-        try { localStorage.setItem('dash_sector_industries', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_sector_industries', JSON.stringify(val)); } catch {}
+    });
+    crossSelectedIndustries.subscribe(val => {
+        try { sessionStorage.setItem('dash_cross_industries', JSON.stringify(val)); } catch {}
+    });
+    singleModeIndustries.subscribe(val => {
+        try { sessionStorage.setItem('dash_single_industries', JSON.stringify(val)); } catch {}
     });
     selectedSectors.subscribe(val => {
-        try { localStorage.setItem('dash_selected_sectors', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_selected_sectors', JSON.stringify(val)); } catch {}
     });
     sectorsByIndex.subscribe(val => {
-        try { localStorage.setItem('dash_sectors_by_index', JSON.stringify(val)); } catch {}
+        try { sessionStorage.setItem('dash_sectors_by_index', JSON.stringify(val)); } catch {}
     });
 }
 

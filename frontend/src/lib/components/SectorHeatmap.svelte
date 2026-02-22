@@ -5,7 +5,7 @@
     import { API_BASE_URL } from '$lib/config.js';
     import { sectorSelectedIndices, selectedSector } from '$lib/stores.js';
 
-    let { currentPeriod = '1y', customRange = null, industryOverrides = null } = $props();
+    let { currentPeriod = '1y', customRange = null } = $props();
 
     let tableData = $state([]);
     let loading   = $state(false);
@@ -148,24 +148,9 @@
 
     $effect(() => { load(currentPeriod, customRange, indices); });
 
-    // --- SORTING AND OVERRIDES ---
-    // apply industry-level return overrides, then sort by avg return desc
+    // --- SORTING ---
     let sorted = $derived(
-        [...tableData].map(row => {
-            if (!industryOverrides?.[row.sector]) return row;
-            const overridden = { ...row, indices: { ...row.indices }, _filtered: true };
-            for (const idx of indices) {
-                if (industryOverrides[row.sector]?.[idx] !== undefined) {
-                    overridden.indices[idx] = {
-                        ...overridden.indices[idx],
-                        return_pct: industryOverrides[row.sector][idx],
-                    };
-                }
-            }
-            const returns = Object.values(overridden.indices).map(v => v.return_pct).filter(v => v != null);
-            overridden.avg_return_pct = returns.length ? Math.round((returns.reduce((a,b)=>a+b,0)/returns.length)*10)/10 : null;
-            return overridden;
-        }).sort((a,b) => (b.avg_return_pct||0) - (a.avg_return_pct||0))
+        [...tableData].sort((a,b) => (b.avg_return_pct||0) - (a.avg_return_pct||0))
     );
 
     // --- COLOUR SCALE ---
@@ -294,10 +279,8 @@
                     <!-- per-index cells -->
                     {#each indices as idx}
                         {@const val = row.indices?.[idx]?.return_pct ?? null}
-                        {@const isOverridden = row._filtered && industryOverrides?.[row.sector]?.[idx] !== undefined}
-                        <div style="width:{idxW}" class="px-1 flex-shrink-0" title="{INDEX_FULL[idx]||idx}: {fmt(val)}{isOverridden ? ' (filtered)' : ''}">
-                            <div class="cell-inner rounded flex items-center justify-center transition-colors duration-300
-                                 {isOverridden ? 'ring-1 ring-orange-500/30' : ''}"
+                        <div style="width:{idxW}" class="px-1 flex-shrink-0" title="{INDEX_FULL[idx]||idx}: {fmt(val)}">
+                            <div class="cell-inner rounded flex items-center justify-center transition-colors duration-300"
                                  style="{cellBg(val)}">
                                 <span class="cell-text font-mono tabular-nums font-bold"
                                       style="{cellTextColor(val)}">

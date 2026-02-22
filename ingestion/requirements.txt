@@ -1,11 +1,7 @@
-fastapi
-uvicorn[standard]
+functions-framework==3.*
 google-cloud-bigquery
 google-cloud-storage
-db-dtypes
-duckdb
 pandas
-pandas_market_calendars
-pyarrow
 yfinance
 lxml
+exchange-calendars
