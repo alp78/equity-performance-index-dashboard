@@ -1099,6 +1099,7 @@
                                         singleOpenSectors = next;
                                     }}
                                     class="py-2.5 px-1 shrink-0 flex items-center justify-center"
+                                    title="Expand {sec}"
                                 >
                                     <svg class="w-3.5 h-3.5 text-white/30 transition-transform shrink-0 {isSectorOpen ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />

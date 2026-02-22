@@ -1,19 +1,16 @@
 <!-- cross-index heatmap grid showing sector returns; click row to select sector -->
 
 <script>
-    import { browser } from '$app/environment';
-    import { API_BASE_URL } from '$lib/config.js';
     import { sectorSelectedIndices, selectedSector } from '$lib/stores.js';
 
-    let { currentPeriod = '1y', customRange = null, industryFilter = null, filteredSector = null } = $props();
-
-    let tableData = $state([]);
-    let loading   = $state(false);
-    let cache     = {};
-
-    // overlay for industry-filtered sector data
-    let filteredOverlay = $state({}); // { [indexKey]: { return_pct, stock_count } }
-    let _lastFilterKey = '';
+    let {
+        currentPeriod = '1y',
+        customRange = null,
+        industryFilter = null,
+        filteredSector = null,
+        allSectorSeries = null,
+        industrySeriesCache = null,
+    } = $props();
 
     let indices   = $derived($sectorSelectedIndices);
     let activeSec = $derived($selectedSector);
@@ -54,7 +51,9 @@
         nifty50:   'Nifty 50',
     };
 
-    // --- PERIOD LABEL ---
+    // --- PERIOD HELPERS ---
+
+    const PERIOD_DAYS = { '1w': 7, '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '5y': 1825 };
 
     function fmtDate(d) {
         if (!d) return '';
@@ -66,6 +65,31 @@
         isCustom ? `${fmtDate(customRange.start)} → ${fmtDate(customRange.end)}`
                  : (currentPeriod || '1y').toUpperCase()
     );
+
+    function getStartDate(period, range) {
+        if (range?.start) return range.start;
+        if (!period || period.toLowerCase() === 'max') return null;
+        const d = PERIOD_DAYS[period.toLowerCase()];
+        if (!d) return null;
+        const now = new Date();
+        now.setDate(now.getDate() - d);
+        return now.toISOString().split('T')[0];
+    }
+
+    function clipSeries(points, period, range) {
+        if (!points || points.length < 2) return null;
+        const start = getStartDate(period, range);
+        const end = range?.end || null;
+        let filtered;
+        if (start && end) {
+            filtered = points.filter(p => p.time >= start && p.time <= end);
+        } else if (start) {
+            filtered = points.filter(p => p.time >= start);
+        } else {
+            filtered = points;
+        }
+        return filtered && filtered.length >= 2 ? filtered : null;
+    }
 
     // --- VALUE FORMATTERS ---
 
@@ -89,121 +113,64 @@
 
     let useShort = $derived(indices.length >= 4);
 
-    // --- DATA LOADING ---
-    // per-index cache: instantly compose display from cached data,
-    // only fetch indices not yet seen — eliminates rearrangement delay
+    // --- DATA FROM PRECOMPUTED SERIES (same source as chart) ---
+    // Computes return = lastPct - firstPct over the period for each sector/index.
 
-    // perIndexCache[periodKey][indexKey] = { sector -> {return_pct, stock_count} }
-    let perIndexCache = {};
-
-    function periodKey(period, range) {
-        return range?.start ? `${range.start}_${range.end}` : (period || '1y');
-    }
-
-    // merge per-index cache into the row format the template expects
-    function buildTableData(pKey, idxList) {
+    let tableData = $derived.by(() => {
+        if (!allSectorSeries || indices.length === 0) return [];
         const sectorMap = {};
-        for (const idx of idxList) {
-            const idxData = perIndexCache[pKey]?.[idx];
+
+        for (const idx of indices) {
+            const idxData = allSectorSeries[idx];
             if (!idxData) continue;
-            for (const [sector, vals] of Object.entries(idxData)) {
+            for (const [sector, points] of Object.entries(idxData)) {
+                const clipped = clipSeries(points, currentPeriod, customRange);
+                if (!clipped) continue;
+                const returnPct = Math.round((clipped[clipped.length - 1].pct - clipped[0].pct) * 100) / 100;
                 if (!sectorMap[sector]) sectorMap[sector] = { sector, indices: {} };
-                sectorMap[sector].indices[idx] = vals;
+                sectorMap[sector].indices[idx] = { return_pct: returnPct };
             }
         }
-        const rows = Object.values(sectorMap).map(row => {
+
+        return Object.values(sectorMap).map(row => {
             const returns = Object.values(row.indices).map(v => v.return_pct).filter(v => v != null);
             row.avg_return_pct = returns.length ? Math.round((returns.reduce((a,b)=>a+b,0)/returns.length)*10)/10 : null;
             return row;
         });
-        return rows;
-    }
+    });
 
-    async function fetchIndexIfNeeded(pKey, idx, period, range, retries = 2) {
-        if (perIndexCache[pKey]?.[idx]) return;
-        const url = range?.start
-            ? `${API_BASE_URL}/sector-comparison/table?indices=${idx}&start=${range.start}&end=${range.end}`
-            : `${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=${period||'1y'}`;
-        for (let attempt = 0; attempt <= retries; attempt++) {
-            try {
-                const ctrl = new AbortController();
-                const t = setTimeout(() => ctrl.abort(), 15000);
-                const res = await fetch(url, { signal: ctrl.signal });
-                clearTimeout(t);
-                if (!res.ok) { if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; } return; }
-                const rows = await res.json();
-                if (!perIndexCache[pKey]) perIndexCache[pKey] = {};
-                perIndexCache[pKey][idx] = {};
-                for (const row of rows) {
-                    const vals = row.indices?.[idx];
-                    if (vals) perIndexCache[pKey][idx][row.sector] = vals;
-                }
-                return;
-            } catch {
-                if (attempt < retries) await new Promise(r => setTimeout(r, 3000));
+    // --- INDUSTRY FILTER OVERLAY (from industry series cache) ---
+    // When industries are filtered, compute per-index return from the same
+    // precomputed industry series the chart uses (weighted by stock count).
+
+    let filteredOverlay = $derived.by(() => {
+        if (!industryFilter || industryFilter.length === 0 || !filteredSector || !industrySeriesCache) return {};
+        const sectorCache = industrySeriesCache[filteredSector];
+        if (!sectorCache) return {};
+
+        const overlay = {};
+        for (const idx of indices) {
+            const indMap = sectorCache[idx];
+            if (!indMap) continue;
+
+            let totalWeight = 0;
+            let weightedSum = 0;
+
+            for (const ind of industryFilter) {
+                const series = indMap[ind];
+                const clipped = clipSeries(series, currentPeriod, customRange);
+                if (!clipped) continue;
+                const delta = clipped[clipped.length - 1].pct - clipped[0].pct;
+                const weight = clipped[clipped.length - 1].n || 1;
+                weightedSum += delta * weight;
+                totalWeight += weight;
+            }
+
+            if (totalWeight > 0) {
+                overlay[idx] = { return_pct: Math.round((weightedSum / totalWeight) * 100) / 100 };
             }
         }
-    }
-
-    async function load(period, range, idxList) {
-        if (!browser || !idxList || idxList.length === 0) return;
-        const pKey = periodKey(period, range);
-
-        // show cached data immediately while missing indices load
-        const cached = buildTableData(pKey, idxList);
-        if (cached.length > 0) tableData = cached;
-
-        const missing = idxList.filter(idx => !perIndexCache[pKey]?.[idx]);
-        if (missing.length === 0) return;
-
-        loading = true;
-        await Promise.all(missing.map(idx => fetchIndexIfNeeded(pKey, idx, period, range)));
-        loading = false;
-
-        tableData = buildTableData(pKey, idxList);
-    }
-
-    $effect(() => { load(currentPeriod, customRange, indices); });
-
-    // --- INDUSTRY FILTER OVERLAY ---
-    // When industries are filtered for the selected sector, fetch filtered returns
-    // and overlay them on just that row
-
-    async function fetchFilteredSector(sector, industries, period, range, idxList) {
-        const indParam = encodeURIComponent(industries.join(','));
-        const overlay = {};
-        await Promise.all(idxList.map(async (idx) => {
-            try {
-                const url = range?.start
-                    ? `${API_BASE_URL}/sector-comparison/table?indices=${idx}&start=${range.start}&end=${range.end}&industries=${indParam}`
-                    : `${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=${period||'1y'}&industries=${indParam}`;
-                const res = await fetch(url);
-                if (!res.ok) return;
-                const rows = await res.json();
-                const row = rows.find(r => r.sector === sector);
-                if (row?.indices?.[idx]) overlay[idx] = row.indices[idx];
-            } catch {}
-        }));
         return overlay;
-    }
-
-    $effect(() => {
-        const filter = industryFilter;
-        const sector = filteredSector;
-        const period = currentPeriod;
-        const range = customRange;
-        const idxList = indices;
-        const key = `${sector}_${(filter||[]).join('|')}_${periodKey(period,range)}_${idxList.join(',')}`;
-        if (key === _lastFilterKey) return;
-        _lastFilterKey = key;
-
-        if (!filter || filter.length === 0 || !sector) {
-            filteredOverlay = {};
-            return;
-        }
-        fetchFilteredSector(sector, filter, period, range, idxList).then(ov => {
-            filteredOverlay = ov;
-        });
     });
 
     // --- DISPLAY DATA (base + overlay) ---
@@ -287,10 +254,15 @@
                 <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">Sector Heatmap</h3>
                 <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">{periodLabel}</span>
             </div>
-            <!-- invisible spacer keeps header height aligned with sibling panels -->
-            <span class="text-[11px] font-black text-white/0 uppercase tracking-wider mt-1 select-none" aria-hidden="true">·</span>
+            <div class="flex items-center gap-1.5 mt-1">
+                {#if activeSec}
+                    <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{activeSec}</span>
+                    <span class="text-[11px] text-white/15">·</span>
+                {/if}
+                <span class="text-[11px] font-bold text-white/20 uppercase tracking-wider">Normalized % Change</span>
+            </div>
         </div>
-        {#if loading}
+        {#if !allSectorSeries}
             <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1"></div>
         {/if}
     </div>
@@ -316,7 +288,11 @@
 
     <!-- data rows -->
     <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
-        {#if sorted.length === 0 && !loading}
+        {#if sorted.length === 0 && !allSectorSeries}
+            <div class="flex items-center justify-center h-full text-white/15 text-[11px] font-bold uppercase tracking-widest">
+                Loading…
+            </div>
+        {:else if sorted.length === 0}
             <div class="flex items-center justify-center h-full text-white/15 text-[11px] font-bold uppercase tracking-widest">
                 No data available
             </div>

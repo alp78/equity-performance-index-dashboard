@@ -1101,7 +1101,7 @@
                 {:else}
                     <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
                         <div class="col-span-8 min-h-0">
-                            <SectorHeatmap {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} filteredSector={$selectedSector} />
+                            <SectorHeatmap {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} filteredSector={$selectedSector} {allSectorSeries} {industrySeriesCache} />
                         </div>
                         <div class="col-span-4 min-h-0">
                             <SectorTopStocks {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} {topStocksCache} />

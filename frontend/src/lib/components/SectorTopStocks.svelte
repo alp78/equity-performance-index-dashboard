@@ -158,9 +158,11 @@
                 </span>
             {/if}
         </div>
-        <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
-            {sector || '—'}
-        </span>
+        <div class="flex items-center gap-1.5 mt-1">
+            <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{sector || '—'}</span>
+            <span class="text-[11px] text-white/15">·</span>
+            <span class="text-[11px] font-bold text-white/20 uppercase tracking-wider">Stock Return %</span>
+        </div>
     </div>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-y-auto overflow-x-hidden">
