@@ -108,6 +108,7 @@ INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
 INDUSTRY_SERIES_STATUS: dict = {}
 STOCK_RETURNS_STATUS: dict = {}
+PREWARM_STATUS: dict = {}
 INDEX_PRICES_ROW_COUNT: int = 0
 LATEST_MARKET_DATA: dict = {}
 STARTUP_TIME: float = 0.0
@@ -389,10 +390,12 @@ def _precompute_stock_returns(index_key):
 def _prewarm_sector_caches(index_key):
     """Populate API_CACHE for sector table endpoint so heatmap/rankings load instantly."""
     table = f"prices_{index_key}"
+    PREWARM_STATUS[index_key] = {"ready": False, "computing": True}
     t0 = time.time()
+    periods_warmed = 0
 
     try:
-        for period_label in ["max", "1y"]:
+        for period_label in ["max", "5y", "1y", "6mo", "3mo", "1mo", "1w"]:
             cache_key = f"sector_table_{index_key}_{period_label}"
             with db_rwlock.read():
                 df = _sector_returns_df(table, False, period_label, "", "")
@@ -415,9 +418,12 @@ def _prewarm_sector_caches(index_key):
                 })
             result.sort(key=lambda x: x["avg_return_pct"], reverse=True)
             set_cached_response(cache_key, result)
+            periods_warmed += 1
 
-        print(f"  [{index_key}] Sector caches pre-warmed in {time.time() - t0:.1f}s")
+        PREWARM_STATUS[index_key] = {"ready": True, "computing": False, "periods": periods_warmed}
+        print(f"  [{index_key}] Sector caches pre-warmed ({periods_warmed} periods) in {time.time() - t0:.1f}s")
     except Exception as e:
+        PREWARM_STATUS[index_key] = {"ready": False, "computing": False}
         print(f"  [{index_key}] Sector cache pre-warm error: {e}")
 
 
@@ -505,6 +511,7 @@ async def refresh_single_index(index_key):
     SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False}
+    PREWARM_STATUS[index_key] = {"ready": False, "computing": False}
     INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
     loop = asyncio.get_event_loop()
     row_count = await loop.run_in_executor(None, lambda: _load_index_from_bq(index_key))
@@ -790,8 +797,8 @@ async def health():
     """Return detailed loading progress and readiness status."""
     loaded = {k: v for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")}
     total_indices = len(MARKET_INDICES)
-    # each index has 3 steps (load, sector series, industry series) + 1 for index_prices
-    total_steps = total_indices * 3 + 1
+    # each index has 5 steps (load, sector series, industry series, stock returns, prewarm) + 1 for index_prices
+    total_steps = total_indices * 5 + 1
 
     done = []
     loading = []
@@ -820,6 +827,20 @@ async def health():
             total_rows += rc
         elif ind_status.get("computing"):
             loading.append(f"industry series for {idx}")
+
+        ret_status = STOCK_RETURNS_STATUS.get(idx, {})
+        if ret_status.get("ready"):
+            rc = ret_status.get("rows", 0)
+            done.append(f"stock returns for {idx} ({rc:,} rows)")
+        elif ret_status.get("computing"):
+            loading.append(f"stock returns for {idx}")
+
+        pw_status = PREWARM_STATUS.get(idx, {})
+        if pw_status.get("ready"):
+            pc = pw_status.get("periods", 0)
+            done.append(f"cache prewarm for {idx} ({pc} periods)")
+        elif pw_status.get("computing"):
+            loading.append(f"cache prewarm for {idx}")
 
     if INDEX_PRICES_LOADED:
         done.append(f"index prices ({INDEX_PRICES_ROW_COUNT:,} rows)")
