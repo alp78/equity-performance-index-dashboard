@@ -322,10 +322,7 @@
             sectorIndustries = allSectorIndustries[cacheKey];
             return;
         }
-        // keep current list visible during load to avoid blank-then-reload flash
-        const prevSector = _lastLoadedSector;
         _lastLoadedSector = sector;
-        if (prevSector !== sector) sectorIndustries = [];
         try {
             const { API_BASE_URL } = await import('$lib/config.js');
             const res = await fetch(`${API_BASE_URL}/sector-comparison/industries?sector=${encodeURIComponent(sector)}&indices=${indicesStr}`);
@@ -335,6 +332,32 @@
                 allSectorIndustries = { ...allSectorIndustries, [cacheKey]: data };
             }
         } catch { sectorIndustries = []; }
+    }
+
+    // preload industry lists for ALL sectors in one batch call so expansion is always instant
+    let _industriesPreloaded = false;
+    async function preloadAllIndustries(indicesStr) {
+        if (_industriesPreloaded) return;
+        _industriesPreloaded = true;
+        try {
+            const { API_BASE_URL } = await import('$lib/config.js');
+            const res = await fetch(`${API_BASE_URL}/sector-comparison/all-industries?indices=${indicesStr}`);
+            if (res.ok) {
+                const data = await res.json();
+                const updates = {};
+                for (const [sec, industries] of Object.entries(data)) {
+                    const ck = `${sec}_${indicesStr}`;
+                    updates[ck] = industries;
+                }
+                allSectorIndustries = { ...allSectorIndustries, ...updates };
+                // if the current sector's industries were just loaded, apply immediately
+                const currentSec = $selectedSector;
+                const currentKey = `${currentSec}_${indicesStr}`;
+                if (updates[currentKey]) {
+                    sectorIndustries = updates[currentKey];
+                }
+            }
+        } catch { _industriesPreloaded = false; }
     }
 
     // industry lists for other sectors load on-demand when the user opens a sector panel
@@ -416,6 +439,8 @@
                             _singleSector = first;
                             _lastEffectSector = '';
                         }
+                        // preload all industry lists so every sector expands instantly
+                        preloadAllIndustries(allKeys);
                     })
                     .catch(() => { sectorsLoaded = true; });
             });
@@ -447,28 +472,25 @@
                 });
             }
         }
-        // single-index: when selectedSector changes (from rankings), expand and scroll to it
+        // single-index: when selectedSector changes (from rankings), open only it, scroll
         if (inSectors && $selectedSector && $sectorAnalysisMode === 'single-index') {
             _singleSector = $selectedSector;
             const sectorChanged = $selectedSector !== _lastEffectSector;
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
                 const sec = $selectedSector;
-                if (!singleOpenSectors.has(sec)) {
-                    const next = new Set(singleOpenSectors);
-                    next.add(sec);
-                    singleOpenSectors = next;
-                    const idxKey = singleOpenIndex;
-                    const ck = `${sec}_${idxKey}`;
-                    if (!allSectorIndustries[ck]) {
-                        import('$lib/config.js').then(({ API_BASE_URL: base }) => {
-                            fetch(`${base}/sector-comparison/industries?sector=${encodeURIComponent(sec)}&indices=${idxKey}`)
-                                .then(r => r.ok ? r.json() : [])
-                                .then(data => { allSectorIndustries[ck] = data; singleIndexIndustries = { ...singleIndexIndustries, [ck]: data }; });
-                        });
-                    } else {
-                        singleIndexIndustries = { ...singleIndexIndustries, [ck]: allSectorIndustries[ck] };
-                    }
+                // collapse all others, open only the selected sector
+                singleOpenSectors = new Set([sec]);
+                const idxKey = singleOpenIndex;
+                const ck = `${sec}_${idxKey}`;
+                if (!allSectorIndustries[ck]) {
+                    import('$lib/config.js').then(({ API_BASE_URL: base }) => {
+                        fetch(`${base}/sector-comparison/industries?sector=${encodeURIComponent(sec)}&indices=${idxKey}`)
+                            .then(r => r.ok ? r.json() : [])
+                            .then(data => { allSectorIndustries[ck] = data; singleIndexIndustries = { ...singleIndexIndustries, [ck]: data }; });
+                    });
+                } else {
+                    singleIndexIndustries = { ...singleIndexIndustries, [ck]: allSectorIndustries[ck] };
                 }
                 tick().then(() => {
                     const el = document.querySelector(`[data-sector-single="${CSS.escape(sec)}"]`);

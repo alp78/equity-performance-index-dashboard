@@ -1321,6 +1321,63 @@ async def get_sector_industries(sector: str = "", indices: str = ""):
         return []
 
 
+@app.get("/sector-comparison/all-industries")
+async def get_all_sector_industries(indices: str = ""):
+    """Return industry breakdown for every sector across given indices in a single call."""
+    index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
+    if not index_list:
+        index_list = [k for k, v in INDEX_LOAD_STATUS.items() if v.get("loaded")]
+    if not index_list:
+        return {}
+
+    cache_key = f"all_industries_{','.join(sorted(index_list))}"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    try:
+        result = {}
+        for idx in index_list:
+            if not ensure_index_loaded(idx):
+                continue
+            with db_rwlock.read():
+                df = local_db.execute(
+                    f"SELECT sector, industry, COUNT(DISTINCT symbol) as cnt FROM prices_{idx}"
+                    f" WHERE sector IS NOT NULL AND sector NOT IN ('N/A','0','')"
+                    f" AND industry IS NOT NULL AND industry NOT IN ('N/A','0','')"
+                    f" GROUP BY sector, industry"
+                ).df()
+            if df.empty:
+                continue
+            for rec in df.to_dict("records"):
+                sec, ind, cnt = rec["sector"], rec["industry"], int(rec["cnt"])
+                if sec not in result:
+                    result[sec] = {}
+                if ind not in result[sec]:
+                    result[sec][ind] = {}
+                result[sec][ind][idx] = cnt
+
+        # reshape: { sector: [ {industry, indices: {idx: cnt}, total} ] }
+        final = {}
+        for sec, industries in result.items():
+            items = []
+            for ind, idx_counts in industries.items():
+                items.append({"industry": ind, "indices": idx_counts, "total": sum(idx_counts.values())})
+            items.sort(key=lambda x: x["total"], reverse=True)
+            final[sec] = items
+            # also populate per-sector cache so /industries endpoint is instant too
+            for idx_combo_key in [f"sector_industries_{sec}_{','.join(sorted(index_list))}"]:
+                set_cached_response(idx_combo_key, items)
+
+        set_cached_response(cache_key, final)
+        return final
+
+    except Exception as e:
+        print(f"All sector industries error: {e}")
+        import traceback; traceback.print_exc()
+        return {}
+
+
 @app.get("/sector-comparison/data-v2")
 async def get_sector_comparison_data_v2(
     sector: str = "Technology",
