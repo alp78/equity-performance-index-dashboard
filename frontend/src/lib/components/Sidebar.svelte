@@ -111,6 +111,15 @@
                 if (firstStock) {
                     selectedSymbol.set(firstStock.symbol);
                     lastSymbolPerIndex[idxKey] = firstStock.symbol;
+                    tick().then(() => {
+                        if (!scrollContainer) return;
+                        const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(firstStock.symbol)}"]`);
+                        if (el) {
+                            const cr = scrollContainer.getBoundingClientRect();
+                            const er = el.getBoundingClientRect();
+                            scrollContainer.scrollTop += er.top - cr.top - (cr.height / 2) + (er.height / 2);
+                        }
+                    });
                 }
             }
         }

@@ -680,6 +680,15 @@
         return '';
     })());
 
+    let stockSectorIndustry = $derived((() => {
+        const asset = assets.find(a => a.symbol === currentSymbol);
+        if (!asset) return '';
+        const sec = (asset.sector && asset.sector !== 0) ? asset.sector : '';
+        const ind = (asset.industry && asset.industry !== 0) ? asset.industry : '';
+        if (sec && ind) return `${sec}: ${ind}`;
+        return sec || ind || '';
+    })());
+
     // --- PERIOD / RANGE HELPERS ---
 
     function fmtDate(d) {
@@ -997,9 +1006,14 @@
                     {/if}
                 {:else}
                     <h1 class="text-5xl max-lg:text-3xl max-sm:text-2xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
-                    <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
-                        {displayName || 'Loading...'}
-                    </span>
+                    <div class="flex flex-col pl-1">
+                        <span class="text-sm font-bold uppercase tracking-[0.2em] {displayName ? 'text-white/40' : 'text-white/15'}">
+                            {displayName || 'Loading...'}
+                        </span>
+                        {#if stockSectorIndustry}
+                            <span class="text-[11px] font-bold uppercase tracking-widest text-orange-500/70">{stockSectorIndustry}</span>
+                        {/if}
+                    </div>
                 {/if}
             </div>
 
