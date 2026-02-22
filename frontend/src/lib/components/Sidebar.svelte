@@ -11,7 +11,16 @@
     let searchQuery = $state('');
     let dropdownOpen = $state(false);
     let scrollContainer;
-    let openSectors = $state(new Set());
+    let openSectors = $state((() => {
+        try {
+            const saved = sessionStorage.getItem('dash_open_sectors');
+            return saved ? new Set(JSON.parse(saved)) : new Set();
+        } catch { return new Set(); }
+    })());
+
+    $effect(() => {
+        try { sessionStorage.setItem('dash_open_sectors', JSON.stringify([...openSectors])); } catch {}
+    });
 
     // --- DERIVED STATE ---
 
@@ -61,7 +70,6 @@
         marketIndex.set('overview');
         dropdownOpen = false;
         searchQuery = '';
-        openSectors = new Set();
         loadIndexOverviewData();
     }
 
@@ -69,7 +77,43 @@
         marketIndex.set('sectors');
         dropdownOpen = false;
         searchQuery = '';
-        openSectors = new Set();
+    }
+
+    async function goToSectorAnalysis(sectorName) {
+        const stockIndex = currentIndex;
+        marketIndex.set('sectors');
+        dropdownOpen = false;
+        searchQuery = '';
+        sectorAnalysisMode.set('single-index');
+        // carry over the current stock index to single-index mode
+        const idxKey = (stockIndex && INDEX_CONFIG[stockIndex]) ? stockIndex : singleOpenIndex;
+        singleOpenIndex = idxKey;
+        singleSelectedIndex.set([idxKey]);
+        try { sessionStorage.setItem('dash_single_open_index', idxKey); } catch {}
+        selectedSector.set(sectorName);
+        _crossSector = sectorName;
+        _singleSector = sectorName;
+        singleOpenSectors = new Set([sectorName]);
+        // load single-index data (sectors + industries) so the list appears
+        await _loadSingleIndexData(idxKey);
+    }
+
+    async function goToStockMode(sectorName) {
+        const idxKey = singleOpenIndex;
+        dropdownOpen = false;
+        searchQuery = '';
+        if (idxKey && INDEX_CONFIG[idxKey]) {
+            marketIndex.set(idxKey);
+            openSectors = new Set([sectorName]);
+            const newTickers = await loadSummaryData(idxKey);
+            if (newTickers && newTickers.length > 0) {
+                const firstStock = newTickers.find(t => (t.sector && t.sector !== 0 ? t.sector : 'Other') === sectorName);
+                if (firstStock) {
+                    selectedSymbol.set(firstStock.symbol);
+                    lastSymbolPerIndex[idxKey] = firstStock.symbol;
+                }
+            }
+        }
     }
 
     // --- SECTOR ANALYSIS STATE ---
@@ -692,7 +736,6 @@
     async function switchIndex(key) {
         if (key === currentIndex) return;
         lastSymbolPerIndex[currentIndex] = $selectedSymbol;
-        openSectors = new Set();
         marketIndex.set(key);
         searchQuery = '';
         dropdownOpen = false;
@@ -1120,17 +1163,23 @@
                                     </svg>
                                 </button>
                                 <!-- sector name: click to highlight/select -->
-                                <button onclick={() => selectedSector.set(sec)}
-                                    class="flex-1 flex items-center gap-2 py-2.5 pr-4 min-w-0"
-                                >
-                                    <span class="text-[11px] font-semibold uppercase tracking-widest truncate
-                                        {isSelectedSec ? 'text-white/90' : isSectorActive ? 'text-white/80' : 'text-white/50'}">
-                                        {sec}
-                                    </span>
-                                    {#if secStockCount > 0}
-                                        <span class="ml-auto text-[12px] font-bold text-white/25 tabular-nums shrink-0">{secStockCount}</span>
-                                    {/if}
-                                </button>
+                                <div class="flex-1 flex items-center py-2.5 pr-4 pl-1 min-w-0 group/singlesec">
+                                    <button onclick={() => selectedSector.set(sec)} title="Select {sec}" class="truncate">
+                                        <span class="text-[11px] font-semibold uppercase tracking-widest
+                                            {isSelectedSec ? 'text-white/90' : isSectorActive ? 'text-white/80' : 'text-white/50'}">
+                                            {sec}
+                                        </span>
+                                    </button>
+                                    <div class="ml-auto flex items-center gap-3 shrink-0">
+                                        <button onclick={() => goToStockMode(sec)}
+                                            class="opacity-0 group-hover/singlesec:opacity-100 transition-opacity text-[10px] font-black text-white/60 uppercase tracking-wider hover:text-orange-500 cursor-pointer whitespace-nowrap">
+                                            Stock Mode
+                                        </button>
+                                        {#if secStockCount > 0}
+                                            <span class="text-[12px] font-bold text-white/25 tabular-nums w-6 text-right">{secStockCount}</span>
+                                        {/if}
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- industry checkboxes with per-sector filtering -->
@@ -1243,17 +1292,26 @@
         {:else}
             <!-- stock browsing: collapsible sector > industry > stock tree -->
             {#each sectorTree as sector}
-                <button onclick={() => toggleSector(sector.name)}
-                    class="w-full flex items-center justify-between px-4 py-3 bg-[#1a1a24] hover:bg-[#1e1e2a] border-b border-white/[0.06] border-l-[3px] border-l-bloom-accent/50 transition-all sticky top-0 z-10"
-                >
-                    <div class="flex items-center gap-2.5">
+                <div class="w-full flex items-center bg-[#1a1a24] border-b border-white/[0.06] border-l-[3px] border-l-bloom-accent/50 sticky top-0 z-10 group/sector">
+                    <!-- chevron: expand/collapse only -->
+                    <button onclick={() => toggleSector(sector.name)} title="Expand {sector.name}"
+                        class="pl-4 py-3 pr-1 flex items-center hover:bg-white/[0.05] transition-all rounded-l-sm">
                         <svg class="w-3 h-3 text-white/40 transition-transform {openSectors.has(sector.name) ? 'rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7" />
                         </svg>
-                        <span class="text-[11px] font-black text-white/80 uppercase tracking-widest">{sector.name}</span>
+                    </button>
+                    <!-- sector name + "Sector Analysis" on hover + stock count -->
+                    <div class="flex-1 flex items-center py-3 pr-4 pl-1.5 min-w-0">
+                        <span class="text-[11px] font-black text-white/80 uppercase tracking-widest truncate">{sector.name}</span>
+                        <div class="ml-auto flex items-center gap-3 shrink-0">
+                            <button onclick={() => goToSectorAnalysis(sector.name)}
+                                class="opacity-0 group-hover/sector:opacity-100 transition-opacity text-[10px] font-black text-white/60 uppercase tracking-wider hover:text-orange-500 cursor-pointer whitespace-nowrap">
+                                Sector Analysis
+                            </button>
+                            <span class="text-[12px] font-bold text-white/25 tabular-nums w-6 text-right">{sector.stockCount}</span>
+                        </div>
                     </div>
-                    <span class="text-[12px] font-bold text-white/25 tabular-nums">{sector.stockCount}</span>
-                </button>
+                </div>
 
                 {#if openSectors.has(sector.name)}
                     {#each sector.industries as industry}
