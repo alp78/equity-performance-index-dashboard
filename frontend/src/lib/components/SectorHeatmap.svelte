@@ -245,7 +245,7 @@
     }
 </script>
 
-<div class="heatmap-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0">
+<div class="heatmap-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0 max-lg:overflow-x-auto">
 
     <!-- header -->
     <div class="flex items-start justify-between px-5 pt-5 pb-3 flex-shrink-0 border-b border-white/5">
@@ -268,7 +268,7 @@
     </div>
 
     <!-- column headers -->
-    <div class="flex items-center col-hdr-row px-3 border-b border-white/[0.03] flex-shrink-0">
+    <div class="flex items-center col-hdr-row px-3 border-b border-white/[0.03] flex-shrink-0 heatmap-min-w">
         <div style="width:{sectorW}" class="pl-3 text-left flex-shrink-0">
             <span class="col-hdr-text font-black text-white/15 uppercase tracking-widest">Sector</span>
         </div>
@@ -287,14 +287,10 @@
     </div>
 
     <!-- data rows -->
-    <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden">
+    <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden heatmap-min-w">
         {#if sorted.length === 0 && !allSectorSeries}
-            <div class="flex items-center justify-center h-full text-white/15 text-[11px] font-bold uppercase tracking-widest">
-                Loading…
-            </div>
-        {:else if sorted.length === 0}
-            <div class="flex items-center justify-center h-full text-white/15 text-[11px] font-bold uppercase tracking-widest">
-                No data available
+            <div class="flex items-center justify-center h-full">
+                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
         {/if}
 
@@ -375,4 +371,9 @@
     .cell-inner  { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12 - 6px);
                    min-height: 16px;
                    max-height: 36px; }
+
+    /* On mobile, ensure table has minimum width for readability with horizontal scroll */
+    @media (max-width: 1024px) {
+        .heatmap-min-w { min-width: 500px; }
+    }
 </style>

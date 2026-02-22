@@ -221,7 +221,7 @@
     </div>
 
     <!-- symbol cards -->
-    <div class="flex-1 flex flex-col overflow-y-auto overflow-x-hidden gap-2 min-h-0">
+    <div class="flex-1 flex flex-col overflow-y-auto overflow-x-hidden justify-around min-h-0">
         {#each resolvedSymbols as symbol}
             {@const data = quotes[symbol] || { price: 0, pct: 0, diff: 0 }}
             {@const status = getStatus(symbol, data)}
@@ -257,13 +257,13 @@
                         {/if}
                     </span>
 
-                    <div class="flex items-center gap-1.5 font-bold {data.pct >= 0 ? 'text-green-500' : 'text-red-500'}">
+                    <div class="flex items-center gap-1.5 font-bold {(data.pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
                         {#if hasData}
                             <span class="text-sm tabular-nums">
-                                {data.pct >= 0 ? '+' : ''}{data.pct.toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
+                                {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
                             </span>
                             <span class="text-[11px] opacity-70 tabular-nums font-black">
-                                ({data.diff >= 0 ? '+' : ''}{data.diff.toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
+                                ({(data.diff ?? 0) >= 0 ? '+' : ''}{(data.diff ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
                             </span>
                         {:else}
                             <span class="text-[10px] opacity-20">waiting...</span>

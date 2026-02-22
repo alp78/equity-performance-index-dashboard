@@ -27,6 +27,7 @@
 
     let rows     = $state([]);
     let loading  = $state(false);
+    let hasEverLoaded = $state(false);
     let cache    = {};
 
     let indexKey  = $derived(($singleSelectedIndex || [])[0] || 'sp500');
@@ -57,7 +58,7 @@
         if (!browser || !idx) return;
         const pKey = range?.start ? `${range.start}_${range.end}` : (period || '1y');
         const cKey = `rankings_${idx}_${pKey}`;
-        if (cache[cKey]) { rows = cache[cKey]; return; }
+        if (cache[cKey]) { rows = cache[cKey]; hasEverLoaded = true; return; }
         loading = true;
         try {
             const url = range?.start
@@ -85,6 +86,7 @@
             }
         } catch {}
         loading = false;
+        hasEverLoaded = true;
     }
 
     $effect(() => { load(currentPeriod, customRange, indexKey); });
@@ -137,7 +139,11 @@
 
     <!-- ranked sector rows -->
     <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col justify-start px-4 py-2 gap-2">
-        {#if rows.length === 0 && !loading}
+        {#if rows.length === 0 && !loading && !hasEverLoaded}
+            <div class="flex items-center justify-center h-full">
+                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+            </div>
+        {:else if rows.length === 0 && !loading && hasEverLoaded}
             <div class="flex items-center justify-center h-full text-white/15 text-[10px] font-bold uppercase tracking-widest">No data</div>
         {/if}
         {#each filteredRows as row (row.sector)}
@@ -179,4 +185,10 @@
     .sector-name { font-size: 13px; }
     .return-val  { font-size: 13px; font-weight: 900; min-width: 58px; text-align: right; }
     .stock-ct    { font-size: 12px; min-width: 24px; text-align: right; }
+
+    @media (max-width: 640px) {
+        .sector-name { font-size: 11px; }
+        .return-val  { font-size: 11px; min-width: 48px; }
+        .stock-ct    { font-size: 10px; min-width: 20px; }
+    }
 </style>

@@ -8,6 +8,7 @@ import duckdb
 import asyncio
 import requests
 import json
+import math
 import uvicorn
 import yfinance as yf
 import time
@@ -614,7 +615,7 @@ async def fetch_crypto_data():
         }
         LATEST_MARKET_DATA["BINANCE:BTCUSDT"] = payload
         if manager.active_connections:
-            await manager.broadcast(json.dumps(payload))
+            await manager.broadcast(json.dumps(_sanitize_floats(payload)))
     except:
         pass
 
@@ -640,7 +641,7 @@ async def fetch_stock_data():
     for batch in batches:
         try:
             data = yf.download(
-                batch, period="2d", interval="1d",
+                batch, period="5d", interval="1d",
                 progress=False, group_by="ticker", threads=True
             )
             if data is None or data.empty:
@@ -651,18 +652,20 @@ async def fetch_stock_data():
             for symbol in batch:
                 try:
                     df = data[symbol] if is_multi and len(batch) > 1 else data
-                    if pd.isna(df["Close"].iloc[-1]):
-                        df = df.dropna(subset=["Close"])
-                    if len(df) < 2:
+                    df = df.dropna(subset=["Close"])
+                    if len(df) < 1:
                         continue
 
                     current = float(df["Close"].iloc[-1])
-                    prev = float(df["Close"].iloc[-2])
                     if pd.isna(current) or current == 0:
                         continue
 
-                    diff = current - prev
-                    pct = ((current - prev) / prev) * 100 if prev != 0 else 0
+                    prev = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
+                    if prev is not None and (pd.isna(prev) or prev == 0):
+                        prev = None
+
+                    diff = (current - prev) if prev else 0
+                    pct = ((current - prev) / prev) * 100 if prev else 0
                     display_symbol = DISPLAY_MAP.get(symbol, symbol)
                     is_fx = symbol == "EURUSD=X"
 
@@ -674,7 +677,7 @@ async def fetch_stock_data():
                     }
                     LATEST_MARKET_DATA[display_symbol] = payload
                     if manager.active_connections:
-                        await manager.broadcast(json.dumps(payload))
+                        await manager.broadcast(json.dumps(_sanitize_floats(payload)))
                 except Exception:
                     continue
 
@@ -793,7 +796,7 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         # send cached market data snapshot on connect
         for payload in list(LATEST_MARKET_DATA.values()):
-            await websocket.send_text(json.dumps(payload))
+            await websocket.send_text(json.dumps(_sanitize_floats(payload)))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -912,9 +915,21 @@ async def health():
     return result
 
 
+def _sanitize_floats(obj):
+    """Replace inf/nan with None so json.dumps doesn't choke."""
+    if isinstance(obj, float):
+        if math.isfinite(obj):
+            return obj
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
 @app.get("/market-data")
 async def get_market_data():
-    return LATEST_MARKET_DATA
+    return _sanitize_floats(LATEST_MARKET_DATA)
 
 
 @app.post("/api/admin/refresh")
@@ -1193,7 +1208,7 @@ async def get_index_price_single(symbol: str, period: str = "max"):
                     [symbol]
                 ).df()
 
-        result = df.fillna(0).to_dict(orient="records")
+        result = _sanitize_floats(df.fillna(0).to_dict(orient="records"))
         set_cached_response(cache_key, result)
         return result
 
@@ -2077,7 +2092,7 @@ async def get_summary(index: str = "sp500"):
 
     try:
         with db_rwlock.read():
-            res = (
+            res = _sanitize_floats(
                 local_db.execute(
                     sql("summary.sql")
                     .replace("{index}", index)
@@ -2182,7 +2197,7 @@ async def get_data(symbol: str, period: str = "1y"):
                     [symbol, symbol]
                 ).df()
 
-        result = df.fillna(0).to_dict(orient="records")
+        result = _sanitize_floats(df.fillna(0).to_dict(orient="records"))
         set_cached_response(cache_key, result)
         return result
 
@@ -2222,12 +2237,12 @@ async def get_rankings(period: str = "1y", index: str = "sp500"):
                     .replace("{days}", str(days))
                 ).df()
 
-        result = {
+        result = _sanitize_floats({
             "selected": {
                 "top":    df.head(3).to_dict("records"),
                 "bottom": df.tail(3).sort_values("value").to_dict("records"),
             }
-        }
+        })
         set_cached_response(cache_key, result)
         return result
 

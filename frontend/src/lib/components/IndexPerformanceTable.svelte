@@ -9,6 +9,7 @@
 
     let stats = $state([]);
     let loading = $state(false);
+    let hasEverLoaded = $state(false);
     let cache = {};
     let now = $state(new Date());
 
@@ -83,7 +84,7 @@
             cacheKey = `stats_${p}`;
             url = `${API_BASE_URL}/index-prices/stats?period=${p}&t=${Date.now()}`;
         }
-        if (cache[cacheKey]) { stats = cache[cacheKey]; return; }
+        if (cache[cacheKey]) { stats = cache[cacheKey]; hasEverLoaded = true; return; }
         loading = true;
         try {
             const controller = new AbortController();
@@ -93,6 +94,7 @@
             if (res.ok) { const data = await res.json(); cache[cacheKey] = data; stats = data; }
         } catch (e) {}
         loading = false;
+        hasEverLoaded = true;
     }
 
     $effect(() => { load(currentPeriod, customRange); });
@@ -235,7 +237,11 @@
             </div>
         {/each}
 
-        {#if allStats.length === 0 && !loading}
+        {#if allStats.length === 0 && !loading && !hasEverLoaded}
+            <div class="absolute inset-0 flex items-center justify-center">
+                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+            </div>
+        {:else if allStats.length === 0 && !loading && hasEverLoaded}
             <div class="absolute inset-0 flex items-center justify-center text-white/15 text-[11px] font-bold uppercase tracking-widest">No data available</div>
         {/if}
     </div>

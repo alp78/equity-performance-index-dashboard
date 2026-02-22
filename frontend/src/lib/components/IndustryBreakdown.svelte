@@ -10,10 +10,12 @@
 
     let rows     = $state([]);
     let loading  = $state(false);
+    let hasEverLoaded = $state(false);
     let cache    = {};
     let chartEl;
     let chart = $state(null);
     let observer;
+    let isMobile = $state(typeof window !== 'undefined' && window.innerWidth < 640);
 
     let indexKey  = $derived(($singleSelectedIndex || [])[0] || 'sp500');
     let sector    = $derived($selectedSector || '');
@@ -59,7 +61,7 @@
         if (!browser || !idx || !sec) return;
         const pKey = range?.start ? `${range.start}_${range.end}` : (period || '1y');
         const cKey = `turnover_${idx}_${sec}_${pKey}`;
-        if (cache[cKey]) { rows = cache[cKey]; return; }
+        if (cache[cKey]) { rows = cache[cKey]; hasEverLoaded = true; return; }
         loading = true;
         try {
             const base = `${API_BASE_URL}/sector-comparison/industry-turnover?index=${idx}&sector=${encodeURIComponent(sec)}`;
@@ -77,6 +79,7 @@
             }
         } catch {}
         loading = false;
+        hasEverLoaded = true;
     }
 
     $effect(() => { load(currentPeriod, customRange, indexKey, sector); });
@@ -150,17 +153,17 @@
                     position: 'outside',
                     formatter: '{b}',
                     color: 'rgba(255,255,255,0.55)',
-                    fontSize: 13,
+                    fontSize: isMobile ? 10 : 13,
                     fontWeight: 500,
                     fontFamily: 'Inter, system-ui, sans-serif',
                     overflow: 'truncate',
                     ellipsis: '..',
-                    width: 120,
+                    width: isMobile ? 70 : 120,
                 },
                 labelLine: {
                     show: true,
-                    length: 14,
-                    length2: 18,
+                    length: isMobile ? 8 : 14,
+                    length2: isMobile ? 10 : 18,
                     smooth: 0.3,
                     lineStyle: {
                         color: 'rgba(255,255,255,0.15)',
@@ -210,7 +213,15 @@
         if (!browser || !chartEl) return;
         const echarts = await import('echarts');
         const instance = echarts.init(chartEl, 'dark', { renderer: 'canvas' });
-        observer = new ResizeObserver(() => { instance?.resize(); });
+        observer = new ResizeObserver(() => {
+            instance?.resize();
+            const wasMobile = isMobile;
+            isMobile = window.innerWidth < 640;
+            // re-render with updated label sizes if breakpoint crossed
+            if (wasMobile !== isMobile && pieData.length > 0) {
+                instance?.setOption(buildOption(pieData), { notMerge: true });
+            }
+        });
         observer.observe(chartEl);
         chart = instance; // triggers $effect to render
     });
@@ -243,7 +254,11 @@
 
     <!-- chart area -->
     <div class="flex-1 min-h-0 relative">
-        {#if pieData.length === 0 && !loading}
+        {#if pieData.length === 0 && !loading && !hasEverLoaded && sector}
+            <div class="absolute inset-0 flex items-center justify-center">
+                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+            </div>
+        {:else if pieData.length === 0 && !loading}
             <div class="absolute inset-0 flex items-center justify-center">
                 <span class="text-white/15 text-[10px] font-bold uppercase tracking-widest">
                     {sector ? 'No data' : 'Select a sector'}

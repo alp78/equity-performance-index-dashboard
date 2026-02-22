@@ -3,7 +3,7 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { sectorSelectedIndices, selectedSector, marketIndex, selectedSymbol, summaryData } from '$lib/stores.js';
+    import { sectorSelectedIndices, selectedSector, marketIndex, selectedSymbol, summaryData, loadSummaryData } from '$lib/stores.js';
     import { requestFocusSymbol } from '$lib/stores.js';
 
     let { currentPeriod = '1y', customRange = null, industryFilter = null, topStocksCache = null } = $props();
@@ -11,6 +11,7 @@
     // API-fetched data (fallback for custom ranges or when cache not available)
     let apiData    = $state(null);
     let loading = $state(false);
+    let hasEverLoaded = $state(false);
     let apiCache   = {};
 
     let indices   = $derived($sectorSelectedIndices);
@@ -129,6 +130,7 @@
     // switch to the stock's parent index and focus it in the sidebar
     function navigateToStock(symbol, indexKey) {
         marketIndex.set(indexKey);
+        loadSummaryData(indexKey);
         selectedSymbol.set(symbol);
         requestFocusSymbol(symbol);
     }
@@ -140,7 +142,7 @@
     );
 </script>
 
-<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
+<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 max-sm:p-3 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
 
     <!-- header -->
     <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
@@ -166,7 +168,7 @@
     </div>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-y-auto overflow-x-hidden">
-        {#if !filteredData && loading}
+        {#if !filteredData && (loading || !topStocksCache)}
             <div class="flex-1 flex items-center justify-center">
                 <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
             </div>
@@ -190,7 +192,7 @@
                             <button
                                 onclick={() => navigateToStock(item.symbol, item.index_key)}
                                 title="{item.name || item.symbol}"
-                                class="group/stock w-20 shrink-0 text-left cursor-pointer"
+                                class="stock-btn group/stock w-20 shrink-0 text-left cursor-pointer"
                             >
                                 <div class="text-[13px] font-black text-white/80 group-hover/stock:!text-bloom-accent uppercase tracking-tighter truncate leading-tight transition-colors">{item.symbol}</div>
                                 <div class="text-[11px] font-bold uppercase tracking-wider"
@@ -218,7 +220,7 @@
                             <button
                                 onclick={() => navigateToStock(item.symbol, item.index_key)}
                                 title="{item.name || item.symbol}"
-                                class="group/stock w-20 shrink-0 text-left cursor-pointer"
+                                class="stock-btn group/stock w-20 shrink-0 text-left cursor-pointer"
                             >
                                 <div class="text-[13px] font-black text-white/80 group-hover/stock:!text-bloom-accent uppercase tracking-tighter truncate leading-tight transition-colors">{item.symbol}</div>
                                 <div class="text-[11px] font-bold uppercase tracking-wider"
@@ -245,4 +247,8 @@
 
 <style>
     div { user-select: none; }
+
+    @media (max-width: 640px) {
+        .stock-btn { width: 3.5rem !important; }
+    }
 </style>

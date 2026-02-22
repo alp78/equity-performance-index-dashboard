@@ -663,6 +663,7 @@
 
     let metadataCache = {};
     let metadataFetchId = 0;
+    let stockFetchId = 0;
     let lastFetchedSymbol = '';
     let lastFetchedIndex = '';
     let displayNameText = $state('');
@@ -725,13 +726,14 @@
 
     async function fetchStockData(symbol) {
         if (!symbol) return;
+        const myFetchId = ++stockFetchId;
 
         // fire-and-forget metadata fetch to populate displayNameText
-        const fetchId = ++metadataFetchId;
+        const metaId = ++metadataFetchId;
         fetchWithTimeout(`${API_BASE_URL}/metadata/${encodeURIComponent(symbol)}`, 8000)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
-                if (data && data.name && fetchId === metadataFetchId) {
+                if (data && data.name && metaId === metadataFetchId) {
                     metadataCache[symbol] = data.name;
                     displayNameText = data.name;
                 }
@@ -739,14 +741,17 @@
             .catch(() => {});
 
         // retry with backoff — backend may be lazy-loading the index on first request
-        const maxRetries = 5;
+        const maxRetries = 3;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
+            if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
             try {
                 const res = await fetchWithTimeout(
-                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 30000
+                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 15000
                 );
+                if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
                 if (res.ok) {
                     const json = await res.json();
+                    if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
                     if (json && json.length > 0) {
                         fullStockData = json;
                         isInitialLoading = false;
@@ -759,6 +764,7 @@
                     }
                 }
             } catch (e) {
+                if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
                 if (attempt < maxRetries - 1) {
                     await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
                     continue;
@@ -766,8 +772,10 @@
                 console.error(`Failed to fetch data for ${symbol}:`, e);
             }
         }
-        isInitialLoading = false;
-        isIndexSwitching = false;
+        if (myFetchId === stockFetchId) {
+            isInitialLoading = false;
+            isIndexSwitching = false;
+        }
     }
 
     // --- INDUSTRY RETURN OVERRIDES FOR SUB-COMPONENTS ---
@@ -883,6 +891,9 @@
             isIndexSwitching = true;
             displayNameText = '';
             lastFetchedSymbol = '';
+            // load summary data for the new index (sidebar only does this via switchIndex,
+            // but navigateToStock and other paths skip it)
+            untrack(() => loadSummaryData(idx));
         }
     });
 
@@ -900,22 +911,55 @@
     });
     // overview index checkbox changes are handled reactively by the $effect that
     // derives comparisonData from allComparisonData + overviewSelectedIndices
+
+    // --- MOBILE SIDEBAR STATE ---
+    let sidebarOpen = $state(false);
+    function toggleSidebar() { sidebarOpen = !sidebarOpen; }
+    function closeSidebar() { sidebarOpen = false; }
 </script>
 
 {#if backendReady}
-<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30">
+<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30 max-lg:flex-col max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-auto">
 
-    <div class="w-[460px] h-full shrink-0 z-20 shadow-2xl shadow-black/50">
+    <!-- mobile hamburger button -->
+    <button
+        onclick={toggleSidebar}
+        class="hidden max-lg:flex fixed top-3 left-3 z-[60] items-center justify-center w-10 h-10 rounded-xl bg-bloom-card/90 border border-white/10 backdrop-blur-md shadow-lg"
+        aria-label="Toggle sidebar"
+    >
+        <svg class="w-5 h-5 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            {#if sidebarOpen}
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            {:else}
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            {/if}
+        </svg>
+    </button>
+
+    <!-- sidebar backdrop (mobile) -->
+    {#if sidebarOpen}
+        <button
+            onclick={closeSidebar}
+            class="hidden max-lg:block fixed inset-0 z-[39] bg-black/60 backdrop-blur-sm"
+            aria-label="Close sidebar"
+        ></button>
+    {/if}
+
+    <div class="w-[460px] h-full shrink-0 z-[40] shadow-2xl shadow-black/50
+        max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300
+        {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
         <Sidebar />
     </div>
 
-    <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0">
+    <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0
+        max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-visible max-lg:p-4 max-lg:pt-16 max-lg:gap-4
+        max-sm:p-3 max-sm:pt-14 max-sm:gap-3">
 
         <!-- header: title + period controls -->
-        <header class="flex shrink-0 justify-between items-center z-10">
+        <header class="flex shrink-0 justify-between items-center z-10 max-lg:flex-col max-lg:items-start max-lg:gap-3">
             <div>
                 {#if inOverview}
-                    <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">INDEX OVERVIEW</h1>
+                    <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">INDEX OVERVIEW</h1>
                     <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 text-white/30">
                         <span class="text-orange-400/70">{$overviewSelectedIndices.length} indices</span> · Normalized % change
                     </span>
@@ -927,15 +971,15 @@
                         <div class="flex items-center gap-4">
                             <span class="{sectorFlagMap[idxKey] || ''} fis rounded-sm" style="font-size: 2.2rem;"></span>
                             <div>
-                                <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{idxCfg?.shortLabel || idxKey}</h1>
+                                <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{idxCfg?.shortLabel || idxKey}</h1>
                                 <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
-                                    <span class="text-orange-400/70">{$selectedSectors.length} sectors</span> · Normalized % change
+                                    <span class="text-orange-400/70">{$selectedSectors.length < ALL_SECTORS.length ? `${$selectedSectors.length} of ${ALL_SECTORS.length}` : ALL_SECTORS.length} sectors</span> · Normalized % change
                                 </span>
                             </div>
                         </div>
                     {:else}
                         <div>
-                            <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSector || 'SECTOR ANALYSIS'}</h1>
+                            <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSector || 'SECTOR ANALYSIS'}</h1>
                             <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
                                 <span class="text-orange-400/70">{$sectorSelectedIndices.length} indices</span>
                                 {#if $selectedIndustries.length > 0}
@@ -952,15 +996,15 @@
                         </div>
                     {/if}
                 {:else}
-                    <h1 class="text-5xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
+                    <h1 class="text-5xl max-lg:text-3xl max-sm:text-2xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
                     <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 {displayName ? 'text-white/40' : 'text-white/15'}">
                         {displayName || 'Loading...'}
                     </span>
                 {/if}
             </div>
 
-            <div class="flex items-center gap-3">
-                <div class="flex items-center gap-2 bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
+            <div class="flex items-center gap-3 max-lg:gap-2 max-lg:flex-wrap max-lg:w-full">
+                <div class="flex items-center gap-2 bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md max-sm:hidden">
                     <button
                         onclick={toggleCustomMode}
                         class="px-4 py-1.5 text-[10px] font-black rounded-lg transition-all duration-300
@@ -970,7 +1014,7 @@
                                 ? 'bg-orange-500/20 text-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.2)]'
                                 : 'text-white/40 hover:bg-white/5 hover:text-white'}"
                     >
-                        {selectMode ? '⊞ SELECTING...' : 'CUSTOM RANGE'}
+                        {selectMode ? '⊞ SELECTING...' : 'CUSTOM'}
                     </button>
                     {#if customRange}
                         <span class="text-[10px] font-bold text-orange-400/80 tabular-nums whitespace-nowrap pr-2">
@@ -979,11 +1023,11 @@
                     {/if}
                 </div>
 
-                <div class="flex bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
+                <div class="flex flex-wrap bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
                     {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
                         <button
                             onclick={() => setPeriod(p.toLowerCase())}
-                            class="px-4 py-1.5 text-[10px] font-black rounded-lg transition-all duration-300
+                            class="px-4 max-sm:px-2.5 py-1.5 text-[10px] font-black rounded-lg transition-all duration-300
                             {currentPeriod === p.toLowerCase()
                                 ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] scale-105'
                                 : 'text-white/40 hover:bg-white/5 hover:text-white'}"
@@ -994,8 +1038,9 @@
         </header>
 
         <!-- main content: chart + bottom panels, layout varies by mode -->
-        <div class="{inSectors ? 'gap-4' : 'gap-6'} flex-1 flex flex-col min-h-0 min-w-0 z-0">
-            <section class="{inSectors ? 'flex-[9]' : 'flex-[2]'} w-full min-w-0 bg-[#111114] rounded-3xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
+        <div class="{inSectors ? 'gap-4' : 'gap-6'} flex-1 flex flex-col min-h-0 min-w-0 z-0 max-lg:gap-4 max-lg:min-h-0 max-lg:flex-none">
+            <section class="{inSectors ? 'flex-[9]' : 'flex-[2]'} w-full min-w-0 bg-[#111114] rounded-3xl max-lg:rounded-2xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
+                max-lg:flex-none max-lg:h-[50vh] max-sm:h-[40vh]
                 {selectMode ? 'ring-2 ring-orange-500/30' : ''}" >
                 <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
                 {#if inOverview}
@@ -1037,19 +1082,15 @@
                                 onRangeSelect={handleRangeSelect}
                             />
                         </div>
-                    {:else if sectorComparisonData?._empty}
-                        <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3 opacity-30">
-                                <span class="text-[11px] font-black uppercase tracking-widest text-white/40">No Data</span>
-                            </div>
-                        </div>
                     {:else}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
                             <div class="flex flex-col items-center space-y-3 opacity-30">
-                                {#if sectorDataLoading}
+                                {#if sectorDataLoading || !allSectorSeries}
                                     <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                    <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Sector Data</span>
+                                {:else}
+                                    <span class="text-[10px] font-black uppercase tracking-widest text-white">Select a sector</span>
                                 {/if}
-                                <span class="text-[10px] font-black uppercase tracking-widest text-white">{sectorDataLoading ? 'Loading Sector Data' : 'Select a sector'}</span>
                             </div>
                         </div>
                     {/if}
@@ -1085,38 +1126,41 @@
 
             <!-- bottom panels: vary by mode -->
             {#if inOverview}
-                <div class="flex-1 min-h-0">
+                <div class="flex-1 min-h-0 max-lg:flex-none max-lg:min-h-[300px]">
                     <IndexPerformanceTable {currentPeriod} {customRange} />
                 </div>
             {:else if inSectors}
                 {#if $sectorAnalysisMode === 'single-index'}
-                    <div class="flex-[11] grid grid-cols-2 gap-4 min-h-0">
-                        <div class="min-h-0">
+                    <div class="flex-[11] grid grid-cols-2 gap-4 min-h-0
+                        max-lg:flex-none max-lg:grid-cols-1 max-lg:auto-rows-[minmax(280px,1fr)]">
+                        <div class="min-h-0 max-lg:min-h-[280px]">
                             <SectorRankings {currentPeriod} {customRange} industryReturnOverride={rankingsIndustryOverride} />
                         </div>
-                        <div class="min-h-0">
+                        <div class="min-h-0 max-lg:min-h-[350px]">
                             <IndustryBreakdown {currentPeriod} {customRange} />
                         </div>
                     </div>
                 {:else}
-                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
-                        <div class="col-span-8 min-h-0">
+                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden
+                        max-lg:flex-none max-lg:grid-cols-1 max-lg:auto-rows-auto max-lg:overflow-visible">
+                        <div class="col-span-8 min-h-0 max-lg:col-span-1 max-lg:min-h-[320px]">
                             <SectorHeatmap {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} filteredSector={$selectedSector} {allSectorSeries} {industrySeriesCache} />
                         </div>
-                        <div class="col-span-4 min-h-0">
+                        <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[300px]">
                             <SectorTopStocks {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} {topStocksCache} />
                         </div>
                     </div>
                 {/if}
             {:else}
-                <div class="flex-1 grid grid-cols-12 gap-6 min-h-0">
-                    <div class="col-span-4 min-h-0 flex flex-col">
+                <div class="flex-1 grid grid-cols-12 gap-6 min-h-0
+                    max-lg:flex-none max-lg:grid-cols-1 max-lg:gap-4 max-lg:auto-rows-[minmax(200px,1fr)]">
+                    <div class="col-span-4 min-h-0 flex flex-col max-lg:col-span-1 max-lg:min-h-[250px]">
                         <RankingPanel {currentPeriod} {customRange} />
                     </div>
-                    <div class="col-span-4 min-h-0">
+                    <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[200px]">
                         <LiveIndicators title="MARKET LEADERS" symbols={['NVDA', 'AAPL', 'MSFT']} dynamicByIndex={true} />
                     </div>
-                    <div class="col-span-4 min-h-0">
+                    <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[200px]">
                         <LiveIndicators title="GLOBAL MACRO" subtitle=" " symbols={['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD']} />
                     </div>
                 </div>
@@ -1126,7 +1170,7 @@
 </div>
 {:else}
 <!-- startup loading screen — shown while backend is warming up -->
-<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] items-center justify-center font-sans">
+<div class="flex h-dvh w-screen bg-[#0d0d12] text-[#d1d1d6] items-center justify-center font-sans">
     <div class="flex flex-col items-center gap-6 max-w-md w-full px-8">
         <div class="w-10 h-10 border-2 border-white/10 border-t-purple-500 rounded-full animate-spin"></div>
         <div class="text-center">

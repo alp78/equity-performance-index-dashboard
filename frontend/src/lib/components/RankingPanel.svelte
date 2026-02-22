@@ -153,7 +153,7 @@
                             >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
                                 <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
-                                    <span class="text-[11px] font-medium text-white/80 whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{item.value.toFixed(1)}%</span>
+                                    <span class="text-[11px] font-medium text-white/80 whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{(item.value ?? 0).toFixed(1)}%</span>
                                 </div>
                             </div>
                         </div>
@@ -175,7 +175,7 @@
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
                                 <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
                                     <span class="text-[11px] font-medium text-white/80 whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
-                                        {item.value.toFixed(1)}%
+                                        {(item.value ?? 0).toFixed(1)}%
                                     </span>
                                 </div>
                             </div>

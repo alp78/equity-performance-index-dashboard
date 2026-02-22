@@ -57,6 +57,12 @@
     let brushStartX = 0;
     let brushStartTime = null;
 
+    // --- TOUCH STATE ---
+    let isTouchDragging = false;
+    let touchStartX = 0;
+    let touchStartRange = null;
+    let lastPinchDist = 0;
+
     const PERIOD_DAYS = {
         '1w': 7, '1mo': 30, '3mo': 90,
         '6mo': 180, '1y': 365, '5y': 1825,
@@ -309,6 +315,67 @@
         }
     }
 
+    // --- TOUCH HANDLERS (mobile pan/pinch-zoom) ---
+
+    function handleTouchStart(event) {
+        if (!chart || processedData.length === 0) return;
+        if (event.touches.length === 2) {
+            // pinch-zoom: record initial distance
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            lastPinchDist = Math.hypot(dx, dy);
+            isTouchDragging = false;
+            event.preventDefault();
+        } else if (event.touches.length === 1) {
+            // single-finger: pan
+            const range = chart.timeScale().getVisibleLogicalRange();
+            if (!range) return;
+            isTouchDragging = true;
+            touchStartX = event.touches[0].clientX;
+            touchStartRange = { ...range };
+        }
+    }
+
+    function handleTouchMove(event) {
+        if (!chart) return;
+        if (event.touches.length === 2) {
+            // pinch-zoom
+            event.preventDefault();
+            const dx = event.touches[0].clientX - event.touches[1].clientX;
+            const dy = event.touches[0].clientY - event.touches[1].clientY;
+            const dist = Math.hypot(dx, dy);
+            if (lastPinchDist === 0) { lastPinchDist = dist; return; }
+
+            const timeScale = chart.timeScale();
+            const range = timeScale.getVisibleLogicalRange();
+            if (!range) return;
+
+            const rangeSize = range.to - range.from;
+            const scale = lastPinchDist / dist;
+            const newSize = rangeSize * scale;
+            if (newSize < 3) { lastPinchDist = dist; return; }
+
+            const center = (range.from + range.to) / 2;
+            const clamped = clampRange(center - newSize / 2, center + newSize / 2);
+            timeScale.setVisibleLogicalRange(clamped);
+            lastPinchDist = dist;
+        } else if (event.touches.length === 1 && isTouchDragging && touchStartRange) {
+            // single-finger pan
+            const rect = chartContainer.getBoundingClientRect();
+            const rangeSize = touchStartRange.to - touchStartRange.from;
+            const pixelDelta = event.touches[0].clientX - touchStartX;
+            const barDelta = -(pixelDelta / rect.width) * rangeSize;
+            const clamped = clampRange(touchStartRange.from + barDelta, touchStartRange.to + barDelta);
+            chart.timeScale().setVisibleLogicalRange(clamped);
+        }
+    }
+
+    function handleTouchEnd() {
+        isTouchDragging = false;
+        touchStartRange = null;
+        lastPinchDist = 0;
+    }
+
     // --- PRICE LINE VISIBILITY ---
 
     // show sticky label pinned to top/bottom edge when the live price line scrolls off-screen
@@ -387,14 +454,18 @@
             handleScale: false,
         });
 
-        // hide TradingView branding injected by lightweight-charts
+        // hide TradingView branding injected by lightweight-charts (debounced to prevent mutation loop)
+        let _nukeTimer = null;
         const nuke = () => {
             chartContainer.querySelectorAll('div, a, span').forEach(el => {
                 if (el.innerText?.includes('TradingView') || el.href?.includes('tradingview')) el.style.display = 'none';
             });
         };
         nuke();
-        observer = new MutationObserver(nuke);
+        observer = new MutationObserver(() => {
+            if (_nukeTimer) return;
+            _nukeTimer = setTimeout(() => { _nukeTimer = null; nuke(); }, 200);
+        });
         observer.observe(chartContainer, { childList: true, subtree: true });
 
         // --- STOCK MODE SERIES ---
@@ -610,6 +681,9 @@
         chartContainer.addEventListener('mousedown', handleMouseDown);
         window.addEventListener('mousemove', handleMouseMove);
         window.addEventListener('mouseup', handleMouseUp);
+        chartContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
+        chartContainer.addEventListener('touchmove', handleTouchMove, { passive: false });
+        chartContainer.addEventListener('touchend', handleTouchEnd);
 
         // double-click: snap to custom range if set, otherwise reset period
         chartContainer.addEventListener('dblclick', () => {
@@ -650,25 +724,53 @@
     // --- REACTIVE: STOCK DATA ---
 
     $effect(() => {
-        const raw = $state.snapshot(data);
-        if (candleSeries && raw.length > 0) {
-            // deduplicate and sort by date
+        // use spread to get a plain array — avoids deep proxy clone overhead from $state.snapshot
+        const raw = [...data];
+        if (!candleSeries) return;
+
+        if (raw.length === 0) {
+            // clear chart when data is reset (stock switch) so stale data doesn't show
+            try {
+                candleSeries.setData([]);
+                areaSeries.setData([]);
+                ma30Series.setData([]);
+                ma90Series.setData([]);
+                volumeSeries.setData([]);
+                if (activePriceLine) { try { candleSeries.removePriceLine(activePriceLine); } catch(e) {} activePriceLine = null; }
+            } catch(e) { console.error('Chart clear error:', e); }
+            processedData = [];
+            lastDataKey = '';
+            return;
+        }
+
+        try {
+            // deduplicate and sort by date — filter out rows with missing time/close
             const uniqueMap = new Map();
-            raw.forEach(item => uniqueMap.set(item.time, item));
-            processedData = Array.from(uniqueMap.values()).sort((a, b) => new Date(a.time) - new Date(b.time));
+            for (const item of raw) {
+                if (item.time && item.close != null && item.close !== 0) {
+                    uniqueMap.set(item.time, item);
+                }
+            }
+            if (uniqueMap.size === 0) return;
+            processedData = Array.from(uniqueMap.values()).sort((a, b) => {
+                if (a.time < b.time) return -1;
+                if (a.time > b.time) return 1;
+                return 0;
+            });
 
             candleSeries.setData(processedData.map(d => ({
                 time: d.time, open: d.open || d.close, high: d.high || d.close,
                 low: d.low || d.close, close: d.close,
             })));
             areaSeries.setData(processedData.map(d => ({ time: d.time, value: d.close })));
-            ma30Series.setData(processedData.map(d => ({ time: d.time, value: d.ma30 })));
-            ma90Series.setData(processedData.map(d => ({ time: d.time, value: d.ma90 })));
+            ma30Series.setData(processedData.map(d => ({ time: d.time, value: d.ma30 || 0 })));
+            ma90Series.setData(processedData.map(d => ({ time: d.time, value: d.ma90 || 0 })));
 
-            // highlight volume bars above 80% of max
-            const maxVol = Math.max(...processedData.map(d => d.volume));
+            // highlight volume bars above 80% of max — use loop instead of Math.max(...spread)
+            let maxVol = 0;
+            for (const d of processedData) { if (d.volume > maxVol) maxVol = d.volume; }
             volumeSeries.setData(processedData.map(d => ({
-                time: d.time, value: d.volume,
+                time: d.time, value: d.volume || 0,
                 color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
             })));
 
@@ -698,6 +800,8 @@
                 } else { applyPeriodRange('1y'); }
             }
             setTimeout(() => updatePriceLineVisibility(), 100);
+        } catch(e) {
+            console.error('Chart data processing error:', e);
         }
     });
 
@@ -1026,6 +1130,9 @@
         chartContainer?.removeEventListener('mousedown', handleMouseDown);
         window?.removeEventListener('mousemove', handleMouseMove);
         window?.removeEventListener('mouseup', handleMouseUp);
+        chartContainer?.removeEventListener('touchstart', handleTouchStart);
+        chartContainer?.removeEventListener('touchmove', handleTouchMove);
+        chartContainer?.removeEventListener('touchend', handleTouchEnd);
         resizer?.disconnect();
         observer?.disconnect();
         chart?.remove();
@@ -1049,10 +1156,10 @@
     function abbrevSector(name) { return SECTOR_ABBREV[name] || name; }
 </script>
 
-<div bind:this={chartContainer} class="w-full h-full relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair">
+<div bind:this={chartContainer} class="w-full h-full relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair;touch-action:none">
 
     {#if compareData && compareData.series && compareData.series.length > 0}
-        <div class="absolute top-4 left-6 z-[110] flex gap-4 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
+        <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-4 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
             {#each legendSeries as s}
                 <div class="flex items-center gap-1.5">
                     <div class="w-4 h-[2px] rounded-full" style="background: {s.color}"></div>
@@ -1061,7 +1168,7 @@
             {/each}
         </div>
     {:else}
-        <div class="absolute top-4 left-6 z-[110] flex gap-5 pointer-events-none p-2 bg-black/20 backdrop-blur-sm rounded-lg">
+        <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-5 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
             <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-green-500/60 rounded-[1px]"></div><div class="w-2 h-3 bg-red-500/60 rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest ml-1">OHLC</span></div>
             <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
             <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>

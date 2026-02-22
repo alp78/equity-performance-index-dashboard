@@ -702,6 +702,16 @@
         if (newTickers && newTickers.length > 0) {
             resetSectorsTo(newSymbol, newTickers);
         }
+        // scroll to selected stock after DOM updates
+        tick().then(() => {
+            if (!scrollContainer) return;
+            const el = scrollContainer.querySelector(`[data-symbol="${CSS.escape(newSymbol)}"]`);
+            if (el) {
+                const cr = scrollContainer.getBoundingClientRect();
+                const er = el.getBoundingClientRect();
+                scrollContainer.scrollTop += er.top - cr.top - (cr.height / 2) + (er.height / 2);
+            }
+        });
     }
 
     // --- FORMATTERS ---
@@ -718,7 +728,7 @@
     }
 </script>
 
-<aside class="flex flex-col h-full bg-bloom-card border-r border-bloom-muted/10 relative z-20 shadow-2xl overflow-hidden">
+<aside class="flex flex-col h-full bg-bloom-card border-r border-bloom-muted/10 relative z-20 shadow-2xl overflow-hidden max-lg:h-dvh">
 
     <div class="p-4 space-y-3 bg-gradient-to-b from-white/5 to-transparent">
 
@@ -1271,11 +1281,11 @@
         {#if $selectedSymbol === item.symbol}
             <div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.5)]"></div>
         {/if}
-        <div class="w-[28%] text-left overflow-hidden pl-1">
+        <div class="w-[28%] text-left overflow-hidden pl-1 stock-col-symbol">
             <div class="font-bold text-white/80 text-sm tracking-tight group-hover:text-bloom-accent transition-colors {$selectedSymbol === item.symbol ? '!text-white/80' : ''}">{item.symbol}</div>
             <div class="text-[10px] font-medium text-white/50 uppercase tracking-wide truncate pr-1">{item.name || 'Equity'}</div>
         </div>
-        <div class="w-[26%] text-right pr-2">
+        <div class="w-[26%] text-right pr-2 stock-col-price">
             <div class="text-[14px] font-mono font-bold text-white/80 leading-tight {$selectedSymbol === item.symbol ? '!text-white/70' : ''}">
                 {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
             </div>
@@ -1284,7 +1294,7 @@
                 <span>{Math.abs(item.daily_change_pct ?? 0).toFixed(2)}%</span>
             </div>
         </div>
-        <div class="w-[28%] text-right font-mono text-[13px] leading-tight space-y-0.5">
+        <div class="w-[28%] text-right font-mono text-[13px] leading-tight space-y-0.5 stock-col-hl">
             <div class="flex justify-end gap-1.5 text-white/20">
                 <span class="font-bold">H</span>
                 <span class="text-white/60 font-bold">{(item.high ?? 0).toFixed(2)}</span>
@@ -1294,7 +1304,7 @@
                 <span class="text-white/60 font-bold">{(item.low ?? 0).toFixed(2)}</span>
             </div>
         </div>
-        <div class="w-[18%] text-right">
+        <div class="w-[18%] text-right stock-col-vol">
             <div class="text-[10px] font-bold text-white/30 uppercase tracking-tighter">Vol</div>
             <div class="text-[12px] font-bold text-white/50">{formatVol(item.volume)}</div>
         </div>
@@ -1306,4 +1316,12 @@
     .custom-scrollbar::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 10px; }
     .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(168,85,247,0.35); border-radius: 10px; min-height: 40px; }
     .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(168,85,247,0.55); }
+
+    /* On narrow sidebar (mobile drawer < 400px), hide H/L and volume columns, expand symbol+price */
+    @media (max-width: 1024px) {
+        .stock-col-hl { display: none; }
+        .stock-col-vol { display: none; }
+        .stock-col-symbol { width: 50% !important; }
+        .stock-col-price { width: 50% !important; }
+    }
 </style>
