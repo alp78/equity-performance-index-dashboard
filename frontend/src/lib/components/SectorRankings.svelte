@@ -124,10 +124,11 @@
                 <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">Sector Rankings</h3>
                 <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">{periodLabel}</span>
             </div>
-            <span class="text-[11px] font-black uppercase tracking-wider mt-1"
-                  style="color:{indexCfg.color || '#8b5cf6'}">
-                {indexCfg.shortLabel || indexKey}
-            </span>
+            <div class="flex items-center gap-1.5 mt-1">
+                <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{activeSec || '—'}</span>
+                <span class="text-[11px] text-white/15">·</span>
+                <span class="text-[11px] font-bold text-white/20 uppercase tracking-wider">Normalized % Change</span>
+            </div>
         </div>
         {#if loading}
             <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1 flex-shrink-0"></div>

@@ -929,7 +929,7 @@
                             <div>
                                 <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{idxCfg?.shortLabel || idxKey}</h1>
                                 <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
-                                    {$selectedSectors.length} sectors · Normalized % change
+                                    <span class="text-orange-400/70">{$selectedSectors.length} sectors</span> · Normalized % change
                                 </span>
                             </div>
                         </div>
