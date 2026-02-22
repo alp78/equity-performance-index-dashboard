@@ -17,4 +17,4 @@ SELECT sector,
     AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as return_pct,
     COUNT(DISTINCT symbol) as stock_count
 FROM PerSymbol WHERE rn = 1
-GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 2
+GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 1

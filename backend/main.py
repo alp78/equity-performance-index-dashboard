@@ -18,7 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from google.cloud import bigquery
 from urllib.parse import unquote
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 
 # --- CONFIGURATION ---
@@ -69,7 +69,40 @@ def sql(filename: str) -> str:
 # --- CACHE LAYER ---
 
 local_db = duckdb.connect(database=':memory:', read_only=False)
-db_lock = threading.Lock()
+
+
+class _RWLock:
+    """Read-write lock: concurrent reads, exclusive writes."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._readers_lock = threading.Lock()
+        self._readers = 0
+
+    @contextmanager
+    def read(self):
+        with self._readers_lock:
+            self._readers += 1
+            if self._readers == 1:
+                self._lock.acquire()
+        try:
+            yield
+        finally:
+            with self._readers_lock:
+                self._readers -= 1
+                if self._readers == 0:
+                    self._lock.release()
+
+    @contextmanager
+    def write(self):
+        self._lock.acquire()
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+
+db_rwlock = _RWLock()
 
 INDEX_LOAD_STATUS: dict = {}
 SECTOR_SERIES_STATUS: dict = {}
@@ -81,6 +114,7 @@ STARTUP_TIME: float = 0.0
 STARTUP_DONE_TIME: float = 0.0
 
 API_CACHE: dict = {}
+ALL_SERIES_CACHE: dict = {}
 CACHE_TTL = 1800
 
 
@@ -176,7 +210,7 @@ def _load_index_from_bq(index_key):
         df["trade_date"] = pd.to_datetime(df["trade_date"])
         df["market_index"] = index_key
 
-        with db_lock:
+        with db_rwlock.write():
             local_db.execute(f"DROP TABLE IF EXISTS {table_name}")
             local_db.register(f"temp_{index_key}", df)
             local_db.execute(
@@ -236,7 +270,7 @@ def _precompute_sector_series(index_key):
     try:
         precompute_sql = sql("precompute_all_sector_series.sql").replace("{table}", table_name)
 
-        with db_lock:
+        with db_rwlock.write():
             local_db.execute(f"DROP TABLE IF EXISTS {series_table}")
             local_db.execute(f"CREATE TABLE {series_table} AS {precompute_sql}")
             local_db.execute(
@@ -246,6 +280,19 @@ def _precompute_sector_series(index_key):
             sector_count = local_db.execute(
                 f"SELECT COUNT(DISTINCT sector) FROM {series_table}"
             ).fetchone()[0]
+
+            # pre-populate ALL_SERIES_CACHE so /all-series serves instantly
+            df_cache = local_db.execute(
+                f"SELECT sector, time, pct FROM {series_table} ORDER BY sector, time"
+            ).df()
+            if not df_cache.empty:
+                idx_data = {}
+                for sector, group in df_cache.groupby("sector", sort=False):
+                    idx_data[sector] = [
+                        {"time": str(t), "pct": float(p)}
+                        for t, p in zip(group["time"].values, group["pct"].values)
+                    ]
+                ALL_SERIES_CACHE[index_key] = idx_data
 
         SECTOR_SERIES_STATUS[index_key] = {"ready": True, "computing": False, "row_count": row_count}
         print(f"  [{index_key}] Sector series precomputed: {sector_count} sectors, "
@@ -267,7 +314,7 @@ def _precompute_industry_series(index_key):
     try:
         precompute_sql = sql("precompute_all_industry_series.sql").replace("{table}", table_name)
 
-        with db_lock:
+        with db_rwlock.write():
             local_db.execute(f"DROP TABLE IF EXISTS {series_table}")
             local_db.execute(f"CREATE TABLE {series_table} AS {precompute_sql}")
             local_db.execute(
@@ -301,7 +348,7 @@ def _precompute_stock_returns(index_key):
 
     try:
         all_dfs = []
-        with db_lock:
+        with db_rwlock.read():
             for period_name, days in PERIODS.items():
                 df = local_db.execute(
                     sql("precompute_stock_returns.sql")
@@ -322,7 +369,7 @@ def _precompute_stock_returns(index_key):
         if all_dfs:
             import pandas as pd
             combined = pd.concat(all_dfs, ignore_index=True)
-            with db_lock:
+            with db_rwlock.write():
                 local_db.execute(f"DROP TABLE IF EXISTS {result_table}")
                 local_db.execute(f"CREATE TABLE {result_table} AS SELECT * FROM combined")
                 local_db.execute(
@@ -347,7 +394,7 @@ def _prewarm_sector_caches(index_key):
     try:
         for period_label in ["max", "1y"]:
             cache_key = f"sector_table_{index_key}_{period_label}"
-            with db_lock:
+            with db_rwlock.read():
                 df = _sector_returns_df(table, False, period_label, "", "")
             if df.empty:
                 continue
@@ -393,7 +440,7 @@ def _load_index_prices_from_bq():
 
         df["trade_date"] = pd.to_datetime(df["trade_date"])
 
-        with db_lock:
+        with db_rwlock.write():
             local_db.execute("DROP TABLE IF EXISTS index_prices")
             local_db.register("temp_index_prices", df)
             local_db.execute(sql("duckdb_create_index_prices_table.sql"))
@@ -454,6 +501,7 @@ async def refresh_single_index(index_key):
     """Reload one index from BigQuery, recompute series, and invalidate caches."""
     print(f"Refreshing index: {index_key}")
     invalidate_index_cache(index_key)
+    ALL_SERIES_CACHE.pop(index_key, None)
     SECTOR_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     INDUSTRY_SERIES_STATUS[index_key] = {"ready": False, "computing": False}
     STOCK_RETURNS_STATUS[index_key] = {"ready": False, "computing": False}
@@ -688,7 +736,7 @@ async def preload_all_indices():
     phase2_tasks = [_load_remaining(idx) for idx in remaining] + [_load_index_prices()]
     await asyncio.gather(*phase2_tasks)
 
-    with db_lock:
+    with db_rwlock.write():
         _rebuild_unified_view()
 
     print("All indices preloaded")
@@ -870,7 +918,7 @@ async def get_index_prices_debug():
     if not INDEX_PRICES_LOADED:
         return {"loaded": False}
     try:
-        with db_lock:
+        with db_rwlock.read():
             rows = local_db.execute("""
                 SELECT symbol,
                     MIN(trade_date)::VARCHAR as min_date,
@@ -900,7 +948,7 @@ async def get_index_prices_summary():
         return cached
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             res = local_db.execute(sql("index_prices_summary.sql")).df().fillna(0).to_dict(orient="records")
         set_cached_response(cache_key, res)
         return res
@@ -937,7 +985,7 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
             .replace("{date_clause}", date_clause)
         )
 
-        with db_lock:
+        with db_rwlock.read():
             df = local_db.execute(query, symbol_list).df()
 
         if df.empty:
@@ -986,7 +1034,7 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
         return cached
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             symbols = [s[0] for s in local_db.execute(
                 "SELECT DISTINCT symbol FROM index_prices"
             ).fetchall()]
@@ -1104,7 +1152,7 @@ async def get_index_price_single(symbol: str, period: str = "max"):
         return cached
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             if period.lower() == "max":
                 df = local_db.execute(sql("index_price_single_max.sql"), [symbol]).df()
             else:
@@ -1144,7 +1192,7 @@ async def get_sector_comparison_data(sector: str = "Technology", indices: str = 
                 continue
             table = f"prices_{idx}"
 
-            with db_lock:
+            with db_rwlock.read():
                 if period.lower() == "max":
                     df = local_db.execute(
                         sql("legacy_sector_avg_max.sql").replace("{table}", table),
@@ -1201,7 +1249,7 @@ async def get_available_sectors(indices: str = ""):
             f"SELECT DISTINCT sector FROM {t} WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')"
             for t in tables
         ])
-        with db_lock:
+        with db_rwlock.read():
             df = local_db.execute(f"SELECT DISTINCT sector FROM ({union}) ORDER BY sector ASC").df()
 
         result = df["sector"].tolist() if not df.empty else []
@@ -1229,7 +1277,7 @@ async def get_sector_industries(sector: str = "", indices: str = ""):
         for idx in index_list:
             if not ensure_index_loaded(idx):
                 continue
-            with db_lock:
+            with db_rwlock.read():
                 df = local_db.execute(
                     sql("sector_industries.sql").replace("{table}", f"prices_{idx}"),
                     [sector]
@@ -1284,7 +1332,7 @@ async def get_sector_comparison_data_v2(
                     if not SECTOR_SERIES_STATUS.get(idx, {}).get("ready"):
                         all_ready = False
                         break
-                    with db_lock:
+                    with db_rwlock.read():
                         df = local_db.execute(
                             f"SELECT time, pct FROM sector_series_{idx} WHERE sector = ? ORDER BY time",
                             [sector]
@@ -1300,7 +1348,7 @@ async def get_sector_comparison_data_v2(
                     all_ready = False
                 else:
                     for sec in [s.strip() for s in sector.split(",") if s.strip()]:
-                        with db_lock:
+                        with db_rwlock.read():
                             df = local_db.execute(
                                 f"SELECT time, pct FROM sector_series_{idx} WHERE sector = ? ORDER BY time",
                                 [sec]
@@ -1340,7 +1388,7 @@ async def get_sector_comparison_data_v2(
                     continue
                 industry_clause, date_clause, params = _build_clauses(sector)
                 q = build_clean_sector_sql(f"prices_{idx}", "sector = ?", industry_clause, date_clause)
-                with db_lock:
+                with db_rwlock.read():
                     df = local_db.execute(q, params).df()
                 if df.empty or len(df) < 2:
                     continue
@@ -1354,7 +1402,7 @@ async def get_sector_comparison_data_v2(
             for sec in [s.strip() for s in sector.split(",") if s.strip()]:
                 industry_clause, date_clause, params = _build_clauses(sec)
                 q = build_clean_sector_sql(f"prices_{idx}", "sector = ?", industry_clause, date_clause)
-                with db_lock:
+                with db_rwlock.read():
                     df = local_db.execute(q, params).df()
                 if df.empty or len(df) < 2:
                     continue
@@ -1393,9 +1441,16 @@ async def get_all_sector_series(indices: str = ""):
             pending_indices.append(idx)
             continue
 
+        # serve from pre-built cache (populated at precompute time)
+        if idx in ALL_SERIES_CACHE:
+            result[idx] = ALL_SERIES_CACHE[idx]
+            ready_indices.append(idx)
+            continue
+
+        # fallback: query DuckDB (cache miss after eviction/restart)
         series_table = f"sector_series_{idx}"
         try:
-            with db_lock:
+            with db_rwlock.read():
                 df = local_db.execute(
                     f"SELECT sector, time, pct FROM {series_table} ORDER BY sector, time"
                 ).df()
@@ -1410,6 +1465,7 @@ async def get_all_sector_series(indices: str = ""):
                     for t, p in zip(group["time"].values, group["pct"].values)
                 ]
 
+            ALL_SERIES_CACHE[idx] = idx_data
             result[idx] = idx_data
             ready_indices.append(idx)
         except Exception as e:
@@ -1446,7 +1502,7 @@ async def get_industry_series(sector: str = "", indices: str = ""):
 
         series_table = f"industry_series_{idx}"
         try:
-            with db_lock:
+            with db_rwlock.read():
                 df = local_db.execute(
                     f"SELECT industry, time, pct, stock_count FROM {series_table} "
                     f"WHERE sector = ? ORDER BY industry, time",
@@ -1498,7 +1554,7 @@ async def get_sector_histogram(indices: str = "", period: str = "1y", start: str
         for idx in index_list:
             if not ensure_index_loaded(idx):
                 continue
-            with db_lock:
+            with db_rwlock.read():
                 df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end)
             if df.empty:
                 continue
@@ -1542,7 +1598,7 @@ async def get_sector_comparison_table(indices: str = "", period: str = "1y", sta
         for idx in index_list:
             if not ensure_index_loaded(idx):
                 continue
-            with db_lock:
+            with db_rwlock.read():
                 df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end)
             if df.empty:
                 continue
@@ -1599,7 +1655,7 @@ async def get_sector_top_stocks(
                 continue
             table = f"prices_{idx}"
 
-            with db_lock:
+            with db_rwlock.read():
                 if use_custom:
                     df = local_db.execute(
                         sql("sector_top_stocks_custom.sql")
@@ -1662,7 +1718,7 @@ async def get_all_top_stocks(period: str = "1y"):
 
         result_table = f"stock_returns_{idx}"
         try:
-            with db_lock:
+            with db_rwlock.read():
                 df = local_db.execute(
                     f"SELECT symbol, name, industry, sector, return_pct FROM {result_table} WHERE period = ?",
                     [period.lower()]
@@ -1711,7 +1767,7 @@ async def get_industry_breakdown(
     table = f"prices_{index}"
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             if use_custom:
                 df = local_db.execute(
                     sql("industry_breakdown_custom.sql")
@@ -1779,7 +1835,7 @@ async def get_top_sectors(indices: str = "", period: str = "1y", start: str = ""
 
         union = " UNION ALL ".join([f"SELECT symbol, sector, close, trade_date FROM {t}" for t in tables])
 
-        with db_lock:
+        with db_rwlock.read():
             df = _top_items_df(union, "sector", use_custom, period, start, end)
 
         if df.empty:
@@ -1822,7 +1878,7 @@ async def get_top_industries(indices: str = "", period: str = "1y", start: str =
 
         union = " UNION ALL ".join([f"SELECT symbol, industry, close, trade_date FROM {t}" for t in tables])
 
-        with db_lock:
+        with db_rwlock.read():
             df = _top_items_df(union, "industry", use_custom, period, start, end)
 
         if df.empty:
@@ -1855,7 +1911,7 @@ async def get_summary(index: str = "sp500"):
         return cached
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             res = (
                 local_db.execute(
                     sql("summary.sql")
@@ -1903,7 +1959,7 @@ def _find_symbol_table(symbol):
         if not status.get("loaded"):
             continue
         try:
-            with db_lock:
+            with db_rwlock.read():
                 count = local_db.execute(
                     f"SELECT COUNT(*) FROM prices_{index_key} WHERE symbol = ?", [symbol]
                 ).fetchone()[0]
@@ -1920,7 +1976,7 @@ def _find_symbol_table(symbol):
             print(f"  Lazy-loading {guessed_index} for symbol {symbol}")
             if ensure_index_loaded(guessed_index):
                 try:
-                    with db_lock:
+                    with db_rwlock.read():
                         count = local_db.execute(
                             f"SELECT COUNT(*) FROM prices_{guessed_index} WHERE symbol = ?", [symbol]
                         ).fetchone()[0]
@@ -1946,7 +2002,7 @@ async def get_data(symbol: str, period: str = "1y"):
         return []
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             if period.lower() == "max":
                 df = local_db.execute(
                     sql("symbol_data_max.sql").replace("{table}", table),
@@ -1985,7 +2041,7 @@ async def get_rankings(period: str = "1y", index: str = "sp500"):
     table = f"prices_{index}"
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             if period.lower() == "max":
                 df = local_db.execute(
                     sql("rankings_max.sql")
@@ -2030,7 +2086,7 @@ async def get_custom_rankings(start: str, end: str, index: str = "sp500"):
     table = f"prices_{index}"
 
     try:
-        with db_lock:
+        with db_rwlock.read():
             df = local_db.execute(
                 sql("rankings_custom.sql")
                 .replace("{table}", table)
@@ -2060,7 +2116,7 @@ async def metadata(symbol: str):
     if not table:
         return {"symbol": symbol, "name": symbol}
     try:
-        with db_lock:
+        with db_rwlock.read():
             res = local_db.execute(
                 f"SELECT name FROM {table} WHERE symbol = ? LIMIT 1", [symbol]
             ).fetchone()

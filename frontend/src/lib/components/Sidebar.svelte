@@ -78,8 +78,12 @@
     let sectorsLoaded = $state(false);
     let sectorIndustries = $state([]);
     let _lastLoadedSector = '';
-    // tracks last sector the effect reacted to, so it only runs on actual changes
+    // tracks last sector+mode the effect reacted to, so it only runs on actual changes
     let _lastEffectSector = '';
+    let _lastEffectMode = '';
+    // per-mode selected sector so switching modes doesn't overwrite the other mode's selection
+    let _crossSector = $selectedSector || 'Technology';
+    let _singleSector = 'Technology';
     let sectorPanelOpen = $state(new Set());
     // cache: { compositeKey: [{industry, total}] }
     let allSectorIndustries = $state({});
@@ -401,8 +405,14 @@
                     .catch(() => { sectorsLoaded = true; });
             });
         }
+        // reset on mode switch so expansion re-triggers for the current sector
+        if (inSectors && $sectorAnalysisMode !== _lastEffectMode) {
+            _lastEffectMode = $sectorAnalysisMode;
+            _lastEffectSector = '';
+        }
         // cross-index: when selectedSector changes (from heatmap or sidebar), expand only it, scroll
         if (inSectors && $selectedSector && $sectorAnalysisMode === 'cross-index') {
+            _crossSector = $selectedSector;
             const sectorChanged = $selectedSector !== _lastEffectSector;
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
@@ -424,6 +434,7 @@
         }
         // single-index: when selectedSector changes (from rankings), expand and scroll to it
         if (inSectors && $selectedSector && $sectorAnalysisMode === 'single-index') {
+            _singleSector = $selectedSector;
             const sectorChanged = $selectedSector !== _lastEffectSector;
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
@@ -766,12 +777,12 @@
                 <div class="p-4 pb-2 space-y-3 shrink-0">
                 <!-- mode toggle: cross-index vs single-index -->
                 <div class="flex bg-black/40 border border-white/10 rounded-xl p-1 gap-1">
-                    <button onclick={() => sectorAnalysisMode.set('cross-index')}
+                    <button onclick={() => { _singleSector = $selectedSector; selectedSector.set(_crossSector); sectorAnalysisMode.set('cross-index'); }}
                         class="flex-1 text-center py-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all
                         {$sectorAnalysisMode === 'cross-index' ? 'bg-orange-500/20 text-white border border-orange-500/30' : 'text-white/30 hover:text-white/50 border border-transparent'}">
                         Cross-Index
                     </button>
-                    <button onclick={() => sectorAnalysisMode.set('single-index')}
+                    <button onclick={() => { _crossSector = $selectedSector; selectedSector.set(_singleSector); sectorAnalysisMode.set('single-index'); }}
                         class="flex-1 text-center py-2 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all
                         {$sectorAnalysisMode === 'single-index' ? 'bg-orange-500/20 text-white border border-orange-500/30' : 'text-white/30 hover:text-white/50 border border-transparent'}">
                         Single-Index
@@ -838,7 +849,7 @@
                                     <span class="text-[11px] font-black uppercase tracking-widest {isActive ? 'text-white/90' : 'text-white/80'}">{sec}</span>
                                 </div>
                                 <div class="flex items-center gap-2">
-                                    {#if isCurrent && sectorStockCount > 0}
+                                    {#if isCurrent}
                                         <span class="text-[12px] font-bold text-white/25 tabular-nums">{sectorStockCount}</span>
                                     {/if}
                                 </div>
@@ -846,8 +857,13 @@
 
                             {#if isOpen}
                                 {@const indicesStr = [...$sectorSelectedIndices].sort().join(',') || Object.keys(INDEX_CONFIG).sort().join(',')}
-                                {@const secInds = allSectorIndustries[`${sec}_${indicesStr}`] || []}
-                                {#if secInds.length > 0}
+                                {@const cacheKey = `${sec}_${indicesStr}`}
+                                {@const secInds = allSectorIndustries[cacheKey] || []}
+                                {#if allSectorIndustries[cacheKey] && secInds.length === 0}
+                                    <div class="px-4 py-3 ml-2 border-l-[2px] border-l-white/5 bg-[#13131a]">
+                                        <span class="text-[10px] font-bold text-white/15 uppercase tracking-widest">No data for selected indices</span>
+                                    </div>
+                                {:else if secInds.length > 0}
                                     {@const allIndNames = secInds.map(i => i.industry)}
                                     {@const secFilter = $crossSelectedIndustries[sec] || []}
                                     <div class="flex items-center justify-between px-4 py-[6px] ml-2 border-l-[2px] border-l-amber-500/20 bg-[#13131a]">

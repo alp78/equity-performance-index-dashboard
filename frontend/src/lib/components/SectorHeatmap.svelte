@@ -24,6 +24,14 @@
         csi300:    '#ef4444',
         nifty50:   '#22c55e',
     };
+    const INDEX_FLAGS = {
+        sp500:     'fi fi-us',
+        stoxx50:   'fi fi-eu',
+        ftse100:   'fi fi-gb',
+        nikkei225: 'fi fi-jp',
+        csi300:    'fi fi-cn',
+        nifty50:   'fi fi-in',
+    };
     // abbreviated labels for narrow column headers
     const INDEX_ABBR = {
         sp500:     'S&P',
@@ -227,8 +235,8 @@
         </div>
         {#each indices as idx}
             <div style="width:{idxW}" class="text-center flex-shrink-0" title="{INDEX_FULL[idx]||idx}">
-                <div class="flex items-center justify-center gap-1">
-                    <div class="col-dot rounded-full flex-shrink-0" style="background:{INDEX_COLORS[idx]||'#8b5cf6'}"></div>
+                <div class="flex items-center justify-center gap-1.5">
+                    <span class="{INDEX_FLAGS[idx] || ''} fis rounded-sm flex-shrink-0 col-flag"></span>
                     <span class="col-hdr-text font-black uppercase tracking-wider truncate"
                           style="color:{INDEX_COLORS[idx]||'#8b5cf6'}">{INDEX_ABBR[idx]||idx}</span>
                 </div>
@@ -301,8 +309,7 @@
 
     .col-hdr-row  { padding: clamp(2px, 0.8cqh, 6px) 0; }
     .col-hdr-text { font-size: clamp(11px, 1.5cqh, 13px); }
-    .col-dot      { width:  clamp(4px, 0.8cqh, 7px);
-                    height: clamp(4px, 0.8cqh, 7px); }
+    .col-flag     { font-size: clamp(12px, 1.6cqh, 16px) !important; }
 
     /* row height = available height / 12 (11 sectors + header) */
     .row-wrap    { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12);

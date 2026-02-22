@@ -944,37 +944,58 @@
             _lastCompareDataVersion = dataVersion;
             _lastCompareSymbols = newSymbols;
 
-            let savedFrom = null, savedTo = null;
-            try {
-                const vr = chart.timeScale().getVisibleRange();
-                if (vr) { savedFrom = vr.from; savedTo = vr.to; }
-            } catch(e) {}
+            // check if time axis changed (symbols are the same, so usually only values differ)
+            const firstPoints = cData.series[0]?.points;
+            const axisChanged = !firstPoints || mergedTimeAxis.length === 0
+                || firstPoints.length !== mergedTimeAxis.length
+                || firstPoints[0]?.time !== mergedTimeAxis[0]
+                || firstPoints[firstPoints.length - 1]?.time !== mergedTimeAxis[mergedTimeAxis.length - 1];
 
-            chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
+            if (axisChanged) {
+                // time axis changed: full range save/restore needed
+                let savedFrom = null, savedTo = null;
+                try {
+                    const vr = chart.timeScale().getVisibleRange();
+                    if (vr) { savedFrom = vr.from; savedTo = vr.to; }
+                } catch(e) {}
 
-            comparisonSeries.forEach(cs => {
-                const s = cData.series.find(s => s.symbol === cs.symbol);
-                if (s) cs.series.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
-            });
-            // rebuild merged axis because indices have different trading calendars
-            buildMergedTimeAxis(cData);
-            processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
+                chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
 
-            if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
-                isProgrammaticRangeChange = true;
-                let fromIdx = 0;
-                for (let i = 0; i < mergedTimeAxis.length; i++) {
-                    if (mergedTimeAxis[i] >= savedFrom) { fromIdx = i; break; }
+                comparisonSeries.forEach(cs => {
+                    const s = cData.series.find(s => s.symbol === cs.symbol);
+                    if (s) cs.series.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
+                });
+                buildMergedTimeAxis(cData);
+                processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
+
+                if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
+                    isProgrammaticRangeChange = true;
+                    let fromIdx = 0;
+                    for (let i = 0; i < mergedTimeAxis.length; i++) {
+                        if (mergedTimeAxis[i] >= savedFrom) { fromIdx = i; break; }
+                    }
+                    let toIdx = mergedTimeAxis.length - 1;
+                    for (let i = mergedTimeAxis.length - 1; i >= 0; i--) {
+                        if (mergedTimeAxis[i] <= savedTo) { toIdx = i; break; }
+                    }
+                    chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
                 }
-                let toIdx = mergedTimeAxis.length - 1;
-                for (let i = mergedTimeAxis.length - 1; i >= 0; i--) {
-                    if (mergedTimeAxis[i] <= savedTo) { toIdx = i; break; }
+                chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
+                if (savedFrom && savedTo) {
+                    setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
                 }
-                chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
-            }
-            chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
-            if (savedFrom && savedTo) {
-                setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+            } else {
+                // same time axis: fast value-only update, skip range save/restore
+                for (const cs of comparisonSeries) {
+                    const s = cData.series.find(s => s.symbol === cs.symbol);
+                    if (!s) continue;
+                    const pts = s.points;
+                    const mapped = new Array(pts.length);
+                    for (let i = 0; i < pts.length; i++) {
+                        mapped[i] = { time: pts[i].time, value: pts[i].pct };
+                    }
+                    cs.series.setData(mapped);
+                }
             }
             return;
         }

@@ -236,16 +236,27 @@
     // --- INDUSTRY SERIES COMPUTATION ---
 
     // produce a weighted-average time series from selected industries (weight = stock count per day)
+    // LRU cache for weighted series so toggling back to a prior selection is instant
+    let _weightedCache = {};
+    let _weightedCacheSize = 0;
+
     function computeWeightedIndustrySeries(indexKey, sector, selectedInds) {
         const sectorCache = industrySeriesCache[sector];
         if (!sectorCache) return null;
         const indexData = sectorCache[indexKey];
         if (!indexData) return null;
 
+        // check result cache
+        const cacheKey = `${indexKey}_${sector}_${selectedInds.join('|')}`;
+        if (_weightedCache[cacheKey]) return _weightedCache[cacheKey];
+
         const selectedSeries = selectedInds.map(ind => indexData[ind]).filter(Boolean);
         if (selectedSeries.length === 0) return null;
         if (selectedSeries.length === 1) {
-            return selectedSeries[0].map(pt => ({ time: pt.time, pct: pt.pct }));
+            // return original points directly (no copy needed, data is immutable)
+            const result = selectedSeries[0];
+            _weightedCache[cacheKey] = result;
+            return result;
         }
 
         const timeMap = new Map();
@@ -262,10 +273,17 @@
         }
 
         const times = [...timeMap.keys()].sort();
-        return times.map(t => {
-            const entry = timeMap.get(t);
-            return { time: t, pct: entry.totalWeight > 0 ? entry.weightedSum / entry.totalWeight : 0 };
-        });
+        const result = new Array(times.length);
+        for (let i = 0; i < times.length; i++) {
+            const entry = timeMap.get(times[i]);
+            result[i] = { time: times[i], pct: entry.totalWeight > 0 ? entry.weightedSum / entry.totalWeight : 0 };
+        }
+
+        // cap cache at 100 entries to bound memory
+        if (_weightedCacheSize > 100) { _weightedCache = {}; _weightedCacheSize = 0; }
+        _weightedCache[cacheKey] = result;
+        _weightedCacheSize++;
+        return result;
     }
 
     // compute return over a period by rebasing: ((1 + end%) / (1 + start%) - 1) * 100
@@ -362,6 +380,16 @@
                 // update allSectorSeries, triggering a re-fire that fills in the rest.
                 return;
             }
+            // all cached indices checked but none had data — mark as empty instead of loading
+            const allCached = mode === 'cross-index'
+                ? indices.every(idx => allSectorSeries[idx])
+                : allSectorSeries[indices[0]];
+            if (allCached) {
+                _sectorDataVersion++;
+                sectorComparisonData = { series: [], _version: _sectorDataVersion, _empty: true };
+                sectorDataLoading = false;
+                return;
+            }
         }
 
         // fast path 2: industry filter active — compute weighted series from industrySeriesCache
@@ -454,7 +482,7 @@
                         _version: _sectorDataVersion,
                     };
                 } else {
-                    sectorComparisonData = null;
+                    sectorComparisonData = { series: [], _version: ++_sectorDataVersion, _empty: true };
                 }
             }
         } catch {}
@@ -542,8 +570,15 @@
         }
     });
 
-    // industry series are loaded on-demand when the user toggles an industry filter,
-    // triggered inside fetchSectorData's fast path 2 cache-miss branch.
+    // preload industry series when a sector is selected so toggles are instant from the start
+    $effect(() => {
+        if (!inSectors) return;
+        const sector = $selectedSector;
+        const mode = $sectorAnalysisMode;
+        const indices = mode === 'single-index' ? $singleSelectedIndex : $sectorSelectedIndices;
+        if (!sector || !indices || indices.length === 0) return;
+        untrack(() => loadIndustrySeries(sector, indices));
+    });
 
     // preload all stock returns for cross-index mode so top stocks update instantly.
     // re-fetches when period changes (custom ranges fall back to API in SectorTopStocks).
@@ -557,7 +592,7 @@
     // --- PERIOD / RANGE STATE ---
 
     // read persisted period from sessionStorage synchronously to prevent button flash on load
-    let initialPeriod = '1y';
+    let initialPeriod = '5y';
     let initialRange = null;
 
     if (typeof window !== 'undefined') {
@@ -612,7 +647,7 @@
 
     function handleResetPeriod() {
         if (customRange) { customRange = null; selectMode = false; }
-        const p = sessionStorage.getItem('chart_period') || '1y';
+        const p = sessionStorage.getItem('chart_period') || '5y';
         currentPeriod = null;
         setTimeout(() => { currentPeriod = p; }, 10); // force re-render even if same value
         sessionStorage.removeItem('chart_custom_range');
@@ -930,10 +965,18 @@
                                 onRangeSelect={handleRangeSelect}
                             />
                         </div>
+                    {:else if sectorComparisonData?._empty}
+                        <div class="absolute inset-0 flex items-center justify-center z-10">
+                            <div class="flex flex-col items-center space-y-3 opacity-30">
+                                <span class="text-[11px] font-black uppercase tracking-widest text-white/40">No Data</span>
+                            </div>
+                        </div>
                     {:else}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
                             <div class="flex flex-col items-center space-y-3 opacity-30">
-                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                {#if sectorDataLoading}
+                                    <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
+                                {/if}
                                 <span class="text-[10px] font-black uppercase tracking-widest text-white">{sectorDataLoading ? 'Loading Sector Data' : 'Select a sector'}</span>
                             </div>
                         </div>

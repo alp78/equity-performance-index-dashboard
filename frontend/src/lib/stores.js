@@ -93,9 +93,9 @@ export const INDEX_GROUPS = [
 const _storedIndex = browser ? (() => {
     try {
         const v = sessionStorage.getItem('dash_index');
-        return (v && (INDEX_CONFIG[v] || v === 'overview' || v === 'sectors')) ? v : 'stoxx50';
-    } catch { return 'stoxx50'; }
-})() : 'stoxx50';
+        return (v && (INDEX_CONFIG[v] || v === 'overview' || v === 'sectors')) ? v : 'overview';
+    } catch { return 'overview'; }
+})() : 'overview';
 
 const _storedSymbol = browser ? (() => {
     try {
@@ -107,22 +107,26 @@ export const selectedSymbol = writable(_storedSymbol);
 export const marketIndex = writable(_storedIndex);
 
 // overview mode: selected index tickers for comparison chart
+const ALL_INDEX_TICKERS = Object.keys(INDEX_TICKER_MAP);
+
 const _storedOverviewIndices = browser ? (() => {
     try {
         const v = sessionStorage.getItem('dash_overview_indices');
-        return v ? JSON.parse(v) : ['^GSPC', '^STOXX50E'];
-    } catch { return ['^GSPC', '^STOXX50E']; }
-})() : ['^GSPC', '^STOXX50E'];
+        return v ? JSON.parse(v) : ALL_INDEX_TICKERS;
+    } catch { return ALL_INDEX_TICKERS; }
+})() : ALL_INDEX_TICKERS;
 
 export const overviewSelectedIndices = writable(_storedOverviewIndices);
 
 // sector mode: cross-index uses multiple indices, single-index uses one
+const ALL_INDEX_KEYS = Object.keys(INDEX_CONFIG);
+
 const _storedSectorIndices = browser ? (() => {
     try {
         const v = sessionStorage.getItem('dash_sector_indices');
-        return v ? JSON.parse(v) : ['sp500', 'stoxx50'];
-    } catch { return ['sp500', 'stoxx50']; }
-})() : ['sp500', 'stoxx50'];
+        return v ? JSON.parse(v) : ALL_INDEX_KEYS;
+    } catch { return ALL_INDEX_KEYS; }
+})() : ALL_INDEX_KEYS;
 
 const _storedSingleIndex = browser ? (() => {
     try {
