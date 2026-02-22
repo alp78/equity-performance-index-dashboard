@@ -5,11 +5,15 @@
     import { API_BASE_URL } from '$lib/config.js';
     import { sectorSelectedIndices, selectedSector } from '$lib/stores.js';
 
-    let { currentPeriod = '1y', customRange = null } = $props();
+    let { currentPeriod = '1y', customRange = null, industryFilter = null, filteredSector = null } = $props();
 
     let tableData = $state([]);
     let loading   = $state(false);
     let cache     = {};
+
+    // overlay for industry-filtered sector data
+    let filteredOverlay = $state({}); // { [indexKey]: { return_pct, stock_count } }
+    let _lastFilterKey = '';
 
     let indices   = $derived($sectorSelectedIndices);
     let activeSec = $derived($selectedSector);
@@ -115,25 +119,30 @@
         return rows;
     }
 
-    async function fetchIndexIfNeeded(pKey, idx, period, range) {
+    async function fetchIndexIfNeeded(pKey, idx, period, range, retries = 2) {
         if (perIndexCache[pKey]?.[idx]) return;
         const url = range?.start
             ? `${API_BASE_URL}/sector-comparison/table?indices=${idx}&start=${range.start}&end=${range.end}`
             : `${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=${period||'1y'}`;
-        try {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 12000);
-            const res = await fetch(url, { signal: ctrl.signal });
-            clearTimeout(t);
-            if (!res.ok) return;
-            const rows = await res.json();
-            if (!perIndexCache[pKey]) perIndexCache[pKey] = {};
-            perIndexCache[pKey][idx] = {};
-            for (const row of rows) {
-                const vals = row.indices?.[idx];
-                if (vals) perIndexCache[pKey][idx][row.sector] = vals;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 15000);
+                const res = await fetch(url, { signal: ctrl.signal });
+                clearTimeout(t);
+                if (!res.ok) { if (attempt < retries) { await new Promise(r => setTimeout(r, 3000)); continue; } return; }
+                const rows = await res.json();
+                if (!perIndexCache[pKey]) perIndexCache[pKey] = {};
+                perIndexCache[pKey][idx] = {};
+                for (const row of rows) {
+                    const vals = row.indices?.[idx];
+                    if (vals) perIndexCache[pKey][idx][row.sector] = vals;
+                }
+                return;
+            } catch {
+                if (attempt < retries) await new Promise(r => setTimeout(r, 3000));
             }
-        } catch {}
+        }
     }
 
     async function load(period, range, idxList) {
@@ -156,15 +165,76 @@
 
     $effect(() => { load(currentPeriod, customRange, indices); });
 
+    // --- INDUSTRY FILTER OVERLAY ---
+    // When industries are filtered for the selected sector, fetch filtered returns
+    // and overlay them on just that row
+
+    async function fetchFilteredSector(sector, industries, period, range, idxList) {
+        const indParam = encodeURIComponent(industries.join(','));
+        const overlay = {};
+        await Promise.all(idxList.map(async (idx) => {
+            try {
+                const url = range?.start
+                    ? `${API_BASE_URL}/sector-comparison/table?indices=${idx}&start=${range.start}&end=${range.end}&industries=${indParam}`
+                    : `${API_BASE_URL}/sector-comparison/table?indices=${idx}&period=${period||'1y'}&industries=${indParam}`;
+                const res = await fetch(url);
+                if (!res.ok) return;
+                const rows = await res.json();
+                const row = rows.find(r => r.sector === sector);
+                if (row?.indices?.[idx]) overlay[idx] = row.indices[idx];
+            } catch {}
+        }));
+        return overlay;
+    }
+
+    $effect(() => {
+        const filter = industryFilter;
+        const sector = filteredSector;
+        const period = currentPeriod;
+        const range = customRange;
+        const idxList = indices;
+        const key = `${sector}_${(filter||[]).join('|')}_${periodKey(period,range)}_${idxList.join(',')}`;
+        if (key === _lastFilterKey) return;
+        _lastFilterKey = key;
+
+        if (!filter || filter.length === 0 || !sector) {
+            filteredOverlay = {};
+            return;
+        }
+        fetchFilteredSector(sector, filter, period, range, idxList).then(ov => {
+            filteredOverlay = ov;
+        });
+    });
+
+    // --- DISPLAY DATA (base + overlay) ---
+    let displayData = $derived.by(() => {
+        if (!filteredSector || !industryFilter || industryFilter.length === 0 || Object.keys(filteredOverlay).length === 0) {
+            return tableData;
+        }
+        return tableData.map(row => {
+            if (row.sector !== filteredSector) return row;
+            const newIndices = { ...row.indices };
+            for (const [idx, vals] of Object.entries(filteredOverlay)) {
+                newIndices[idx] = vals;
+            }
+            const returns = Object.values(newIndices).map(v => v.return_pct).filter(v => v != null);
+            return {
+                ...row,
+                indices: newIndices,
+                avg_return_pct: returns.length ? Math.round((returns.reduce((a,b)=>a+b,0)/returns.length)*10)/10 : null,
+            };
+        });
+    });
+
     // --- SORTING ---
     let sorted = $derived(
-        [...tableData].sort((a,b) => (b.avg_return_pct||0) - (a.avg_return_pct||0))
+        [...displayData].sort((a,b) => (b.avg_return_pct||0) - (a.avg_return_pct||0))
     );
 
     // --- COLOUR SCALE ---
     // capped at 80th percentile so outliers don't wash out the rest
     let allVals = $derived(
-        tableData.flatMap(row =>
+        displayData.flatMap(row =>
             indices.map(idx => row.indices?.[idx]?.return_pct).filter(v => v != null)
         ).sort((a,b) => a - b)
     );

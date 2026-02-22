@@ -536,26 +536,31 @@ async def refresh_single_index(index_key):
 INTERVALS = {"1w": 7, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365, "5y": 1825}
 
 
-def _sector_returns_df(table, use_custom, period, start, end):
+def _sector_returns_df(table, use_custom, period, start, end, industries=None):
     """Execute the appropriate sector returns SQL variant and return a DataFrame."""
+    extra = ""
+    if industries:
+        escaped = ",".join(f"'{i.replace(chr(39), chr(39)+chr(39))}'" for i in industries)
+        extra = f"\n      AND industry IN ({escaped})"
+
     if use_custom:
-        return local_db.execute(
-            sql("sector_returns_custom.sql")
+        sql_text = (sql("sector_returns_custom.sql")
             .replace("{table}", table)
             .replace("{start}", start)
-            .replace("{end}", end)
-        ).df()
+            .replace("{end}", end))
     elif period.lower() == "max":
-        return local_db.execute(
-            sql("sector_returns_max.sql").replace("{table}", table)
-        ).df()
+        sql_text = sql("sector_returns_max.sql").replace("{table}", table)
     else:
         days = INTERVALS.get(period.lower(), 365)
-        return local_db.execute(
-            sql("sector_returns_period.sql")
+        sql_text = (sql("sector_returns_period.sql")
             .replace("{table}", table)
-            .replace("{days}", str(days))
-        ).df()
+            .replace("{days}", str(days)))
+
+    if extra:
+        sql_text = sql_text.replace(
+            "AND sector NOT IN ('N/A', '0', '')",
+            f"AND sector NOT IN ('N/A', '0', ''){extra}")
+    return local_db.execute(sql_text).df()
 
 
 def _top_items_df(union, item_col, use_custom, period, start, end):
@@ -1658,7 +1663,7 @@ async def get_sector_histogram(indices: str = "", period: str = "1y", start: str
 
 
 @app.get("/sector-comparison/table")
-async def get_sector_comparison_table(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
+async def get_sector_comparison_table(indices: str = "", period: str = "1y", start: str = "", end: str = "", industries: str = ""):
     """Return sector returns broken down by index for heatmap/rankings table."""
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]
     if not index_list:
@@ -1666,12 +1671,16 @@ async def get_sector_comparison_table(indices: str = "", period: str = "1y", sta
     if not index_list:
         return []
 
+    industry_list = [i.strip() for i in industries.split(",") if i.strip()] if industries else None
+
     use_custom = bool(start and end)
     cache_key = (
         f"sector_table_{','.join(sorted(index_list))}_{start}_{end}"
         if use_custom else
         f"sector_table_{','.join(sorted(index_list))}_{period}"
     )
+    if industry_list:
+        cache_key += f"_ind_{'|'.join(sorted(industry_list))}"
     cached = get_cached_response(cache_key)
     if cached:
         return cached
@@ -1682,7 +1691,7 @@ async def get_sector_comparison_table(indices: str = "", period: str = "1y", sta
             if not ensure_index_loaded(idx):
                 continue
             with db_rwlock.read():
-                df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end)
+                df = _sector_returns_df(f"prices_{idx}", use_custom, period, start, end, industries=industry_list)
             if df.empty:
                 continue
             for rec in df.to_dict("records"):
