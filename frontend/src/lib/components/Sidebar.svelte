@@ -513,8 +513,12 @@
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
                 const sec = $selectedSector;
-                // collapse all others, open only the selected sector
-                singleOpenSectors = new Set([sec]);
+                // add the selected sector without collapsing others
+                if (!singleOpenSectors.has(sec)) {
+                    const next = new Set(singleOpenSectors);
+                    next.add(sec);
+                    singleOpenSectors = next;
+                }
                 const idxKey = singleOpenIndex;
                 const ck = `${sec}_${idxKey}`;
                 if (!allSectorIndustries[ck]) {

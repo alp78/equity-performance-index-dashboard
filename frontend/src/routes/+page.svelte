@@ -917,7 +917,7 @@
                 {#if inOverview}
                     <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">INDEX OVERVIEW</h1>
                     <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 text-white/30">
-                        {$overviewSelectedIndices.length} indices selected · Normalized % change
+                        <span class="text-orange-400/70">{$overviewSelectedIndices.length} indices</span> · Normalized % change
                     </span>
                 {:else if inSectors}
                     {@const sectorFlagMap = { sp500: 'fi fi-us', stoxx50: 'fi fi-eu', ftse100: 'fi fi-gb', nikkei225: 'fi fi-jp', csi300: 'fi fi-cn', nifty50: 'fi fi-in' }}
@@ -937,7 +937,7 @@
                         <div>
                             <h1 class="text-4xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSector || 'SECTOR ANALYSIS'}</h1>
                             <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
-                                {$sectorSelectedIndices.length} indices
+                                <span class="text-orange-400/70">{$sectorSelectedIndices.length} indices</span>
                                 {#if $selectedIndustries.length > 0}
                                     {@const totalInds = (() => { const sc = industrySeriesCache[$selectedSector]; if (!sc) return 0; const s = new Set(); for (const idx of Object.values(sc)) for (const k of Object.keys(idx)) s.add(k); return s.size; })()}
                                     · <span class="text-orange-400/70">{$selectedIndustries.length}{totalInds ? ` of ${totalInds}` : ''} industries</span>

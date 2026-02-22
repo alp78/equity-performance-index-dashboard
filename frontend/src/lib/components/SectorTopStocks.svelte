@@ -190,9 +190,9 @@
                             <button
                                 onclick={() => navigateToStock(item.symbol, item.index_key)}
                                 title="{item.name || item.symbol}"
-                                class="w-20 shrink-0 text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                class="group/stock w-20 shrink-0 text-left cursor-pointer"
                             >
-                                <div class="text-[13px] font-black text-white/80 uppercase tracking-tighter truncate leading-tight">{item.symbol}</div>
+                                <div class="text-[13px] font-black text-white/80 group-hover/stock:!text-bloom-accent uppercase tracking-tighter truncate leading-tight transition-colors">{item.symbol}</div>
                                 <div class="text-[11px] font-bold uppercase tracking-wider"
                                      style="color:{idxColor};opacity:0.85">{INDEX_SHORT[item.index_key]||item.index_key}</div>
                             </button>
@@ -218,9 +218,9 @@
                             <button
                                 onclick={() => navigateToStock(item.symbol, item.index_key)}
                                 title="{item.name || item.symbol}"
-                                class="w-20 shrink-0 text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                class="group/stock w-20 shrink-0 text-left cursor-pointer"
                             >
-                                <div class="text-[13px] font-black text-white/80 uppercase tracking-tighter truncate leading-tight">{item.symbol}</div>
+                                <div class="text-[13px] font-black text-white/80 group-hover/stock:!text-bloom-accent uppercase tracking-tighter truncate leading-tight transition-colors">{item.symbol}</div>
                                 <div class="text-[11px] font-bold uppercase tracking-wider"
                                      style="color:{idxColor};opacity:0.85">{INDEX_SHORT[item.index_key]||item.index_key}</div>
                             </button>

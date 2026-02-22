@@ -148,7 +148,7 @@
                 label: {
                     show: true,
                     position: 'outside',
-                    formatter: '{b}  {d}%',
+                    formatter: '{b}',
                     color: 'rgba(255,255,255,0.55)',
                     fontSize: 13,
                     fontWeight: 500,
