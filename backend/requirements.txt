@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 google-cloud-bigquery
+google-cloud-bigquery-storage
 google-cloud-storage
 db-dtypes
 duckdb
