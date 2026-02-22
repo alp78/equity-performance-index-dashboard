@@ -1888,6 +1888,74 @@ async def get_industry_breakdown(
         return []
 
 
+@app.get("/sector-comparison/industry-turnover")
+async def get_industry_turnover(
+    index: str = "", sector: str = "",
+    period: str = "1y", start: str = "", end: str = "",
+):
+    """Return total turnover (close * volume) per industry within one sector of one index."""
+    if not index or index not in MARKET_INDICES or not sector:
+        return []
+
+    use_custom = bool(start and end)
+    cache_key = (
+        f"industry_turnover_{index}_{sector}_{start}_{end}"
+        if use_custom else
+        f"industry_turnover_{index}_{sector}_{period}"
+    )
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    if not ensure_index_loaded(index):
+        return []
+
+    table = f"prices_{index}"
+
+    try:
+        with db_rwlock.read():
+            if use_custom:
+                df = local_db.execute(
+                    sql("industry_turnover_custom.sql")
+                    .replace("{table}", table)
+                    .replace("{start}", start)
+                    .replace("{end}", end),
+                    [sector]
+                ).df()
+            elif period.lower() == "max":
+                df = local_db.execute(
+                    sql("industry_turnover_max.sql").replace("{table}", table),
+                    [sector]
+                ).df()
+            else:
+                days = INTERVALS.get(period.lower(), 365)
+                df = local_db.execute(
+                    sql("industry_turnover_period.sql")
+                    .replace("{table}", table)
+                    .replace("{days}", str(days)),
+                    [sector]
+                ).df()
+
+        if df.empty:
+            return []
+
+        result = [
+            {
+                "industry": rec["industry"],
+                "turnover": float(rec["turnover"]),
+                "stock_count": int(rec["stock_count"]),
+            }
+            for rec in df.to_dict("records")
+        ]
+        set_cached_response(cache_key, result)
+        return result
+
+    except Exception as e:
+        print(f"Industry turnover error: {e}")
+        import traceback; traceback.print_exc()
+        return []
+
+
 @app.get("/index-prices/top-sectors")
 async def get_top_sectors(indices: str = "", period: str = "1y", start: str = "", end: str = ""):
     index_list = [i.strip() for i in indices.split(",") if i.strip() and i.strip() in MARKET_INDICES]

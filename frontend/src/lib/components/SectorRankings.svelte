@@ -158,7 +158,7 @@
                 <div class="flex-1 flex items-center gap-2 min-w-0">
                     <div class="flex-1 h-[9px] rounded-full bg-white/[0.05] overflow-hidden min-w-0">
                         <div class="h-full rounded-full transition-all duration-500"
-                             style="width:{barW(row.return_pct)}; background:{pos ? color : '#ef4444'}; opacity:{isActive ? 1 : 0.65}">
+                             style="width:{barW(row.return_pct)}; background:{pos ? 'rgba(255,255,255,0.25)' : 'rgba(239,68,68,0.5)'}; opacity:{isActive ? 1 : 0.6}">
                         </div>
                     </div>
                     <span class="return-val font-black font-mono tabular-nums flex-shrink-0"
