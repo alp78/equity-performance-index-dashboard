@@ -78,26 +78,6 @@ Required environment variables for the backend:
 | `FINNHUB_API_KEY` | Finnhub API key (news, company data) |
 | `FRED_API_KEY` | FRED API key (macro indicators) |
 
-## Deployment
-
-**Backend** (Cloud Run):
-```bash
-cd backend
-gcloud run deploy exchange-api --source . \
-  --region europe-west3 --allow-unauthenticated \
-  --memory 4Gi --cpu 2 --cpu-boost --no-cpu-throttling \
-  --timeout 3600 --min-instances 1 --max-instances 3 \
-  --service-account exchange-backend-sa@esg-analytics-poc.iam.gserviceaccount.com \
-  --project esg-analytics-poc \
-  --set-env-vars PROJECT_ID=esg-analytics-poc
-```
-
-**Frontend** (Firebase Hosting):
-```bash
-cd frontend
-npm run build && firebase deploy --only hosting
-```
-
 ## Tech Stack
 
 | Layer | Technology |
