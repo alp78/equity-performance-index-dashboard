@@ -9,24 +9,6 @@ Real-time market data API server powering the Global Exchange Monitor dashboard.
 - **BigQuery** — source of truth for all historical price data
 - **httpx** — persistent connection pools for external APIs (Binance, Finnhub, FRED, Frankfurter)
 
-## Local Development
-
-```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Required environment variables
-export FINNHUB_API_KEY=<your-key>
-export FRED_API_KEY=<your-key>
-export PROJECT_ID=esg-analytics-poc
-
-# Run the server (port 8000 for dev, matching frontend config)
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
 
 ## Key Endpoints
 
@@ -52,19 +34,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 - **Circuit breakers**: Per-provider (Binance, Finnhub, FRED, Frankfurter) with configurable thresholds
 - **Cache**: In-process LRU dict with per-endpoint TTLs, singleflight to prevent stampedes, SWR headers
 - **SQL templates**: All queries in `sql/` directory (46 files), loaded via LRU-cached reader
-
-## Deployment (Cloud Run)
-
-```bash
-gcloud run deploy exchange-api --source . \
-  --region europe-west3 \
-  --allow-unauthenticated \
-  --memory 4Gi --cpu 2 --cpu-boost --no-cpu-throttling \
-  --timeout 3600 --min-instances 1 --max-instances 3 \
-  --service-account exchange-backend-sa@esg-analytics-poc.iam.gserviceaccount.com \
-  --project esg-analytics-poc \
-  --set-env-vars PROJECT_ID=esg-analytics-poc,FINNHUB_API_KEY=<key>,FRED_API_KEY=<key>
-```
 
 ## Project Structure
 

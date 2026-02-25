@@ -12,29 +12,6 @@ Interactive financial dashboard for the Global Exchange Monitor, deployed on Fir
 - **flag-icons** — country flags
 - **Firebase Hosting** — static SPA deployment
 
-## Local Development
-
-```bash
-# Install dependencies
-npm install
-
-# Start dev server (connects to backend on port 8000)
-npm run dev
-
-# Build for production
-npm run build
-
-# Preview production build
-npm run preview
-```
-
-## Environment Variables (optional)
-
-Create `.env.local` for overrides:
-
-```env
-VITE_API_BASE_URL=https://your-custom-backend-url.run.app
-```
 
 ## Dashboard Modes
 
@@ -81,13 +58,3 @@ frontend/
 └── firebase.json                   # Hosting config (SPA rewrites)
 ```
 
-## Deployment (Firebase)
-
-```bash
-npm run build
-firebase deploy --only hosting
-```
-
-## Design System
-
-See [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md) for the full specification including tokens, themes, typography, and responsive breakpoints.
