@@ -1232,6 +1232,7 @@
                     cs.series.setData(mapped);
                 }
             }
+            applyHighlight(highlightSymbol);
             return;
         }
 

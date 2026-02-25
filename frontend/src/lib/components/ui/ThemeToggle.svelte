@@ -11,9 +11,15 @@
 
     function toggle() {
         theme = theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.classList.add('no-transition');
         document.documentElement.setAttribute('data-theme', theme);
         document.documentElement.style.colorScheme = theme;
         localStorage.setItem('gem-theme', theme);
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.documentElement.classList.remove('no-transition');
+            });
+        });
     }
 
     let isDark = $derived(theme === 'dark');

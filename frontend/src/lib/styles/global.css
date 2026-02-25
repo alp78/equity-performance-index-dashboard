@@ -72,6 +72,14 @@ body {
   outline-offset: 2px;
 }
 
+/* ── Theme Switch — suppress transition flash ── */
+html.no-transition,
+html.no-transition *,
+html.no-transition *::before,
+html.no-transition *::after {
+  transition-duration: 0s !important;
+}
+
 /* ── Reduced Motion ── */
 @media (prefers-reduced-motion: reduce) {
   *,

@@ -28,7 +28,7 @@
 
     let currentIndex = $derived($marketIndex);
     let currency = $derived($currentCurrency);
-    let indexLabel = $derived(INDEX_CONFIG[currentIndex]?.label || currentIndex);
+    let indexLabel = $derived(INDEX_CONFIG[currentIndex]?.abbr || currentIndex);
     let indexFlag = $derived(INDEX_CONFIG[currentIndex]?.flag || '');
 
     function selectStock(symbol) {
@@ -39,7 +39,10 @@
     function formatDateShort(dateStr) {
         if (!dateStr) return '';
         const d = new Date(dateStr + 'T00:00:00');
-        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        const dd = String(d.getDate()).padStart(2, '0');
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const yy = String(d.getFullYear()).slice(2);
+        return `${dd}/${mm}/${yy}`;
     }
 
     // --- DATA LOADING (follows TopMovers pattern) ---

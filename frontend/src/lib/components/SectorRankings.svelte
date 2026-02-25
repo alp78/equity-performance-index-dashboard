@@ -15,7 +15,7 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { singleSelectedIndex, selectedSector, selectedSectors, INDEX_CONFIG } from '$lib/stores.js';
+    import { singleSelectedIndex, selectedSector, selectedSectors, sectorHighlightEnabled, INDEX_CONFIG } from '$lib/stores.js';
     import { SECTOR_PALETTE } from '$lib/theme.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
@@ -158,7 +158,7 @@
             <button
                 class="row-item w-full flex items-center gap-3 rounded-lg px-2 transition-all duration-150 relative
                     {isActive ? 'bg-accent/10' : 'hover:bg-bg-hover'}"
-                onclick={() => selectedSector.set(row.sector)}
+                onclick={() => { if (row.sector === activeSec) { sectorHighlightEnabled.update(v => !v); return; } sectorHighlightEnabled.set(true); selectedSector.set(row.sector); }}
             >
                 {#if isActive}
                     <div class="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg" style="background:{color}"></div>

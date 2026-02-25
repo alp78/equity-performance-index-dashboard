@@ -1128,10 +1128,10 @@
     let currentMode = $derived(inContext ? 'context' : inOverview ? 'macro' : inSectors ? 'sectors' : 'stocks');
 
     const modes = [
-        { key: 'macro',   label: 'Index Benchmarks', icon: Globe },
-        { key: 'sectors', label: 'Sector Analysis',  icon: PieChart },
-        { key: 'stocks',  label: 'Stock Browser',    icon: TrendingUp },
-        { key: 'context', label: 'Macro Context',    icon: Newspaper },
+        { key: 'macro',   label: 'Index Benchmarks', short: 'Indices',  icon: Globe },
+        { key: 'sectors', label: 'Sector Analysis',  short: 'Sectors',  icon: PieChart },
+        { key: 'stocks',  label: 'Stock Browser',    short: 'Stocks',   icon: TrendingUp },
+        { key: 'context', label: 'Macro Context',    short: 'Macro',    icon: Newspaper },
     ];
 
     function handleSwitchMode(mode) {
@@ -1175,53 +1175,76 @@
 {#if backendReady}
 <div class="flex flex-col h-screen w-screen bg-bg text-text overflow-hidden font-sans selection:bg-bg-active">
 
-    <!-- ═══ TOP BAR ═══ -->
+    <!-- ═══ TOP BAR (desktop: full tabs, mobile: branding + toggle only) ═══ -->
     <div class="shrink-0 flex flex-col bg-bg-sidebar z-50 border-b border-border">
-        <!-- main row: branding + tabs + theme toggle -->
-        <div class="flex items-center h-16 px-5">
+        <div class="flex items-center h-14 px-4 max-lg:h-12 max-lg:px-3">
             <!-- branding -->
             <div class="flex items-center gap-2 shrink-0">
-                <span class="inline-flex items-center justify-center w-9 h-9 rounded-md bg-accent text-white text-[12px] font-extrabold tracking-wider">GEM</span>
-                <span class="text-[15px] font-semibold text-text-secondary tracking-wide whitespace-nowrap max-sm:hidden">Global Exchange Monitor</span>
+                <span class="inline-flex items-center justify-center w-8 h-8 rounded-md bg-accent text-white text-[11px] font-extrabold tracking-wider">GEM</span>
+                <span class="text-[14px] font-semibold text-text-secondary tracking-wide whitespace-nowrap max-sm:hidden">Global Exchange Monitor</span>
             </div>
 
-            <!-- mode tabs — centered -->
-            <div class="flex-1 flex items-center justify-center">
-                <div class="flex items-stretch h-16 gap-1">
+            <!-- mode tabs — desktop only -->
+            <nav class="flex-1 flex items-center justify-center max-lg:hidden" aria-label="Main navigation">
+                <div class="flex items-stretch h-14 gap-0.5">
                     {#each modes as mode}
                         {@const active = currentMode === mode.key}
                         {@const Icon = mode.icon}
                         <button
                             onclick={() => handleSwitchMode(mode.key)}
-                            class="relative flex items-center gap-3 px-10 text-[17px] font-bold uppercase tracking-wider transition-colors
+                            class="topnav-tab relative flex items-center gap-2.5 px-5 text-[13px] font-semibold uppercase tracking-widest
                                 {active
-                                    ? 'text-text'
-                                    : 'text-text-faint hover:text-text-secondary'}"
+                                    ? 'text-text topnav-active'
+                                    : 'text-text-muted hover:text-text-secondary hover:bg-surface-1'}"
                         >
-                            <Icon size={24} strokeWidth={active ? 2.5 : 1.8} />
-                            <span class="max-sm:hidden">{mode.label}</span>
+                            <Icon size={18} strokeWidth={active ? 2.5 : 1.8} />
+                            <span>{mode.label}</span>
                             {#if active}
-                                <div class="absolute bottom-0 left-4 right-4 h-[3px] bg-accent rounded-t-full"></div>
+                                <div class="absolute bottom-0 left-3 right-3 h-[2px] bg-accent rounded-t-full"></div>
                             {/if}
                         </button>
                     {/each}
                 </div>
-            </div>
+            </nav>
+
+            <!-- spacer on mobile to push toggle right -->
+            <div class="hidden max-lg:flex flex-1"></div>
 
             <div class="shrink-0">
                 <ThemeToggle />
             </div>
         </div>
-
     </div>
+
+    <!-- ═══ BOTTOM NAV (mobile/tablet only) ═══ -->
+    <nav class="hidden max-lg:flex fixed bottom-0 left-0 right-0 z-50 bg-bg-sidebar border-t border-border" style="padding-bottom: env(safe-area-inset-bottom, 0px);" aria-label="Main navigation">
+        <div class="flex items-center justify-around w-full h-14">
+            {#each modes as mode}
+                {@const active = currentMode === mode.key}
+                {@const Icon = mode.icon}
+                <button
+                    onclick={() => handleSwitchMode(mode.key)}
+                    class="flex flex-col items-center justify-center gap-0.5 flex-1 h-full relative
+                        {active ? 'text-accent' : 'text-text-muted'}"
+                >
+                    {#if active}
+                        <div class="absolute top-0 left-3 right-3 h-[2px] bg-accent rounded-b-full"></div>
+                    {/if}
+                    <Icon size={20} strokeWidth={active ? 2.5 : 1.8} />
+                    <span class="text-[10px] font-semibold tracking-wide uppercase">{mode.short}</span>
+                </button>
+            {/each}
+        </div>
+    </nav>
 
     <!-- ═══ BODY: sidebar + main ═══ -->
     <div class="flex flex-1 min-h-0 overflow-hidden max-lg:flex-col max-lg:overflow-auto">
 
-        <!-- mobile hamburger button -->
+        <!-- mobile hamburger button (hidden in context mode — no sidebar) -->
+        {#if !inContext}
         <button
             onclick={toggleSidebar}
-            class="hidden max-lg:flex fixed top-14 left-3 z-[60] items-center justify-center w-10 h-10 rounded-lg bg-bg-card border border-border shadow-sm"
+            class="hidden max-lg:flex fixed top-[52px] left-3 z-[60] items-center justify-center w-10 h-10 rounded-lg bg-bg-card border border-border shadow-sm"
             aria-label="Toggle sidebar"
         >
             <svg aria-hidden="true" class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1232,6 +1255,7 @@
                 {/if}
             </svg>
         </button>
+        {/if}
 
         <!-- sidebar backdrop (mobile) -->
         {#if sidebarOpen}
@@ -1244,7 +1268,7 @@
 
         {#if !inContext}
         <div class="w-[460px] min-w-[300px] h-full shrink z-[40] flex flex-col
-            max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300 max-lg:shadow-lg
+            max-lg:fixed max-lg:top-12 max-lg:bottom-14 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300 max-lg:shadow-lg
             {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
             <div class="flex-1 min-h-0 overflow-hidden">
                 <Sidebar />
@@ -1253,8 +1277,8 @@
         {/if}
 
         <main class="flex-1 flex flex-col p-6 gap-6 overflow-hidden relative min-w-0
-            max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-visible max-lg:p-4 max-lg:pt-14 max-lg:gap-4
-            max-sm:p-3 max-sm:pt-12 max-sm:gap-3"
+            max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-visible max-lg:p-4 max-lg:pt-14 max-lg:pb-20 max-lg:gap-4
+            max-sm:p-3 max-sm:pt-12 max-sm:pb-18 max-sm:gap-3"
             style="">
 
         <!-- header: title + period controls (hidden in context mode) -->
@@ -1427,7 +1451,7 @@
                 </Card>
                 <!-- BTC / Gold / EUR-USD ticker strip -->
                 <Card fill={false} padding={false} class="shrink-0">
-                    <div class="flex items-stretch gap-4 px-4 py-2.5">
+                    <div class="flex items-stretch gap-4 px-4 py-2.5 max-sm:flex-col max-sm:gap-2">
                         {#each ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'] as symbol}
                             {@const data = macroTickerQuotes[symbol] || { price: 0, pct: 0, diff: 0 }}
                             {@const hasData = data.price > 0}
@@ -1463,14 +1487,14 @@
                 </Card>
                 <!-- 3-column grid: watchlist, news, calendar -->
                 <div class="flex-1 min-h-0 grid grid-cols-3 gap-4
-                    max-xl:grid-cols-1 max-xl:flex-none max-xl:auto-rows-[minmax(280px,1fr)]">
-                    <div class="min-h-0 overflow-hidden card-enter">
+                    max-xl:grid-cols-1 max-xl:flex-none">
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
                         <MacroWatchlist />
                     </div>
-                    <div class="min-h-0 overflow-hidden card-enter">
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
                         <NewsFeed />
                     </div>
-                    <div class="min-h-0 overflow-hidden card-enter">
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
                         <EconomicCalendar {currentPeriod} {customRange} />
                     </div>
                 </div>

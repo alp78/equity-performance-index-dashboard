@@ -3286,14 +3286,14 @@ _HIGH_IMPACT_RELEASES = {
     323: ("JOLTS", "US", "medium", "Job Openings and Labor Turnover Survey. Measures labor demand (openings), hires, and quits. Fed watches quits rate closely.", "https://www.bls.gov/jlt/"),
     175: ("Beige Book", "US", "medium", "Fed's qualitative summary of economic conditions across 12 districts. Published 2 weeks before each FOMC meeting.", "https://www.federalreserve.gov/monetarypolicy/beige-book-default.htm"),
     # International releases tracked by FRED
-    192: ("EU CPI", "EU", "high", "Eurozone Harmonised Index of Consumer Prices. Primary inflation measure for ECB monetary policy decisions.", "https://ec.europa.eu/eurostat/web/hicp"),
-    194: ("EU GDP", "EU", "high", "Eurozone gross domestic product. Quarterly aggregate output for the 20-member euro area.", "https://ec.europa.eu/eurostat/web/national-accounts"),
-    193: ("EU Unemployment", "EU", "medium", "Eurozone unemployment rate. Structural indicator of labor market slack across the euro area.", "https://ec.europa.eu/eurostat/web/labour-market"),
-    205: ("UK CPI", "GB", "high", "UK Consumer Prices Index. Bank of England's target inflation measure; drives rate decisions.", "https://www.ons.gov.uk/economy/inflationandpriceindices"),
-    206: ("UK GDP", "GB", "high", "UK gross domestic product. Quarterly estimate of total economic output for the United Kingdom.", "https://www.ons.gov.uk/economy/grossdomesticproductgdp"),
-    207: ("UK Unemployment", "GB", "medium", "UK unemployment rate from the Labour Force Survey. Key input for Bank of England policy.", "https://www.ons.gov.uk/employmentandlabourmarket"),
-    253: ("Japan CPI", "JP", "high", "Japan Consumer Price Index. Watched for signs of reflation after decades of deflationary pressure.", "https://www.stat.go.jp/english/data/cpi/"),
-    254: ("Japan GDP", "JP", "high", "Japan gross domestic product. Quarterly output measure for the world's 4th-largest economy.", "https://www.esri.cao.go.jp/en/sna/menu.html"),
+    192: ("EU CPI", "EU", "high", "Eurozone Harmonised Index of Consumer Prices. Primary inflation measure for ECB monetary policy decisions.", "https://ec.europa.eu/eurostat/databrowser/view/prc_hicp_manr/default/table?lang=en"),
+    194: ("EU GDP", "EU", "high", "Eurozone gross domestic product. Quarterly aggregate output for the 20-member euro area.", "https://ec.europa.eu/eurostat/databrowser/view/namq_10_gdp/default/table?lang=en"),
+    193: ("EU Unemployment", "EU", "medium", "Eurozone unemployment rate. Structural indicator of labor market slack across the euro area.", "https://ec.europa.eu/eurostat/databrowser/view/une_rt_m/default/table?lang=en"),
+    205: ("UK CPI", "GB", "high", "UK Consumer Prices Index. Bank of England's target inflation measure; drives rate decisions.", "https://www.ons.gov.uk/economy/inflationandpriceindices/bulletins/consumerpriceinflation/latest"),
+    206: ("UK GDP", "GB", "high", "UK gross domestic product. Quarterly estimate of total economic output for the United Kingdom.", "https://www.ons.gov.uk/economy/grossdomesticproductgdp/bulletins/gdpfirstquarterlyestimateuk/latest"),
+    207: ("UK Unemployment", "GB", "medium", "UK unemployment rate from the Labour Force Survey. Key input for Bank of England policy.", "https://www.ons.gov.uk/employmentandlabourmarket/peoplenotinwork/unemployment/timeseries/mgsx/lms"),
+    253: ("Japan CPI", "JP", "high", "Japan Consumer Price Index. Watched for signs of reflation after decades of deflationary pressure.", "https://www.stat.go.jp/english/data/cpi/1581-z.html"),
+    254: ("Japan GDP", "JP", "high", "Japan gross domestic product. Quarterly output measure for the world's 4th-largest economy.", "https://www.esri.cao.go.jp/en/sna/data/sokuhou/top_index.html"),
 }
 
 

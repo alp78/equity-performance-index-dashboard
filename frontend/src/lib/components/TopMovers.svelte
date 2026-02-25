@@ -41,7 +41,10 @@
     function formatDateShort(dateStr) {
         if (!dateStr) return '';
         const d = new Date(dateStr + 'T00:00:00');
-        return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        const dd = String(d.getDate()).padStart(2, '0');
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const yy = String(d.getFullYear()).slice(2);
+        return `${dd}/${mm}/${yy}`;
     }
 
     // --- DATA LOADING ---
@@ -129,7 +132,7 @@
 <Card fill class="top-movers-root overflow-x-hidden">
 
     <!-- header -->
-    <SectionHeader title="Top Movers" subtitle={INDEX_CONFIG[currentIndex]?.label || currentIndex} subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Top Movers" subtitle={INDEX_CONFIG[currentIndex]?.abbr || currentIndex} subtitleFlag={indexFlag} border size="lg">
         {#snippet action()}
             {#if customRange}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">

@@ -215,18 +215,20 @@
                 animationType: 'scale',
                 animationEasing: 'cubicOut',
                 animationDuration: 500,
+                animationDurationUpdate: 300,
+                animationEasingUpdate: 'cubicInOut',
                 color: PALETTE,
             }],
         };
     }
 
-    // update chart whenever pieData changes
+    // update chart whenever pieData changes — skip while loading to prevent blink
     $effect(() => {
-        if (!chart) return;
+        if (!chart || loading) return;
         if (pieData.length === 0) {
             chart.clear();
         } else {
-            chart.setOption(buildOption(pieData), { notMerge: true });
+            chart.setOption(buildOption(pieData));
         }
     });
 

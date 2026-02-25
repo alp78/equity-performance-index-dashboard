@@ -196,7 +196,7 @@
                                 </span>
                                 {#if inst.change != null}
                                     <span class="inst-chg font-mono font-semibold tabular-nums {inst.change >= 0 ? 'text-up' : 'text-down'}">
-                                        {inst.change >= 0 ? '+' : ''}{fmtChange(inst.change, inst.unit)}
+                                        {fmtChange(inst.change, inst.unit)}
                                     </span>
                                 {/if}
                             </div>
