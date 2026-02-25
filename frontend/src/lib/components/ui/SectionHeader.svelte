@@ -30,7 +30,7 @@
 
 <div class="section-header {border ? 'section-header-border' : ''} {className}">
     <div class="section-header-text">
-        <h3 class="{sizes.title} font-semibold uppercase tracking-[0.08em] {titleClass || 'text-muted'}" role="heading" aria-level={level}>
+        <h3 class="{sizes.title} font-semibold uppercase tracking-[0.08em] {titleClass || 'text-muted'}" aria-level={level}>
             {title}
         </h3>
         {#if subtitle}

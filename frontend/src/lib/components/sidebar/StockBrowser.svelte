@@ -438,7 +438,7 @@
                     <div class="ml-auto flex items-center gap-3 shrink-0">
                         <button onclick={(e) => { e.stopPropagation(); onGoToSectorAnalysis(sector.name); }}
                             aria-label="View sector analysis for {sector.name}"
-                            class="opacity-0 group-hover/sector:opacity-100 transition-opacity text-[12px] font-semibold text-text-muted uppercase tracking-wider hover:text-text cursor-pointer whitespace-nowrap">
+                            class="opacity-0 group-hover/sector:opacity-100 transition-opacity text-[10px] font-semibold text-text-muted uppercase tracking-wider hover:text-text cursor-pointer whitespace-nowrap">
                             Sector Analysis
                         </button>
                         <span class="text-[13px] font-medium text-text-faint tabular-nums w-6 text-right">{sector.stockCount}</span>

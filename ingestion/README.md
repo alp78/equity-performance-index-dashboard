@@ -1,70 +1,71 @@
-# Global Exchange Monitor
+# Ingestion — Cloud Function (Daily EOD Sync)
 
-Real-time financial dashboard tracking 6 major stock indices across 4 continents. Built on Google Cloud Platform with SvelteKit, FastAPI, BigQuery, and DuckDB.
+Google Cloud Function that syncs stock and index-level OHLCV prices from Yahoo Finance into BigQuery on a daily schedule.
+
+## Stack
+
+- **Cloud Functions** (2nd gen, Python 3.10)
+- **Cloud Scheduler** — triggers daily via HTTP POST
+- **Yahoo Finance** (`yfinance`) — data source
+- **BigQuery** — destination tables
+- **Cloud Storage** — NDJSON archive before BQ load
+
+## Pipeline
+
+1. **Gap Detection** — Query BQ for each symbol's last date + interior gaps (16-day lookback)
+2. **Download** — Bulk `yfinance` download for gap symbols, with batch fallback if coverage < 30%
+3. **Load** — Write NDJSON to GCS (archive) + append to BigQuery
+4. **Notify** — POST to backend `/api/admin/refresh/{index}` to reload DuckDB cache
 
 ## Covered Indices
 
-| Index | Region | Stocks |
+| Key | Index | Ticker |
 |---|---|---|
-| EURO STOXX 50 | Europe | 50 |
-| S&P 500 | US | 503 |
-| FTSE 100 | UK | 100 |
-| Nikkei 225 | Japan | 225 |
-| CSI 300 | China | 300 |
-| Nifty 50 | India | 50 |
+| `stoxx50` | EURO STOXX 50 | ^STOXX50E |
+| `sp500` | S&P 500 | ^GSPC |
+| `ftse100` | FTSE 100 | ^FTSE |
+| `nikkei225` | Nikkei 225 | ^N225 |
+| `csi300` | CSI 300 | 000300.SS |
+| `nifty50` | Nifty 50 | ^NSEI |
 
-## Dashboard Modes
+## Local Testing
 
-- **Index Benchmarks** — Multi-index comparison, cross-index correlation heatmap, news feed, economic calendar
-- **Sector Analysis** — Cross-index or single-index sector rotation, industry breakdown with donut charts, top/bottom stock rankings per sector
-- **Stock Browser** — OHLCV candlestick chart with MA overlays, technical indicators (RSI, MACD, Bollinger, ATR, Beta), top movers, most active by volume
-- **Macro Context** — Risk dashboard, BTC/Gold/EUR-USD live tickers, FX rates, macro watchlist, economic calendar
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-## Architecture
+# Run locally via functions-framework
+functions-framework --target=sync_stocks --port=8081
 
-![System Architecture](docs/Diagram.jpg)
+# Trigger sync for a single index
+curl -X POST http://localhost:8081 \
+  -H "Content-Type: application/json" \
+  -d '{"index": "sp500"}'
 
-### Data Pipeline
-
-1. **Ingestion** — Cloud Function (`sync_stocks`) runs daily via Cloud Scheduler, fetching EOD prices from Yahoo Finance with exchange-calendar-aware gap detection. Data is archived as NDJSON in GCS and appended to BigQuery.
-2. **Cache Hydration** — On ingestion completion, a webhook triggers the backend to pull fresh data from BigQuery into an in-memory DuckDB instance. Two-phase startup loads priority indices first (STOXX 50, S&P 500), then remaining indices in parallel.
-3. **Serving** — FastAPI on Cloud Run serves 40+ REST endpoints with per-endpoint TTL caching, singleflight to prevent stampedes, and SWR (stale-while-revalidate) headers. A WebSocket feed broadcasts live BTC and macro instrument ticks.
-4. **Presentation** — SvelteKit SPA on Firebase Hosting consumes REST snapshots and WebSocket streams. Svelte 5 runes enable surgical DOM updates for real-time price flickers.
-
-### Key Technical Decisions
-
-- **DuckDB in-memory** — Sub-millisecond OLAP queries without BigQuery costs on every request. RWLock serializes concurrent reads/writes.
-- **Circuit breakers** — Per-provider (Binance, Finnhub, FRED, Frankfurter) with configurable failure thresholds and recovery timeouts.
-- **Precomputed sector series** — Forward-filled sector/industry time series stored in DuckDB enable instant switching between indices.
-- **Hybrid data model** — Accurate EOD historical data from BigQuery combined with live intraday ticks from Binance and Yahoo Finance.
-
-## Project Structure
-
-```
-EXCHANGE_GCP_DEV/
-├── backend/                # FastAPI + DuckDB + WebSocket broadcaster
-│   ├── main.py             # API server (endpoints, startup, feeds)
-│   ├── index_config.py     # Index configuration loader
-│   ├── sql/                # 46 SQL template files
-│   └── config/             # indices.json (synced copy)
-├── ingestion/              # Cloud Function — daily EOD sync
-│   └── main.py             # Gap detection, download, BQ load, notify
-├── frontend/               # SvelteKit 5 + Tailwind v4 dashboard
-│   ├── src/lib/stores.js   # Global state + data loaders (SWR cache)
-│   ├── src/lib/styles/     # Design tokens, themes (dark/light), responsive
-│   ├── src/lib/components/ # 30+ panel components + 13 UI primitives
-│   └── src/routes/         # Single-page dashboard orchestrator
-├── config/
-│   └── indices.json        # Single source of truth for all index metadata
-└── docs/                   # Architecture diagram
+# Trigger sync for all indices
+curl -X POST http://localhost:8081 \
+  -H "Content-Type: application/json" \
+  -d '{"index": "all"}'
 ```
 
-## Tech Stack
+## Deployment
 
-| Layer | Technology |
+```bash
+gcloud functions deploy sync-stocks \
+  --gen2 --runtime=python310 \
+  --region=europe-west3 \
+  --trigger-http \
+  --allow-unauthenticated \
+  --memory=512Mi --timeout=540 \
+  --entry-point=sync_stocks \
+  --project=esg-analytics-poc
+```
+
+## Environment Variables
+
+| Variable | Description |
 |---|---|
-| Frontend | SvelteKit 2, Svelte 5, Tailwind CSS v4, lightweight-charts, ECharts |
-| Backend | FastAPI, DuckDB, pandas, httpx, WebSockets |
-| Data | BigQuery, Cloud Storage (NDJSON archive), Yahoo Finance, Binance |
-| Infra | Cloud Run, Cloud Functions, Cloud Scheduler, Firebase Hosting |
-| Design | Geist + Geist Mono fonts, dark/light themes, 7-breakpoint responsive grid |
+| `PROJECT_ID` | GCP project ID (default: `esg-analytics-poc`) |
+| `DATASET_ID` | BigQuery dataset (default: `stock_exchange`) |
+| `BUCKET_NAME` | GCS archive bucket |
+| `BACKEND_URL` | Backend API URL for refresh notification |

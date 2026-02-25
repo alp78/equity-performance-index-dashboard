@@ -23,6 +23,7 @@
 <script>
     import { onMount, onDestroy, tick } from 'svelte';
     import { SECTOR_ABBREV } from '$lib/theme.js';
+    import { INDEX_META_BY_TICKER } from '$lib/index-registry.js';
     // lightweight-charts is loaded lazily in onMount to keep it out of the main bundle
     let createChart, ColorType, CandlestickSeries, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle;
 
@@ -927,23 +928,13 @@
 
     // --- REACTIVE: COMPARISON DATA ---
 
-    // fallback color/name maps for major indices
-    const _DEFAULT_COLORS = {
-        '^GSPC':     '#6C8EEF',
-        '^STOXX50E': '#FBBF24',
-        '^FTSE':     '#A78BFA',
-        '^N225':     '#F472B6',
-        '000300.SS': '#2DD4BF',
-        '^NSEI':     '#FB923C',
-    };
-    const _DEFAULT_NAMES = {
-        '^GSPC':     'S&P 500',
-        '^STOXX50E': 'STOXX 50',
-        '^FTSE':     'FTSE 100',
-        '^N225':     'Nikkei 225',
-        '000300.SS': 'CSI 300',
-        '^NSEI':     'Nifty 50',
-    };
+    // fallback color/name maps built from centralized index registry
+    const _DEFAULT_COLORS = Object.fromEntries(
+        Object.entries(INDEX_META_BY_TICKER).map(([ticker, m]) => [ticker, m.color])
+    );
+    const _DEFAULT_NAMES = Object.fromEntries(
+        Object.entries(INDEX_META_BY_TICKER).map(([ticker, m]) => [ticker, m.name])
+    );
     let COMPARE_COLORS = $derived(compareColors || _DEFAULT_COLORS);
     let COMPARE_NAMES = $derived(compareNames || _DEFAULT_NAMES);
 

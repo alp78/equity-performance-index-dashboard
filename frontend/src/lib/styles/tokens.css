@@ -35,14 +35,14 @@
   --transition-slow:    400ms ease-out;
 
   /* ── Chart Palette (8 colors — dark defaults, light overrides in light.css) ── */
-  --chart-1: #3B82F6;  /* Blue */
-  --chart-2: #F97316;  /* Orange */
-  --chart-3: #EC4899;  /* Pink */
-  --chart-4: #8B5CF6;  /* Violet */
-  --chart-5: #14B8A6;  /* Teal */
-  --chart-6: #EAB308;  /* Yellow */
-  --chart-7: #F87171;  /* Coral */
-  --chart-8: #84CC16;  /* Lime */
+  --chart-1: #EC4899;  /* Pink */
+  --chart-2: #EAB308;  /* Yellow */
+  --chart-3: #D946EF;  /* Fuchsia */
+  --chart-4: #22C55E;  /* Green */
+  --chart-5: #6366F1;  /* Indigo */
+  --chart-6: #0EA5E9;  /* Sky */
+  --chart-7: #84CC16;  /* Lime */
+  --chart-8: #14B8A6;  /* Teal */
 
   /* ── Candlestick Chart Colors ── */
   --chart-candle-up:   #26A69A;

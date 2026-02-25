@@ -2,6 +2,17 @@
 
 Real-time financial dashboard tracking 6 major stock indices across 4 continents. Built on Google Cloud Platform with SvelteKit, FastAPI, BigQuery, and DuckDB.
 
+## Covered Indices
+
+| Index | Region | Stocks |
+|---|---|---|
+| EURO STOXX 50 | Europe | 50 |
+| S&P 500 | US | 503 |
+| FTSE 100 | UK | 100 |
+| Nikkei 225 | Japan | 225 |
+| CSI 300 | China | 300 |
+| Nifty 50 | India | 50 |
+
 ## Dashboard Modes
 
 - **Index Benchmarks** — Multi-index comparison, cross-index correlation heatmap, news feed, economic calendar

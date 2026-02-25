@@ -1,74 +1,78 @@
 /* ═══════════════════════════════════════════════════════════════════════
-   Light Theme — Clean & Bright
+   Light Theme — Professional Financial Dashboard
    ═══════════════════════════════════════════════════════════════════════
-   Professional light palette for daytime use on data-heavy financial
-   screens. High contrast text on bright surfaces with saturated
-   financial semantics.
+   Cool-gray surfaces inspired by Bloomberg Light, Refinitiv Workspace,
+   and FactSet. High-contrast text, darkened chart colors for readability
+   on white cards, and financial-grade semantic colors.
    ═══════════════════════════════════════════════════════════════════════ */
 
 [data-theme="light"] {
   color-scheme: light;
 
   /* ── Surface / Background Layers ── */
-  --surface-0: #F3F4F6;   /* main bg — light gray */
+  --surface-0: #F1F5F9;   /* main bg — cool slate-50 */
   --surface-1: #FFFFFF;   /* card bg — white */
-  --surface-2: #E8EAF0;   /* recessed panels */
-  --surface-3: #DDE0E6;   /* deeper insets */
+  --surface-2: #E2E8F0;   /* recessed panels — slate-200 */
+  --surface-3: #CBD5E1;   /* deeper insets — slate-300 */
   --surface-overlay: #FFFFFF;
 
   /* ── Text Hierarchy ── */
-  --text-primary:   #111318;  /* near-black */
-  --text-secondary: #333842;  /* dark gray */
-  --text-muted:     #5C6370;  /* medium gray */
-  --text-disabled:  #8B919A;  /* faded gray */
-  --text-inverse:   #F3F4F6;
+  --text-primary:   #0F172A;  /* slate-900 — near-black */
+  --text-secondary: #334155;  /* slate-700 — dark gray */
+  --text-muted:     #64748B;  /* slate-500 — medium gray */
+  --text-disabled:  #94A3B8;  /* slate-400 — faded */
+  --text-inverse:   #F1F5F9;
 
   /* ── Borders ── */
-  --border-subtle:  #E2E4EA;  /* soft */
-  --border-default: #CDD1D8;  /* medium */
-  --border-strong:  #A8ADB6;  /* strong */
+  --border-subtle:  #E2E8F0;  /* slate-200 — soft */
+  --border-default: #CBD5E1;  /* slate-300 — medium */
+  --border-strong:  #94A3B8;  /* slate-400 — strong */
 
   /* ── Financial Semantics ── */
-  --color-positive:    #15803D;
-  --color-positive-bg: rgba(21,128,61,0.10);
-  --color-negative:    #C41C1C;
-  --color-negative-bg: rgba(196,28,28,0.10);
-  --color-warning:     #A85E00;
-  --color-warning-bg:  rgba(168,94,0,0.10);
-  --color-neutral:     #333842;
-  --color-info:        #1D5BD6;
-  --color-info-bg:     rgba(29,91,214,0.10);
+  --color-positive:    #15803D;  /* green-700 — gains */
+  --color-positive-bg: rgba(21,128,61,0.08);
+  --color-negative:    #DC2626;  /* red-600 — losses */
+  --color-negative-bg: rgba(220,38,38,0.08);
+  --color-warning:     #B45309;  /* amber-700 — caution */
+  --color-warning-bg:  rgba(180,83,9,0.08);
+  --color-neutral:     #334155;  /* slate-700 — unchanged */
+  --color-info:        #1D4ED8;  /* blue-700 — informational */
+  --color-info-bg:     rgba(29,78,216,0.08);
 
   /* ── Accent ── */
-  --accent-primary:   #1D5BD6;
-  --accent-secondary: #2E6CE8;
+  --accent-primary:   #1D4ED8;  /* blue-700 */
+  --accent-secondary: #2563EB;  /* blue-600 */
 
   /* ── Interactive Overlays ── */
-  --hover-overlay:    rgba(17, 19, 24, 0.05);
-  --active-overlay:   rgba(17, 19, 24, 0.10);
-  --selected-overlay: rgba(29, 91, 214, 0.10);
+  --hover-overlay:    rgba(15, 23, 42, 0.04);
+  --active-overlay:   rgba(15, 23, 42, 0.08);
+  --selected-overlay: rgba(29, 78, 216, 0.08);
 
-  /* ── Shadows ── */
-  --shadow-sm: 0 1px 3px rgba(17,19,24,0.08), 0 1px 2px rgba(17,19,24,0.05);
-  --shadow-md: 0 4px 12px rgba(17,19,24,0.10);
-  --shadow-lg: 0 12px 32px rgba(17,19,24,0.14);
-  --shadow-tooltip: 0 4px 16px rgba(17,19,24,0.12);
+  /* ── Shadows (light mode uses real shadows for elevation) ── */
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.06), 0 1px 3px rgba(15,23,42,0.04);
+  --shadow-md: 0 4px 6px rgba(15,23,42,0.06), 0 2px 4px rgba(15,23,42,0.04);
+  --shadow-lg: 0 10px 24px rgba(15,23,42,0.10), 0 4px 8px rgba(15,23,42,0.04);
+  --shadow-tooltip: 0 4px 12px rgba(15,23,42,0.10);
 
   /* ── Scrollbar ── */
-  --scrollbar-thumb:       rgba(17, 19, 24, 0.18);
-  --scrollbar-thumb-hover: rgba(17, 19, 24, 0.28);
+  --scrollbar-thumb:       rgba(15, 23, 42, 0.14);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.25);
 
   /* ── Skeleton Loading ── */
-  --skeleton-base:  #E2E4EA;
-  --skeleton-shine: #F0F1F4;
+  --skeleton-base:  #E2E8F0;
+  --skeleton-shine: #F1F5F9;
 
-  /* ── Chart Palette (saturated for light backgrounds) ── */
-  --chart-1: #1D5BD6;  /* Blue */
-  --chart-2: #D64A0E;  /* Orange */
-  --chart-3: #C2185B;  /* Pink */
-  --chart-4: #6D28D9;  /* Violet */
-  --chart-5: #0D7D76;  /* Teal */
-  --chart-6: #A87400;  /* Yellow */
-  --chart-7: #C41C1C;  /* Coral */
-  --chart-8: #527A0E;  /* Lime */
+  /* ── Chart Palette (darkened for contrast on white) ── */
+  --chart-1: #DB2777;  /* Pink-600 */
+  --chart-2: #A16207;  /* Yellow-700 */
+  --chart-3: #A21CAF;  /* Fuchsia-700 */
+  --chart-4: #15803D;  /* Green-700 */
+  --chart-5: #4338CA;  /* Indigo-700 */
+  --chart-6: #0369A1;  /* Sky-700 */
+  --chart-7: #4D7C0F;  /* Lime-700 */
+  --chart-8: #0F766E;  /* Teal-700 */
+
+  /* ── Candlestick ── */
+  --chart-candle-up:   #15803D;
+  --chart-candle-down: #DC2626;
 }

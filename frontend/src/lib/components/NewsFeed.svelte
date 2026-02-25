@@ -209,7 +209,19 @@
 
     // Full load — used on mount; skips network if cache is fresh
     async function fetchNewsFull() {
-        if (isCacheFresh('news_feed')) return;
+        if (isCacheFresh('news_feed')) {
+            // Cache was populated after component creation (e.g. by prefetchMacroWidgets)
+            // — hydrate from it so we don't stay stuck on "Loading news..."
+            const cached = getCached('news_feed');
+            if (cached?.data?.length > 0 && articles.length === 0) {
+                articles = cached.data;
+                for (const a of articles) knownUrls.add(a.url);
+                latestTimestamp = articles[0].datetime;
+                connected = true;
+            }
+            loading = false;
+            return;
+        }
         try {
             const res = await fetch(`${API_BASE_URL}/news`);
             if (res.ok) {

@@ -15,25 +15,28 @@
 export { INDEX_COLORS, SECTOR_INDEX_NAMES } from '$lib/index-registry.js';
 
 // ── Sector Chart Palette ─────────────────────────────────────────────────
-// 11 maximally-distinct hues — one per colour family, ordered so the first
-// 5-6 (most-commonly shown) are as far apart as possible.  Inspired by
-// Tableau 10 / D3 Category10 principles adapted for dark backgrounds.
+// 11 vivid, high-saturation hues for GICS sectors.  Every colour is
+// punchy on dark backgrounds — no grays, no pastels.  Hues are spaced
+// ~30° apart around the wheel for maximum perceptual distance.
 //
-//  0 Blue      1 Orange    2 Pink      3 Violet    4 Teal
-//  5 Yellow    6 Coral     7 Lime      8 Fuchsia   9 Slate    10 Cyan
+// INDEX palette uses: Blue·Emerald·Red·Violet·Cyan·Amber  (6 hues)
+// SECTOR palette uses the complementary gaps between them.
+//
+//  0 Pink      1 Yellow    2 Fuchsia   3 Orange    4 Green
+//  5 Indigo    6 Sky       7 Lime      8 Teal      9 Rose    10 Violet
 
 export const SECTOR_PALETTE = [
-    '#5B9CF6',  // Electric Blue    — Information Technology
-    '#FB923C',  // Amber Orange     — Financials
-    '#F472B6',  // Hot Pink         — Healthcare
-    '#A78BFA',  // Soft Violet      — Industrials
-    '#2DD4BF',  // Neon Teal        — Consumer Discretionary
-    '#FACC15',  // Electric Yellow  — Communication Services
-    '#FF7961',  // Coral Flame      — Consumer Staples
-    '#A3E635',  // Neon Lime        — Energy
-    '#E879F9',  // Electric Magenta — Materials
-    '#94A3B8',  // Cool Slate       — Utilities
-    '#22D3EE',  // Bright Cyan      — Real Estate
+    '#EC4899',  // Pink        — Information Technology   (330°)
+    '#EAB308',  // Yellow      — Financials              ( 50°)
+    '#D946EF',  // Fuchsia     — Healthcare              (292°)
+    '#F97316',  // Orange      — Industrials             ( 25°)
+    '#22C55E',  // Green       — Consumer Discretionary  (142°)
+    '#6366F1',  // Indigo      — Communication Services  (239°)
+    '#0EA5E9',  // Sky         — Consumer Staples        (199°)
+    '#84CC16',  // Lime        — Energy                  ( 84°)
+    '#14B8A6',  // Teal        — Materials               (173°)
+    '#F43F5E',  // Rose        — Utilities               (350°)
+    '#A78BFA',  // Violet      — Real Estate             (258°)
 ];
 
 // ── Sector Color Lookup ─────────────────────────────────────────────────
@@ -72,9 +75,9 @@ export const SECTOR_ABBREV = {
 // overpower the sector-level colors above.
 
 export const INDUSTRY_PALETTE = [
-    '#5B8DEF', '#D4915A', '#D46A6A', '#4AA88A', '#7ACC5A',
-    '#C4A455', '#9B6AB0', '#CC7A85', '#A08060', '#8A9A78',
-    '#4A90A8', '#B85050', '#7A5A9A', '#40A0A0', '#A86090',
+    '#5BA88A', '#C4955A', '#B86A7A', '#6A90A8', '#8AAC5A',
+    '#B8965A', '#8A6AB0', '#A87A6A', '#7A9A78', '#5A8A9A',
+    '#A8705A', '#6A7A9A', '#9A8A5A', '#7AACAC', '#9A6A8A',
 ];
 
 // ── Sector Shade Generator ───────────────────────────────────────────────

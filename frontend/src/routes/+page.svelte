@@ -48,6 +48,7 @@
     import TechnicalLevels from '$lib/components/TechnicalLevels.svelte';
     import StockMetrics from '$lib/components/StockMetrics.svelte';
     import Card from '$lib/components/ui/Card.svelte';
+    import ThemeToggle from '$lib/components/ui/ThemeToggle.svelte';
     import { Newspaper, Globe, PieChart, TrendingUp } from 'lucide-svelte';
     import { onMount, untrack } from 'svelte';
     import { INDEX_COLORS, SECTOR_PALETTE, SECTOR_INDEX_NAMES, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
@@ -884,40 +885,43 @@
 
         // retry with backoff — backend may be lazy-loading the index on first request
         const maxRetries = 3;
-        for (let attempt = 0; attempt < maxRetries; attempt++) {
-            if (myFetchId !== stockFetchId) return;
-            try {
-                const res = await fetchWithTimeout(
-                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 15000,
-                    { signal }
-                );
+        try {
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
                 if (myFetchId !== stockFetchId) return;
-                if (res.ok) {
-                    const json = await res.json();
+                try {
+                    const res = await fetchWithTimeout(
+                        `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 15000,
+                        { signal }
+                    );
                     if (myFetchId !== stockFetchId) return;
-                    if (json && json.length > 0) {
-                        fullStockData = json;
-                        isInitialLoading = false;
-                        isIndexSwitching = false;
-                        return;
+                    if (res.ok) {
+                        const json = await res.json();
+                        if (myFetchId !== stockFetchId) return;
+                        if (json && json.length > 0) {
+                            fullStockData = json;
+                            return;
+                        }
+                        if (attempt < maxRetries - 1) {
+                            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+                            continue;
+                        }
                     }
+                } catch (e) {
+                    if (signal.aborted || myFetchId !== stockFetchId) return;
                     if (attempt < maxRetries - 1) {
                         await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
                         continue;
                     }
+                    console.error(`Failed to fetch data for ${symbol}:`, e);
                 }
-            } catch (e) {
-                if (signal.aborted || myFetchId !== stockFetchId) return;
-                if (attempt < maxRetries - 1) {
-                    await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-                    continue;
-                }
-                console.error(`Failed to fetch data for ${symbol}:`, e);
             }
-        }
-        if (myFetchId === stockFetchId) {
-            isInitialLoading = false;
-            isIndexSwitching = false;
+        } finally {
+            // Always reset loading flags for the winning fetch — prevents stuck spinners
+            // when rapid switching causes stale fetches to bail out silently
+            if (myFetchId === stockFetchId) {
+                isInitialLoading = false;
+                isIndexSwitching = false;
+            }
         }
     }
 
@@ -1041,6 +1045,16 @@
             loadIndexOverviewData();
             fetchComparisonData();
             loadSummaryData(Object.keys(INDEX_CONFIG)[0]);
+        } else if ($isMacroContextMode) {
+            isInitialLoading = false;
+            isIndexSwitching = false;
+            // Context mode — prefetch macro widgets immediately
+            prefetchMacroWidgets();
+            // Background prefetch for other modes
+            loadIndexOverviewData();
+            fetchComparisonData();
+            loadSummaryData(Object.keys(INDEX_CONFIG)[0]);
+            preloadAllSectorSeries();
         } else {
             await loadSummaryData($marketIndex);
             await fetchStockData($selectedSymbol);
@@ -1069,13 +1083,20 @@
             fetchComparisonData();
             isInitialLoading = false;
             isIndexSwitching = false;
-        } else if (idx === 'sectors' || idx === 'context') {
-            // sector/context mode loads data via its own $effects
+        } else if (idx === 'sectors') {
             fullStockData = [];
             allComparisonData = null;
             comparisonData = null;
             isInitialLoading = false;
             isIndexSwitching = false;
+        } else if (idx === 'context') {
+            fullStockData = [];
+            allComparisonData = null;
+            comparisonData = null;
+            isInitialLoading = false;
+            isIndexSwitching = false;
+            // Ensure macro widget caches are warm for context mode components
+            untrack(() => prefetchMacroWidgets());
         } else {
             // Keep old chart data visible (stale-while-revalidate) — don't clear fullStockData
             allComparisonData = null;
@@ -1187,7 +1208,9 @@
                 </div>
             </div>
 
-            <div class="shrink-0"></div>
+            <div class="shrink-0">
+                <ThemeToggle />
+            </div>
         </div>
 
     </div>
@@ -1502,10 +1525,7 @@
                         </div>
                     {:else if fullStockData.length === 0}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3">
-                                <div class="w-6 h-6 border-2 border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
-                                <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Loading Data</span>
-                            </div>
+                            <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">No chart data available</span>
                         </div>
                     {/if}
                     <div class="flex-1 min-h-0 min-w-0 chart-no-animate" style="transition: none !important;">
