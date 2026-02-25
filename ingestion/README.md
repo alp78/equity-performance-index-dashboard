@@ -59,14 +59,6 @@ EXCHANGE_GCP_DEV/
 └── docs/                   # Architecture diagram
 ```
 
-Required environment variables for the backend:
-
-| Variable | Description |
-|---|---|
-| `PROJECT_ID` | GCP project ID |
-| `FINNHUB_API_KEY` | Finnhub API key (news, company data) |
-| `FRED_API_KEY` | FRED API key (macro indicators) |
-
 ## Tech Stack
 
 | Layer | Technology |
