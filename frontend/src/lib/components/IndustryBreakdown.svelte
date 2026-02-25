@@ -1,10 +1,25 @@
-<!-- industry turnover pie chart using ECharts, with period header -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   IndustryBreakdown — Industry Turnover Pie Chart (ECharts)
+  ═══════════════════════════════════════════════════════════════════════════
+   Pie/doughnut chart showing trading turnover (close × volume) per
+   industry within the selected sector.  Industries below 2 % of total
+   are grouped into an "Other" slice.  Responds to the selectedIndustries
+   store to highlight filtered industries.
+
+   Data source : GET /sector-comparison/industry-turnover
+   Placement   : sidebar "Sector Rotation" → single-index mode, right col
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
     import { browser } from '$app/environment';
     import { onMount, onDestroy } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { singleSelectedIndex, selectedSector, selectedIndustries, INDEX_CONFIG } from '$lib/stores.js';
+    import { singleSelectedIndex, selectedSector, selectedIndustries, singleModeIndustries, INDEX_CONFIG } from '$lib/stores.js';
+    import { getSectorColor, getSectorShades } from '$lib/theme.js';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -22,6 +37,11 @@
     let indexCfg  = $derived(INDEX_CONFIG?.[indexKey] || {});
     let currSym   = $derived(indexCfg.currency || '$');
 
+    // Industries filtered for the CURRENT sector only (not global combined list)
+    let currentSectorIndustries = $derived(
+        sector ? ($singleModeIndustries?.[sector] || []) : []
+    );
+
     // --- PERIOD LABEL ---
 
     function fmtDate(d) {
@@ -35,12 +55,8 @@
                  : (currentPeriod || '1y').toUpperCase()
     );
 
-    // Tableau 10 darkened ~40% for dark theme
-    const PALETTE = [
-        '#2f4964', '#91551a', '#873435', '#476e6b', '#365f2f',
-        '#8e792c', '#694961', '#995e64', '#5d4639', '#6f6a66',
-        '#13476c', '#801818', '#583d71', '#0e727c', '#884774',
-    ];
+    // Base color for palette generation
+    let sectorBaseColor = $derived(sector ? getSectorColor(sector) : '#94A3B8');
 
     // --- FORMAT ---
 
@@ -117,6 +133,10 @@
         return main;
     })());
 
+    // Dynamic palette — shade count matches actual pie slices for maximum contrast
+    let sliceCount = $derived(Math.max(pieData.length, 2));
+    let PALETTE = $derived(getSectorShades(sectorBaseColor, sliceCount));
+
     // --- ECHARTS ---
 
     function buildOption(data) {
@@ -124,22 +144,23 @@
             backgroundColor: 'transparent',
             tooltip: {
                 trigger: 'item',
-                backgroundColor: 'rgba(12, 10, 18, 0.95)',
-                borderColor: 'rgba(255,255,255,0.06)',
+                appendToBody: true,
+                backgroundColor: 'var(--surface-overlay, rgba(30,35,48,0.95))',
+                borderColor: 'var(--border-default, rgba(36,48,64,0.5))',
                 borderWidth: 1,
                 padding: [14, 18],
                 textStyle: {
-                    color: 'rgba(255,255,255,0.85)',
-                    fontSize: 14,
-                    fontFamily: 'Inter, system-ui, sans-serif',
+                    color: 'var(--text-primary, rgba(232,236,241,0.85))',
+                    fontSize: 16,
+                    fontFamily: 'Geist, Inter, system-ui, sans-serif',
                 },
                 formatter: (params) => {
                     const d = params.data;
-                    return `<div style="font-size:16px;font-weight:700;margin-bottom:6px">${params.name}</div>`
-                        + `<div style="color:rgba(255,255,255,0.5);font-size:13px;line-height:1.7">`
-                        + `Turnover: <span style="color:rgba(255,255,255,0.9);font-weight:600">${fmtTurnover(d.value)}</span><br/>`
-                        + `Share: <span style="color:rgba(255,255,255,0.9);font-weight:600">${params.percent}%</span><br/>`
-                        + `Stocks: <span style="color:rgba(255,255,255,0.9);font-weight:600">${d.stockCount}</span>`
+                    return `<div style="font-size:18px;font-weight:700;margin-bottom:6px">${params.name}</div>`
+                        + `<div style="color:var(--text-muted);font-size:15px;line-height:1.7">`
+                        + `Turnover: <span style="color:var(--text-primary);font-weight:600">${fmtTurnover(d.value)}</span><br/>`
+                        + `Share: <span style="color:var(--text-primary);font-weight:600">${params.percent}%</span><br/>`
+                        + `Stocks: <span style="color:var(--text-primary);font-weight:600">${d.stockCount}</span>`
                         + `</div>`;
                 },
             },
@@ -152,10 +173,10 @@
                     show: true,
                     position: 'outside',
                     formatter: '{b}',
-                    color: 'rgba(255,255,255,0.55)',
-                    fontSize: isMobile ? 10 : 13,
+                    color: '#C8CDD5',
+                    fontSize: isMobile ? 11 : 14,
                     fontWeight: 500,
-                    fontFamily: 'Inter, system-ui, sans-serif',
+                    fontFamily: 'Geist, Inter, system-ui, sans-serif',
                     overflow: 'truncate',
                     ellipsis: '..',
                     width: isMobile ? 70 : 120,
@@ -166,7 +187,7 @@
                     length2: isMobile ? 10 : 18,
                     smooth: 0.3,
                     lineStyle: {
-                        color: 'rgba(255,255,255,0.15)',
+                        color: 'var(--border-subtle, rgba(26,32,48,1))',
                         width: 1,
                     },
                 },
@@ -178,8 +199,8 @@
                     scaleSize: 6,
                     label: {
                         show: true,
-                        color: 'rgba(255,255,255,0.9)',
-                        fontSize: 14,
+                        color: 'var(--text-primary, #E8ECF1)',
+                        fontSize: 16,
                         fontWeight: 'bold',
                     },
                     itemStyle: {
@@ -188,7 +209,7 @@
                     },
                 },
                 itemStyle: {
-                    borderColor: '#0c0a12',
+                    borderColor: 'var(--surface-0, #0A0D12)',
                     borderWidth: 1,
                 },
                 animationType: 'scale',
@@ -232,23 +253,22 @@
     });
 </script>
 
-<div class="h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0">
+<Card fill padding={false} class="min-h-0">
 
     <!-- header -->
-    <div class="flex items-start justify-between px-5 pt-5 pb-3 flex-shrink-0 border-b border-white/5">
-        <div class="flex flex-col items-start">
-            <div class="flex items-center gap-2">
-                <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">Industry Turnover</h3>
-                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">{periodLabel}</span>
+    <div class="px-5 pt-5 pb-3 flex-shrink-0">
+        <SectionHeader title="Industry Turnover" subtitle="Turnover ({currSym})" border titleClass={currentSectorIndustries.length > 0 ? 'text-blue-400' : ''}>
+            {#snippet action()}
+                <span class="text-[11px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
+                {#if loading}
+                    <div class="w-3 h-3 border border-border border-t-text-muted rounded-full animate-spin flex-shrink-0"></div>
+                {/if}
+            {/snippet}
+        </SectionHeader>
+        {#if sector}
+            <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                <span class="text-[13px] font-semibold uppercase tracking-wider" style="color:{getSectorColor(sector)}">{sector}</span>
             </div>
-            <div class="flex items-center gap-1.5 mt-1">
-                <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{sector || '—'}</span>
-                <span class="text-[11px] text-white/15">·</span>
-                <span class="text-[11px] font-bold text-white/20 uppercase tracking-wider">Industry Turnover <span class="text-cyan-400">{currSym}</span></span>
-            </div>
-        </div>
-        {#if loading}
-            <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1 flex-shrink-0"></div>
         {/if}
     </div>
 
@@ -256,15 +276,15 @@
     <div class="flex-1 min-h-0 relative">
         {#if pieData.length === 0 && !loading && !hasEverLoaded && sector}
             <div class="absolute inset-0 flex items-center justify-center">
-                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+                <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin"></div>
             </div>
         {:else if pieData.length === 0 && !loading}
             <div class="absolute inset-0 flex items-center justify-center">
-                <span class="text-white/15 text-[10px] font-bold uppercase tracking-widest">
+                <span class="text-text-faint text-[12px] font-medium uppercase tracking-widest">
                     {sector ? 'No data' : 'Select a sector'}
                 </span>
             </div>
         {/if}
         <div bind:this={chartEl} class="w-full h-full"></div>
     </div>
-</div>
+</Card>

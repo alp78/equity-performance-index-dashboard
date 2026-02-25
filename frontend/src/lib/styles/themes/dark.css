@@ -1,0 +1,58 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Dark Theme — Primary Theme (Financial Dashboard Default)
+   ═══════════════════════════════════════════════════════════════════════
+   Bloomberg / TradingView inspired dark palette. Uses tonal elevation
+   (lighter surfaces = higher) instead of shadows for depth.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ── Surface / Background Layers (tonal elevation) ── */
+  --surface-0: #0A0D12;       /* page background, chart canvas */
+  --surface-1: #12161F;       /* cards, panels, sidebar */
+  --surface-2: #1A1F2B;       /* elevated cards, dropdowns, hover */
+  --surface-3: #232938;       /* inputs, active states */
+  --surface-overlay: #1E2330; /* tooltips, popovers (+ backdrop-blur) */
+
+  /* ── Text Hierarchy ── */
+  --text-primary:   #E8ECF1;  /* prices, primary data, headings */
+  --text-secondary: #94A3B8;  /* company names, descriptions */
+  --text-muted:     #5E6B80;  /* section headers, labels */
+  --text-disabled:  #3D4556;  /* timestamps, disabled */
+  --text-inverse:   #0F172A;  /* on accent backgrounds */
+
+  /* ── Borders ── */
+  --border-subtle:  #1A2030;  /* barely visible separation */
+  --border-default: #243040;  /* standard card borders */
+  --border-strong:  #334155;  /* emphasized, active */
+
+  /* ── Financial Semantics ── */
+  --color-positive:    #10B981;           /* emerald — gains, bullish */
+  --color-positive-bg: rgba(16,185,129,0.10);
+  --color-negative:    #EF4444;           /* losses, bearish */
+  --color-negative-bg: rgba(239,68,68,0.10);
+  --color-warning:     #F59E0B;           /* amber — alerts, caution */
+  --color-warning-bg:  rgba(245,158,11,0.10);
+  --color-neutral:     #64748B;           /* unchanged, flat */
+  --color-info:        #3B82F6;           /* informational */
+  --color-info-bg:     rgba(59,130,246,0.10);
+
+  /* ── Accent ── */
+  --accent-primary:   #3B82F6;  /* active states, links, focus rings */
+  --accent-secondary: #60A5FA;  /* hover states */
+
+  /* ── Interactive Overlays ── */
+  --hover-overlay:    rgba(255, 255, 255, 0.04);
+  --active-overlay:   rgba(255, 255, 255, 0.08);
+  --selected-overlay: rgba(59, 130, 246, 0.16);
+
+  /* ── Scrollbar ── */
+  --scrollbar-thumb:       rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
+
+  /* ── Skeleton Loading ── */
+  --skeleton-base:  #1A1F2B;
+  --skeleton-shine: #232938;
+}

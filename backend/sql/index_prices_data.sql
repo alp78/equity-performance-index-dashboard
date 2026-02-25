@@ -1,8 +1,22 @@
--- returns normalized percent-change time series with forward-fill for selected index symbols
+-- =========================================================================
+--  Macro Overview: Multi-Index Comparison Chart
+-- =========================================================================
+--  Builds a normalized percent-change time series for one or more index
+--  symbols (e.g. ^GSPC, ^STOXX50E) so they can be overlaid on the same
+--  chart regardless of absolute price level.  Each index is rebased to
+--  0 % at the earliest date in the window.
+--
+--  A date-aligned grid + forward-fill (LAST_VALUE IGNORE NULLS) ensures
+--  indices with different trading calendars are comparable day-by-day.
+--
+--  Placeholders : {placeholders} — comma-separated ? marks for symbols
+--                 {date_clause}  — AND trade_date >= ... (optional)
+--  Called by    : GET /index_prices_data  →  IndexComparisonChart
+-- =========================================================================
 WITH
 raw AS (
     SELECT symbol,
-           strftime(trade_date, '%Y-%m-%d') as time,
+           CAST(trade_date AS DATE)::VARCHAR as time,
            CAST(close AS FLOAT) as close,
            CAST(volume AS BIGINT) as volume
     FROM index_prices
@@ -11,10 +25,9 @@ raw AS (
 ),
 
 bases AS (
-    SELECT symbol,
-           FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY time) as base_close
+    SELECT symbol, ARG_MIN(close, time) as base_close
     FROM raw
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time) = 1
+    GROUP BY symbol
 ),
 
 per_sym AS (

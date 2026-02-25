@@ -1,10 +1,30 @@
-<!-- candlestick chart with comparison line overlay using lightweight-charts.
-     handles stock mode (OHLC+MA+volume), comparison mode (% return lines),
-     scroll/zoom, brush selection, tooltips, and visible range management. -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   Chart — Financial Candlestick + Comparison Line Chart (1,200 lines)
+  ═══════════════════════════════════════════════════════════════════════════
+   Primary chart component using lightweight-charts (lazy-loaded).
+   Two rendering modes:
+     • Stock mode  — OHLC candlesticks, MA30/MA90 lines, volume histogram
+     • Comparison  — rebased % return lines with zero baseline and dual
+                     time-axis handling for cross-calendar alignment
+
+   Interaction:
+     • Mouse wheel zoom, drag pan, touch pinch-zoom
+     • Brush selection (shift+drag) for custom date ranges
+     • Double-click to reset visible range
+     • Context-aware tooltip (OHLC vs comparison format)
+     • Sticky price label for off-screen live price
+
+   Props: data, comparisonData, currentPeriod, customRange, onBrushSelect
+   Placement : main content area — all three dashboard modes
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
     import { onMount, onDestroy, tick } from 'svelte';
-    import { createChart, ColorType, CandlestickSeries, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts';
+    import { SECTOR_ABBREV } from '$lib/theme.js';
+    // lightweight-charts is loaded lazily in onMount to keep it out of the main bundle
+    let createChart, ColorType, CandlestickSeries, AreaSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle;
 
     let {
         data = [],
@@ -18,6 +38,8 @@
         compareColors = null,
         compareNames = null,
         hideVolume = false,
+        highlightSymbol = null,
+        hideLegend = false,
     } = $props();
 
     // --- DOM REFS ---
@@ -31,7 +53,7 @@
 
     // --- CHART SERIES ---
 
-    let chart;
+    let chart = $state(null);
     let candleSeries, areaSeries, volumeSeries, ma30Series, ma90Series;
     // never reassign, only mutate (splice/push) so closure in subscribeCrosshairMove sees updates
     let comparisonSeries = [];
@@ -420,18 +442,59 @@
         setTimeout(() => updateRangeLines(), 30);
     });
 
+    // Darken a hex color by mixing toward black for muted axis labels
+    function dimColor(hex, mix = 0.55) {
+        const r = Math.round(parseInt(hex.slice(1, 3), 16) * (1 - mix));
+        const g = Math.round(parseInt(hex.slice(3, 5), 16) * (1 - mix));
+        const b = Math.round(parseInt(hex.slice(5, 7), 16) * (1 - mix));
+        return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+    }
+
+    // --- THEME-AWARE CHART COLORS ---
+
+    function isDarkTheme() {
+        return document.documentElement.getAttribute('data-theme') !== 'light';
+    }
+
+    function chartThemeColors(dark) {
+        return dark ? {
+            textColor: 'rgba(255, 255, 255, 0.6)',
+            gridColor: 'rgba(255, 255, 255, 0.04)',
+            crossColor: 'rgba(255, 255, 255, 0.15)',
+        } : {
+            textColor: 'rgba(15, 23, 42, 0.5)',
+            gridColor: 'rgba(15, 23, 42, 0.06)',
+            crossColor: 'rgba(15, 23, 42, 0.12)',
+        };
+    }
+
+    let themeObserver;
+
     // --- CHART INIT ---
 
-    onMount(() => {
+    onMount(async () => {
+        const lc = await import('lightweight-charts');
+        createChart = lc.createChart;
+        ColorType = lc.ColorType;
+        CandlestickSeries = lc.CandlestickSeries;
+        AreaSeries = lc.AreaSeries;
+        HistogramSeries = lc.HistogramSeries;
+        LineSeries = lc.LineSeries;
+        CrosshairMode = lc.CrosshairMode;
+        LineStyle = lc.LineStyle;
+
+        const tc = chartThemeColors(isDarkTheme());
+
         chart = createChart(chartContainer, {
             layout: {
-                background: { type: ColorType.Solid, color: '#0d0d12' },
-                textColor: '#94a3b8',
-                fontFamily: 'Inter, sans-serif',
+                background: { type: ColorType.Solid, color: 'transparent' },
+                textColor: tc.textColor,
+                fontSize: 11,
+                fontFamily: 'Geist, Inter, system-ui, sans-serif',
             },
             grid: {
                 vertLines: { visible: false },
-                horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
+                horzLines: { color: tc.gridColor },
             },
             rightPriceScale: {
                 borderVisible: false,
@@ -447,12 +510,27 @@
             },
             crosshair: {
                 mode: CrosshairMode.Magnet,
-                vertLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: false },
-                horzLine: { color: 'rgba(168, 85, 247, 0.4)', labelVisible: true },
+                vertLine: { color: tc.crossColor, style: LineStyle.SparseDotted, labelVisible: false },
+                horzLine: { color: tc.crossColor, style: LineStyle.SparseDotted, labelVisible: true },
             },
             handleScroll: false,
             handleScale: false,
         });
+
+        // Watch for theme changes and update chart colors
+        themeObserver = new MutationObserver(() => {
+            if (!chart) return;
+            const c = chartThemeColors(isDarkTheme());
+            chart.applyOptions({
+                layout: { textColor: c.textColor },
+                grid: { horzLines: { color: c.gridColor } },
+                crosshair: {
+                    vertLine: { color: c.crossColor },
+                    horzLine: { color: c.crossColor },
+                },
+            });
+        });
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
         // hide TradingView branding injected by lightweight-charts (debounced to prevent mutation loop)
         let _nukeTimer = null;
@@ -471,32 +549,32 @@
         // --- STOCK MODE SERIES ---
 
         candleSeries = chart.addSeries(CandlestickSeries, {
-            upColor: 'rgba(34, 197, 94, 0.6)',
-            downColor: 'rgba(239, 68, 68, 0.6)',
-            borderUpColor: 'rgba(34, 197, 94, 0.8)',
-            borderDownColor: 'rgba(239, 68, 68, 0.8)',
-            wickUpColor: 'rgba(34, 197, 94, 0.5)',
-            wickDownColor: 'rgba(239, 68, 68, 0.5)',
+            upColor: '#26A69A',
+            downColor: '#EF5350',
+            borderUpColor: '#26A69A',
+            borderDownColor: '#EF5350',
+            wickUpColor: 'rgba(38, 166, 154, 0.6)',
+            wickDownColor: 'rgba(239, 83, 80, 0.6)',
             lastValueVisible: false,
             priceLineVisible: false,
         });
 
         areaSeries = chart.addSeries(AreaSeries, {
-            lineColor: 'rgba(168, 85, 247, 0.35)',
-            topColor: 'rgba(168, 85, 247, 0.08)',
-            bottomColor: 'rgba(168, 85, 247, 0)',
-            lineWidth: 1,
+            lineColor: 'rgba(59, 130, 246, 0.5)',
+            topColor: 'rgba(59, 130, 246, 0.08)',
+            bottomColor: 'rgba(59, 130, 246, 0)',
+            lineWidth: 0.5,
             lastValueVisible: false,
             priceLineVisible: false,
             crosshairMarkerVisible: false,
         });
 
         ma30Series = chart.addSeries(LineSeries, {
-            color: '#22d3ee', lineWidth: 1, lineStyle: LineStyle.Dashed,
+            color: '#3B82F6', lineWidth: 0.5, lineStyle: LineStyle.Dashed,
             lastValueVisible: false, priceLineVisible: false,
         });
         ma90Series = chart.addSeries(LineSeries, {
-            color: '#6366f1', lineWidth: 1, lineStyle: LineStyle.Dashed,
+            color: '#A855F7', lineWidth: 0.5, lineStyle: LineStyle.Dashed,
             lastValueVisible: false, priceLineVisible: false,
         });
 
@@ -520,11 +598,12 @@
 
             // --- COMPARISON MODE TOOLTIP ---
             if (comparisonSeries.length > 0) {
-                let rows = '';
                 let hasAnyData = false;
+
+                // Pass 1: collect all pct values for relative ranking
+                const entries = [];
                 for (const cs of comparisonSeries) {
                     const sData = param.seriesData?.get(cs.series);
-                    // carry forward last known value for sparse series (different trading calendars)
                     let pct = sData?.value;
                     if (pct === undefined && compareData?.series) {
                         const s = compareData.series.find(s => s.symbol === cs.symbol);
@@ -543,8 +622,6 @@
                     hasAnyData = true;
                     const color = cs.color || COMPARE_COLORS[cs.symbol] || '#8b5cf6';
                     const name = cs.name || COMPARE_NAMES[cs.symbol] || cs.symbol;
-                    const sign = pct >= 0 ? '+' : '';
-                    const pctColor = pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)';
                     let rawClose = '';
                     if (compareData && compareData.series) {
                         const s = compareData.series.find(s => s.symbol === cs.symbol);
@@ -553,13 +630,48 @@
                             if (pt && pt.close != null) rawClose = pt.close.toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1});
                         }
                     }
+                    entries.push({ pct, color, name, rawClose, symbol: cs.symbol });
+                }
+
+                // Pass 2: rank by pct and assign relative color
+                // Best performer = green, worst = red, middle = interpolated
+                const sorted = [...entries].sort((a, b) => b.pct - a.pct);
+                const rankMap = {};
+                sorted.forEach((e, i) => { rankMap[e.symbol] = i; });
+                const n = sorted.length;
+
+                function relativeColor(symbol) {
+                    if (n <= 1) return '#FAFAFA';
+                    const rank = rankMap[symbol]; // 0 = best, n-1 = worst
+                    const t = rank / (n - 1);     // 0 = best → 1 = worst
+                    // sage (#5B9A6F) → neutral (#A1A1AA) → rose (#B85C5C)
+                    if (t <= 0.5) {
+                        const u = t * 2; // 0→1 within top half
+                        const r = Math.round(91 + u * (161 - 91));
+                        const g = Math.round(154 + u * (161 - 154));
+                        const b = Math.round(111 + u * (170 - 111));
+                        return `rgb(${r},${g},${b})`;
+                    } else {
+                        const u = (t - 0.5) * 2; // 0→1 within bottom half
+                        const r = Math.round(161 + u * (184 - 161));
+                        const g = Math.round(161 + u * (92 - 161));
+                        const b = Math.round(170 + u * (92 - 170));
+                        return `rgb(${r},${g},${b})`;
+                    }
+                }
+
+                // Pass 3: build rows sorted by rank (best performer first)
+                let rows = '';
+                for (const e of sorted) {
+                    const sign = e.pct >= 0 ? '+' : '';
+                    const pctColor = relativeColor(e.symbol);
                     rows += `
                         <div class="flex items-center gap-2">
-                            <div style="width:8px;height:3px;border-radius:2px;background:${color};flex-shrink:0"></div>
-                            <span class="text-[9px] uppercase font-bold" style="color:${color};min-width:55px">${name}</span>
-                            <span class="text-[11px] font-black tabular-nums ml-auto" style="color:${pctColor}">${sign}${pct.toFixed(2)}%</span>
+                            <div style="width:8px;height:3px;border-radius:2px;background:${e.color};flex-shrink:0"></div>
+                            <span class="text-[11px] uppercase font-bold" style="color:${e.color};min-width:55px">${e.name}</span>
+                            <span class="text-[13px] font-semibold tabular-nums ml-auto" style="color:${pctColor}">${sign}${e.pct.toFixed(2)}%</span>
                         </div>
-                        ${rawClose ? `<div class="flex justify-end"><span class="text-[9px] text-white/30 font-mono tabular-nums">${rawClose}</span></div>` : ''}
+                        ${e.rawClose ? `<div class="flex justify-end"><span class="text-[11px] tt-muted font-mono tabular-nums">${e.rawClose}</span></div>` : ''}
                     `;
                 }
 
@@ -584,10 +696,10 @@
                 tooltip.style.display = 'flex';
 
                 tooltip.innerHTML = `
-                    <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[180px] gap-1.5 pointer-events-none">
-                        <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
+                    <div class="flex flex-col p-3 tt-bg border tt-border rounded-lg shadow-lg shadow-black/40 min-w-[180px] gap-1.5 pointer-events-none">
+                        <span class="text-[11px] tt-muted uppercase font-semibold tracking-widest border-b tt-border pb-1 mb-1">${formatDate(param.time)}</span>
                         ${rows}
-                        ${volTotal > 0 ? `<div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5 mt-1"><span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span><span class="text-xs text-purple-400 font-bold">${formatVolume(volTotal)}</span></div>` : ''}
+                        ${volTotal > 0 ? `<div class="flex justify-between items-center gap-4 pt-1 border-t tt-border mt-1"><span class="text-[11px] tt-muted uppercase font-bold">Vol</span><span class="text-xs tt-text font-bold">${formatVolume(volTotal)}</span></div>` : ''}
                     </div>`;
                 // clamp tooltip within chart bounds
                 { const tw = tooltipWidth, th = tooltip.offsetHeight || 200;
@@ -617,7 +729,7 @@
                 const livePrice = processedData[processedData.length - 1].close;
                 const diff = livePrice - closePrice;
                 const diffPct = (diff / closePrice) * 100;
-                const colorClass = diff >= 0 ? 'text-green-500' : 'text-red-500';
+                const colorClass = diff >= 0 ? 'tt-positive' : 'tt-negative';
                 const candleUp = closePrice >= openPrice;
 
                 tooltip.style.display = 'flex';
@@ -629,47 +741,47 @@
                 tooltip.style.top = `${top}px`;
 
                 tooltip.innerHTML = `
-                    <div class="flex flex-col p-3 bg-[#16161e]/95 border border-white/10 rounded-xl shadow-2xl backdrop-blur-md min-w-[170px] gap-1.5 pointer-events-none">
-                        <span class="text-[9px] text-white/30 uppercase font-black tracking-widest border-b border-white/5 pb-1 mb-1">${formatDate(param.time)}</span>
+                    <div class="flex flex-col p-3 tt-bg border tt-border rounded-lg shadow-lg shadow-black/40 min-w-[170px] gap-1.5 pointer-events-none" style="font-family:var(--font-mono);font-variant-numeric:tabular-nums;">
+                        <span class="text-[11px] tt-muted uppercase font-semibold tracking-widest border-b tt-border pb-1 mb-1">${formatDate(param.time)}</span>
 
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-white/40 uppercase font-bold">Open</span>
-                            <span class="text-xs text-white/70 font-black">${c}${openPrice.toFixed(2)}</span>
-                        </div>
-
-                        <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-white/40 uppercase font-bold">High</span>
-                            <span class="text-xs text-white/70 font-black">${c}${highPrice.toFixed(2)}</span>
+                            <span class="text-[11px] tt-muted uppercase font-bold">Open</span>
+                            <span class="text-xs tt-text font-semibold">${c}${openPrice.toFixed(2)}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-white/40 uppercase font-bold">Low</span>
-                            <span class="text-xs text-white/70 font-black">${c}${lowPrice.toFixed(2)}</span>
+                            <span class="text-[11px] tt-muted uppercase font-bold">High</span>
+                            <span class="text-xs tt-text font-semibold">${c}${highPrice.toFixed(2)}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-white/60 uppercase font-bold">Close</span>
-                            <span class="text-xs font-black" style="color: ${candleUp ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.8)'}">${c}${closePrice.toFixed(2)}</span>
-                        </div>
-
-                        <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
-                            <span class="text-[9px] text-white/40 uppercase font-bold">vs Live</span>
-                            <span class="text-[10px] font-black ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
-                        </div>
-
-                        <div class="flex justify-between items-center gap-4 border-t border-white/5 pt-1 mt-1">
-                            <span class="text-[9px] text-cyan-400/60 uppercase font-bold">MA 30</span>
-                            <span class="text-xs text-cyan-400 font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-[11px] tt-muted uppercase font-bold">Low</span>
+                            <span class="text-xs tt-text font-semibold">${c}${lowPrice.toFixed(2)}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[9px] text-indigo-400/60 uppercase font-bold">MA 90</span>
-                            <span class="text-xs text-indigo-400 font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-[11px] tt-text uppercase font-bold">Close</span>
+                            <span class="text-xs font-semibold ${candleUp ? 'tt-positive' : 'tt-negative'}">${c}${closePrice.toFixed(2)}</span>
                         </div>
 
-                        <div class="flex justify-between items-center gap-4 pt-1 border-t border-white/5">
-                            <span class="text-[9px] text-purple-400/60 uppercase font-bold">Vol</span>
-                            <span class="text-xs text-purple-400 font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
+                        <div class="flex justify-between items-center gap-4 border-t tt-border pt-1 mt-1">
+                            <span class="text-[11px] tt-muted uppercase font-bold">vs Live</span>
+                            <span class="text-[12px] font-semibold ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
+                        </div>
+
+                        <div class="flex justify-between items-center gap-4 border-t tt-border pt-1 mt-1">
+                            <span class="text-[11px] tt-accent uppercase font-bold">MA 30</span>
+                            <span class="text-xs tt-accent font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
+                        </div>
+
+                        <div class="flex justify-between items-center gap-4">
+                            <span class="text-[11px] tt-purple uppercase font-bold">MA 90</span>
+                            <span class="text-xs tt-purple font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
+                        </div>
+
+                        <div class="flex justify-between items-center gap-4 pt-1 border-t tt-border">
+                            <span class="text-[11px] tt-accent uppercase font-bold">Vol</span>
+                            <span class="text-xs tt-accent font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
                         </div>
                     </div>`;
             }
@@ -771,14 +883,14 @@
             for (const d of processedData) { if (d.volume > maxVol) maxVol = d.volume; }
             volumeSeries.setData(processedData.map(d => ({
                 time: d.time, value: d.volume || 0,
-                color: d.volume > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
+                color: d.volume > (maxVol * 0.8) ? '#3B82F6' : 'rgba(59, 130, 246, 0.15)',
             })));
 
             // update live price dashed line
             if (activePriceLine) { try { candleSeries.removePriceLine(activePriceLine); } catch(e) {} }
             lastClosePrice = processedData[processedData.length - 1].close;
             activePriceLine = candleSeries.createPriceLine({
-                price: lastClosePrice, color: '#ffffff', lineWidth: 1,
+                price: lastClosePrice, color: '#717171', lineWidth: 0.5,
                 lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: '',
             });
 
@@ -817,12 +929,12 @@
 
     // fallback color/name maps for major indices
     const _DEFAULT_COLORS = {
-        '^GSPC':     '#e2e8f0',
-        '^STOXX50E': '#2563eb',
-        '^FTSE':     '#ec4899',
-        '^N225':     '#f59e0b',
-        '000300.SS': '#ef4444',
-        '^NSEI':     '#22c55e',
+        '^GSPC':     '#6C8EEF',
+        '^STOXX50E': '#FBBF24',
+        '^FTSE':     '#A78BFA',
+        '^N225':     '#F472B6',
+        '000300.SS': '#2DD4BF',
+        '^NSEI':     '#FB923C',
     };
     const _DEFAULT_NAMES = {
         '^GSPC':     'S&P 500',
@@ -855,7 +967,7 @@
         volumeSeries.setData(volData.map(([time, vol]) => ({
             time,
             value: vol,
-            color: vol > (maxVol * 0.8) ? '#a855f7' : 'rgba(168, 85, 247, 0.3)',
+            color: vol > (maxVol * 0.8) ? '#3B82F6' : 'rgba(59, 130, 246, 0.15)',
         })));
     }
 
@@ -888,20 +1000,20 @@
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
             const lineSeries = chart.addSeries(LineSeries, {
                 color: color,
-                lineWidth: 1,
+                lineWidth: 0.5,
                 title: '',
                 lastValueVisible: false,
                 priceLineVisible: false,
                 priceFormat: { type: 'custom', formatter: (p) => p.toFixed(1) + '%' },
                 crosshairMarkerVisible: true,
-                crosshairMarkerRadius: 4,
+                crosshairMarkerRadius: 2,
             });
             lineSeries.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
 
             // axis label showing final % return
             const lastPct = s.points[s.points.length - 1]?.pct ?? 0;
             lineSeries.createPriceLine({
-                price: lastPct, color: color, lineWidth: 0,
+                price: lastPct, color: dimColor(color), lineWidth: 0,
                 lineStyle: LineStyle.Solid, axisLabelVisible: true,
                 title: '', lineVisible: false,
             });
@@ -913,7 +1025,7 @@
         if (comparisonSeries.length > 0) {
             try {
                 comparisonSeries[0].series.createPriceLine({
-                    price: 0, color: 'rgba(255,255,255,0.15)', lineWidth: 1,
+                    price: 0, color: 'rgba(255,255,255,0.08)', lineWidth: 0.5,
                     lineStyle: LineStyle.Dashed, axisLabelVisible: false,
                 });
             } catch(e) {}
@@ -937,7 +1049,30 @@
             color: COMPARE_COLORS[cs.symbol] || '#8b5cf6',
             name: COMPARE_NAMES[cs.symbol] || cs.symbol
         }));
+
+        // apply highlight if one is active
+        applyHighlight(highlightSymbol);
     }
+
+    // Dim/brighten comparison lines based on highlightSymbol
+    // Subtle emphasis: slightly dim non-highlighted lines, slightly thicken highlighted
+    function applyHighlight(hl) {
+        if (!comparisonSeries.length) return;
+        for (const cs of comparisonSeries) {
+            if (hl && hl !== cs.symbol) {
+                cs.series.applyOptions({
+                    color: dimColor(cs.color, 0.35),
+                    lineWidth: 0.5,
+                });
+            } else if (hl && hl === cs.symbol) {
+                cs.series.applyOptions({ color: cs.color, lineWidth: 1.5 });
+            } else {
+                cs.series.applyOptions({ color: cs.color, lineWidth: 0.5 });
+            }
+        }
+    }
+
+    $effect(() => { applyHighlight(highlightSymbol); });
 
     // incremental update: atomic rebuild of all series to keep visible range stable
     function updateComparisonSeries(cData) {
@@ -964,19 +1099,19 @@
             const name = COMPARE_NAMES[s.symbol] || s.symbol;
             const lineSeries = chart.addSeries(LineSeries, {
                 color: color,
-                lineWidth: 1,
+                lineWidth: 0.5,
                 title: '',
                 lastValueVisible: false,
                 priceLineVisible: false,
                 priceFormat: { type: 'custom', formatter: (p) => p.toFixed(1) + '%' },
                 crosshairMarkerVisible: true,
-                crosshairMarkerRadius: 4,
+                crosshairMarkerRadius: 2,
             });
             lineSeries.setData(s.points.map(p => ({ time: p.time, value: p.pct })));
 
             const lastPct = s.points[s.points.length - 1]?.pct ?? 0;
             lineSeries.createPriceLine({
-                price: lastPct, color: color, lineWidth: 0,
+                price: lastPct, color: dimColor(color), lineWidth: 0,
                 lineStyle: LineStyle.Solid, axisLabelVisible: true,
                 title: '', lineVisible: false,
             });
@@ -987,7 +1122,7 @@
         if (comparisonSeries.length > 0) {
             try {
                 comparisonSeries[0].series.createPriceLine({
-                    price: 0, color: 'rgba(255,255,255,0.15)', lineWidth: 1,
+                    price: 0, color: 'rgba(255,255,255,0.08)', lineWidth: 0.5,
                     lineStyle: LineStyle.Dashed, axisLabelVisible: false,
                 });
             } catch(e) {}
@@ -1028,8 +1163,9 @@
     // react to compareData changes: determine whether to do a full render, incremental update, or in-place data swap
     $effect(async () => {
         const cData = compareData;
+        const c = chart; // track chart readiness so this effect re-runs after async init
         if (!cData || !cData.series || cData.series.length === 0) {
-            if (chart) {
+            if (c) {
                 comparisonSeries.forEach(cs => {
                     try { chart.removeSeries(cs.series); } catch(e) {}
                 });
@@ -1040,6 +1176,8 @@
             _lastCompareDataVersion = 0;
             return;
         }
+
+        if (!c) return; // chart not yet initialized (async import pending)
 
         const newSymbols = cData.series.map(s => s.symbol).sort().join(',');
         const dataVersion = cData._version || 0;
@@ -1135,61 +1273,59 @@
         chartContainer?.removeEventListener('touchend', handleTouchEnd);
         resizer?.disconnect();
         observer?.disconnect();
+        themeObserver?.disconnect();
         chart?.remove();
     });
 
-    // --- SECTOR ABBREVIATIONS (for legend labels) ---
-
-    const SECTOR_ABBREV = {
-        'Technology': 'Tech',
-        'Financial Services': 'Financials',
-        'Healthcare': 'Health',
-        'Industrials': 'Industls',
-        'Consumer Cyclical': 'Cons Cyc',
-        'Communication Services': 'Comms',
-        'Consumer Defensive': 'Cons Def',
-        'Basic Materials': 'Materials',
-        'Real Estate': 'Real Est',
-        'Energy': 'Energy',
-        'Utilities': 'Utilities'
-    };
     function abbrevSector(name) { return SECTOR_ABBREV[name] || name; }
 </script>
 
-<div bind:this={chartContainer} class="w-full h-full relative rounded-2xl overflow-hidden bg-[#0d0d12]" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair;touch-action:none">
+<div bind:this={chartContainer} role="img" aria-label="Financial chart" class="w-full h-full relative rounded-xl overflow-hidden bg-surface-0" style="min-height:clamp(220px,35vh,600px);transition:none !important;cursor:crosshair;touch-action:none">
 
     {#if compareData && compareData.series && compareData.series.length > 0}
-        <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-4 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
-            {#each legendSeries as s}
-                <div class="flex items-center gap-1.5">
-                    <div class="w-4 h-[2px] rounded-full" style="background: {s.color}"></div>
-                    <span class="text-[9px] uppercase font-black tracking-widest" style="color: {s.color}">{s.name}</span>
-                </div>
-            {/each}
-        </div>
+        {#if !hideLegend}
+            <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-4 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-surface-0/80 rounded-lg flex-wrap">
+                {#each legendSeries as s}
+                    <div class="flex items-center gap-1.5">
+                        <div class="w-4 h-[2px] rounded-full" style="background: {s.color}" aria-hidden="true"></div>
+                        <span class="text-[11px] uppercase font-semibold tracking-widest" style="color: {s.color}">{s.name}</span>
+                    </div>
+                {/each}
+            </div>
+        {/if}
     {:else}
-        <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-5 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-black/20 backdrop-blur-sm rounded-lg flex-wrap">
-            <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-green-500/60 rounded-[1px]"></div><div class="w-2 h-3 bg-red-500/60 rounded-[1px]"></div><span class="text-[9px] text-white/60 uppercase font-black tracking-widest ml-1">OHLC</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-white"></div><span class="text-[9px] text-white font-black tracking-widest">Live</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-cyan-400"></div><span class="text-[9px] text-cyan-400/80 uppercase font-black tracking-widest">MA 30</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-indigo-400"></div><span class="text-[9px] text-indigo-400/80 uppercase font-black tracking-widest">MA 90</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-[#a855f7]/60"></div><span class="text-[9px] text-[#a855f7]/60 uppercase font-black tracking-widest">Volume</span></div>
+        <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-5 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-surface-0/80 rounded-lg flex-wrap">
+            <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-up/60 rounded-[1px]" aria-hidden="true"></div><div class="w-2 h-3 bg-down/60 rounded-[1px]" aria-hidden="true"></div><span class="text-[11px] text-text-muted uppercase font-semibold tracking-widest ml-1">OHLC</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-text" aria-hidden="true"></div><span class="text-[11px] text-text font-semibold tracking-widest">Live</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-accent" aria-hidden="true"></div><span class="text-[11px] text-accent uppercase font-semibold tracking-widest">MA 30</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed" style="border-color: var(--chart-4)" aria-hidden="true"></div><span class="text-[11px] uppercase font-semibold tracking-widest" style="color: var(--chart-4)">MA 90</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-accent/50" aria-hidden="true"></div><span class="text-[11px] text-accent/60 uppercase font-semibold tracking-widest">Volume</span></div>
         </div>
     {/if}
 
     {#if selectMode}
-        <div class="absolute top-4 right-6 z-[110] px-3 py-1.5 bg-orange-500/20 border border-orange-500/40 rounded-lg pointer-events-none">
-            <span class="text-[10px] font-black text-orange-400 uppercase tracking-wider">Drag to select range</span>
+        <div class="absolute top-4 right-6 z-[110] px-3 py-1.5 bg-orange-500/20 border border-orange-500/40 rounded-lg pointer-events-none" role="status" aria-live="polite">
+            <span class="text-[12px] font-semibold text-orange-400 uppercase tracking-wider">Drag to select range</span>
         </div>
     {/if}
 
-    <div bind:this={brushOverlay} class="absolute top-0 bottom-0 z-[105] hidden pointer-events-none bg-orange-500/20 border-l-2 border-r-2 border-orange-500/50"></div>
-    <div bind:this={rangeLineStart} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);"></div>
-    <div bind:this={rangeLineEnd} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);"></div>
-    <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-75"></div>
-    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[11px] font-mono font-bold tabular-nums text-white bg-white/20 px-1.5 py-0.5 rounded-l" style="backdrop-filter: blur(4px);"></div>
+    <div bind:this={brushOverlay} class="absolute top-0 bottom-0 z-[105] hidden pointer-events-none bg-orange-500/20 border-l-2 border-r-2 border-orange-500/50" aria-hidden="true"></div>
+    <div bind:this={rangeLineStart} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
+    <div bind:this={rangeLineEnd} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
+    <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-150" role="tooltip" aria-live="polite"></div>
+    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[13px] font-mono font-bold tabular-nums text-text bg-bg-card/80 border border-border px-1.5 py-0.5 rounded-l" aria-hidden="true"></div>
 </div>
 
 <style>
     :global(.tv-lightweight-charts-attribution) { display: none !important; }
+
+    /* Tooltip classes used in innerHTML — must use :global() */
+    :global(.tt-bg) { background: var(--surface-overlay) !important; opacity: 0.97; backdrop-filter: blur(8px); }
+    :global(.tt-border) { border-color: var(--border-default) !important; }
+    :global(.tt-muted) { color: var(--text-muted) !important; }
+    :global(.tt-text) { color: var(--text-primary) !important; }
+    :global(.tt-positive) { color: var(--color-positive) !important; }
+    :global(.tt-negative) { color: var(--color-negative) !important; }
+    :global(.tt-accent) { color: var(--accent-primary) !important; }
+    :global(.tt-purple) { color: var(--chart-4) !important; }
 </style>

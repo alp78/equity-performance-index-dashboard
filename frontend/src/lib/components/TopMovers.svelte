@@ -1,15 +1,30 @@
-<!-- top 3 / bottom 3 stock performers as horizontal bar charts -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   RankingPanel — Top / Bottom 3 Stock Movers
+  ═══════════════════════════════════════════════════════════════════════════
+   Horizontal bar chart showing the 3 best and 3 worst performing stocks
+   by price return over the selected period.  Retries up to 8 times with
+   1.5 s backoff since the backend may still be loading from BigQuery.
+   Clicking a stock selects it in the sidebar.
+
+   Data source : GET /rankings?period={p}&index={idx}
+                 GET /rankings/custom?start=...&end=...
+   Placement   : bottom panel grid, col-span-3
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
     import { browser } from '$app/environment';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
     import { marketIndex, INDEX_CONFIG, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
-
     let { currentPeriod = '1y', customRange = null } = $props();
 
     let localRankings = $state(null);
     let localLoading = $state(false);
     let currentIndex = $derived($marketIndex);
+    let indexFlag = $derived(INDEX_CONFIG[currentIndex]?.flag || '');
     let rankingCache = {};
     let abortController = null;
 
@@ -111,28 +126,22 @@
     }
 </script>
 
-<div class="h-full w-full flex flex-col bg-white/5 rounded-3xl p-5 border border-white/5 overflow-x-hidden shadow-2xl backdrop-blur-md">
+<Card fill class="top-movers-root overflow-x-hidden">
 
     <!-- header -->
-    <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3">
-        <div class="flex items-center gap-2">
-            <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">
-                Top Movers
-            </h3>
+    <SectionHeader title="Top Movers" subtitle={INDEX_CONFIG[currentIndex]?.label || currentIndex} subtitleFlag={indexFlag} border size="lg">
+        {#snippet action()}
             {#if customRange}
-                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">
+                <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">
                     {formatDateShort(customRange.start)} → {formatDateShort(customRange.end)}
                 </span>
             {:else if currentPeriod}
-                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">
+                <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">
                     {currentPeriod.toUpperCase()}
                 </span>
             {/if}
-        </div>
-        <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider mt-1">
-            {INDEX_CONFIG[currentIndex]?.label || currentIndex}
-        </span>
-    </div>
+        {/snippet}
+    </SectionHeader>
 
     <div class="flex-1 flex flex-col min-h-0 gap-1 overflow-y-auto overflow-x-hidden">
         {#if localRankings && localRankings.selected}
@@ -145,36 +154,38 @@
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.top || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / topMax) * 80}
-                        <div class="flex items-center w-full gap-2 flex-1 min-h-0">
+                        <div class="bar-row flex items-center w-full gap-2 flex-1 min-h-0">
                             <button
                                 onclick={() => selectSymbol(item.symbol)}
                                 title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
-                                class="w-20 text-[14px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                aria-label="Select {item.symbol}{nameMap[item.symbol] ? ' - ' + nameMap[item.symbol] : ''}"
+                                class="w-20 text-[14px] font-semibold text-text shrink-0 uppercase tracking-tighter truncate text-left hover:text-text transition-colors cursor-pointer"
                             >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
-                                <div class="h-full bg-green-500/20 border-l-2 border-green-500 flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
-                                    <span class="text-[11px] font-medium text-white/80 whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{(item.value ?? 0).toFixed(1)}%</span>
+                                <div class="h-full bg-up/15 border-l-2 border-up flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
+                                    <span class="text-[12px] font-mono tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">+{(item.value ?? 0).toFixed(1)}%</span>
                                 </div>
                             </div>
                         </div>
                     {/each}
                 </div>
 
-                <div class="flex-none h-px bg-white/10 mx-2"></div>
+                <div class="flex-none h-px bg-border mx-2"></div>
 
                 <!-- bottom performers -->
                 <div class="flex-1 flex flex-col justify-around py-1">
                     {#each (data.bottom || []).slice(0, 3) as item}
                         {@const width = (Math.abs(item.value) / botMax) * 80}
-                        <div class="flex items-center w-full gap-2 flex-1 min-h-0">
+                        <div class="bar-row flex items-center w-full gap-2 flex-1 min-h-0">
                             <button
                                 onclick={() => selectSymbol(item.symbol)}
                                 title="{item.symbol}{nameMap[item.symbol] ? ' — ' + nameMap[item.symbol] : ''}"
-                                class="w-20 text-[14px] font-black text-white/80 shrink-0 uppercase tracking-tighter truncate text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                                aria-label="Select {item.symbol}{nameMap[item.symbol] ? ' - ' + nameMap[item.symbol] : ''}"
+                                class="w-20 text-[14px] font-semibold text-text shrink-0 uppercase tracking-tighter truncate text-left hover:text-text transition-colors cursor-pointer"
                             >{item.symbol}</button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
-                                <div class="h-full bg-red-500/20 border-r-2 border-red-500 flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
-                                    <span class="text-[11px] font-medium text-white/80 whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
+                                <div class="h-full bg-down/8 border-r-2 border-down flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width: {width}%">
+                                    <span class="text-[12px] font-mono tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
                                         {(item.value ?? 0).toFixed(1)}%
                                     </span>
                                 </div>
@@ -185,13 +196,19 @@
             </div>
         {:else}
             <div class="flex-1 flex items-center justify-center">
-                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+                <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
             </div>
         {/if}
     </div>
-</div>
+</Card>
 
 <style>
+    :global(.top-movers-root) { container-type: inline-size; }
+
     div { user-select: none; }
     .transition-all { transition-property: all; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+
+    @container (max-width: 280px) {
+        .bar-row { min-height: 28px; }
+    }
 </style>

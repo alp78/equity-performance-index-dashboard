@@ -1,4 +1,13 @@
--- computes total turnover (close * volume) per industry within a sector for a custom date range
+-- =========================================================================
+--  Industry Turnover: Trading Volume by Industry (Custom Date Range)
+-- =========================================================================
+--  Same as industry_turnover_period.sql but with user-specified dates.
+--
+--  Placeholders : {table}, {start}, {end}
+--  Params       : ? — sector name
+--  Called by    : GET /industry-turnover
+-- =========================================================================
+
 SELECT industry,
     SUM(close * volume) as turnover,
     COUNT(DISTINCT symbol) as stock_count

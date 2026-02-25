@@ -1,4 +1,16 @@
--- computes total turnover (close * volume) per industry within a sector for a lookback period
+-- =========================================================================
+--  Industry Turnover: Trading Volume by Industry (Lookback Period)
+-- =========================================================================
+--  Within a selected sector, totals the dollar turnover (close × volume)
+--  per industry.  Used by IndustryBreakdown.svelte to show which
+--  industries have the most trading activity — a proxy for investor
+--  interest or liquidity.
+--
+--  Placeholders : {table}, {days}
+--  Params       : ? — sector name
+--  Called by    : GET /industry-turnover
+-- =========================================================================
+
 SELECT industry,
     SUM(close * volume) as turnover,
     COUNT(DISTINCT symbol) as stock_count

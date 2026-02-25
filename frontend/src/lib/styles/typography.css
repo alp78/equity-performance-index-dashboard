@@ -1,0 +1,123 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Typography System
+   ═══════════════════════════════════════════════════════════════════════
+   Geist for UI/headings, Geist Mono for numerical/code data.
+   Fluid type scale with clamp() for seamless responsive sizing.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Type Scale Custom Properties (fluid with clamp) ── */
+:root {
+  --text-3xl:  clamp(1.75rem, 2vw + 0.5rem, 2.25rem);     /* hero metrics */
+  --text-2xl:  clamp(1.375rem, 1.5vw + 0.5rem, 1.75rem);   /* section titles */
+  --text-xl:   clamp(1.125rem, 1.2vw + 0.4rem, 1.375rem);  /* card titles */
+  --text-lg:   clamp(1rem, 1vw + 0.35rem, 1.125rem);        /* subsections */
+  --text-base: clamp(0.8125rem, 0.85vw + 0.25rem, 0.875rem); /* body text */
+  --text-sm:   clamp(0.75rem, 0.8vw + 0.2rem, 0.8125rem);  /* secondary */
+  --text-xs:   0.75rem;                                       /* 12px — captions, labels */
+  --text-2xs:  0.6875rem;                                     /* 11px — overlines */
+
+  --leading-tight:   1.25;
+  --leading-snug:    1.35;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.625;
+
+  --font-sans: "Geist", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ── Utility Classes ── */
+
+.text-display {
+  font-size: var(--text-3xl);
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-family: var(--font-sans);
+}
+
+.text-heading {
+  font-size: var(--text-2xl);
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-family: var(--font-sans);
+}
+
+.text-title {
+  font-size: var(--text-xl);
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-family: var(--font-sans);
+}
+
+.text-subtitle {
+  font-size: var(--text-lg);
+  line-height: 1.4;
+  font-weight: 500;
+  font-family: var(--font-sans);
+}
+
+.text-body {
+  font-size: var(--text-base);
+  line-height: 1.5;
+  font-weight: 400;
+  font-family: var(--font-sans);
+}
+
+.text-body-sm {
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  font-weight: 400;
+  font-family: var(--font-sans);
+}
+
+.text-label {
+  font-size: var(--text-xs);
+  line-height: 1.33;
+  font-weight: 500;
+  font-family: var(--font-sans);
+}
+
+.text-overline {
+  font-size: var(--text-2xs);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-family: var(--font-sans);
+}
+
+/* ── Monospace Data Display ── */
+.text-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.text-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.text-data {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  line-height: 1.43;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.text-data-sm {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.33;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.text-data-lg {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  line-height: 1.4;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}

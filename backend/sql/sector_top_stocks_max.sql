@@ -1,15 +1,18 @@
--- returns top stocks by return within a sector over all available data
-WITH Ranked AS (
-    SELECT symbol, name, industry,
-        FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-        LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
-        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
-    FROM {table}
-    WHERE sector = ? AND close IS NOT NULL AND close > 0
-)
-SELECT symbol, MAX(name) as name, MAX(industry) as industry,
-    ((MAX(last_val) - MAX(first_val)) / NULLIF(MAX(first_val), 0)) * 100 as return_pct
-FROM Ranked WHERE rn = 1
+-- =========================================================================
+--  Sector Drill-Down: Top/Bottom Stocks in a Sector (Full History)
+-- =========================================================================
+--  Same as sector_top_stocks_period.sql but over all available data.
+--
+--  Placeholders : {table}
+--  Params       : ? — sector name
+--  Called by    : GET /sector-top-stocks
+-- =========================================================================
+
+SELECT symbol,
+    ARG_MAX(name, trade_date) as name,
+    ARG_MAX(industry, trade_date) as industry,
+    ((ARG_MAX(close, trade_date) - ARG_MIN(close, trade_date)) / NULLIF(ARG_MIN(close, trade_date), 0)) * 100 as return_pct
+FROM {table}
+WHERE sector = ? AND close IS NOT NULL AND close > 0
 GROUP BY symbol
 ORDER BY return_pct DESC

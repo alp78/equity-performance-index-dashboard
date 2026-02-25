@@ -1,7 +1,17 @@
--- computes daily average close price for a sector over all available data
+-- =========================================================================
+--  Legacy: Sector Average Close Price (Full History)
+-- =========================================================================
+--  Computes a simple daily average of raw close prices across all stocks
+--  in a sector.  Superseded by clean_sector_series.sql which normalises
+--  to percent-change and forward-fills gaps.  Kept for backward compat.
+--
+--  Placeholders : {table} — per-index DuckDB table
+--  Parameters   : ?       — sector name
+--  Called by    : (legacy code path — not currently referenced)
+-- =========================================================================
 WITH sector_stocks AS (
     SELECT symbol,
-           strftime(trade_date, '%Y-%m-%d') as time,
+           CAST(trade_date AS DATE)::VARCHAR as time,
            CAST(close AS FLOAT) as close
     FROM {table}
     WHERE sector = ? AND sector IS NOT NULL

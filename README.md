@@ -1,77 +1,109 @@
 # Global Exchange Monitor
 
-A real-time global stock market dashboard tracking 6 major indices — S&P 500, EURO STOXX 50, FTSE 100, Nikkei 225, CSI 300, and Nifty 50 — with sector analysis, cross-index comparison, and live price feeds.
+Real-time financial dashboard tracking 6 major stock indices across 4 continents. Built on Google Cloud Platform with SvelteKit, FastAPI, BigQuery, and DuckDB.
 
----
+## Covered Indices
 
-## Screenshots
+| Index | Region | Stocks |
+|---|---|---|
+| EURO STOXX 50 | Europe | 50 |
+| S&P 500 | US | 503 |
+| FTSE 100 | UK | 100 |
+| Nikkei 225 | Japan | 225 |
+| CSI 300 | China | 300 |
+| Nifty 50 | India | 50 |
 
-### Global Index Overview
-![Global Index Overview](docs/Dashboard_indices.jpg)
-Normalized % change comparison across all 6 indices with interactive crosshair tooltip, volume chart, and a sortable performance table showing current price, YTD return, 52-week range, and period return.
+## Dashboard Modes
 
-### Sector Analysis
-![Sector Analysis](docs/Dashboard_sectors.jpg)
-Cross-index sector performance with a heatmap, industry breakdown, and top/bottom movers — filterable by index, industry, and time period.
-
-### Stock Page
-![Stock Page](docs/Dashboard_stocks.jpg)
-Per-stock OHLCV candlestick chart with MA30/MA90 overlays, live price feed, top movers panel, market leaders, and global macro indicators.
-
----
+- **Index Benchmarks** — Multi-index comparison, cross-index correlation heatmap, news feed, economic calendar
+- **Sector Analysis** — Cross-index or single-index sector rotation, industry breakdown with donut charts, top/bottom stock rankings per sector
+- **Stock Browser** — OHLCV candlestick chart with MA overlays, technical indicators (RSI, MACD, Bollinger, ATR, Beta), top movers, most active by volume
+- **Macro Context** — Risk dashboard, BTC/Gold/EUR-USD live tickers, FX rates, macro watchlist, economic calendar
 
 ## Architecture
 
-![Architecture Diagram](docs/Diagram.jpg)
+![System Architecture](docs/Diagram.jpg)
 
-### How it works
+### Data Pipeline
 
-**Ingestion** — A Cloud Function (`sync_stocks`) runs daily, fetching OHLCV data from Yahoo Finance for all index constituents. It performs per-symbol gap detection using exchange calendars (XNYS, XFRA, XLON, XTKS, XSHG, XBOM) to catch interior gaps, not just trailing ones. Data flows: Yahoo Finance → GCS (raw NDJSON staging) → BigQuery (persistent warehouse).
+1. **Ingestion** — Cloud Function (`sync_stocks`) runs daily via Cloud Scheduler, fetching EOD prices from Yahoo Finance with exchange-calendar-aware gap detection. Data is archived as NDJSON in GCS and appended to BigQuery.
+2. **Cache Hydration** — On ingestion completion, a webhook triggers the backend to pull fresh data from BigQuery into an in-memory DuckDB instance. Two-phase startup loads priority indices first (STOXX 50, S&P 500), then remaining indices in parallel.
+3. **Serving** — FastAPI on Cloud Run serves 40+ REST endpoints with per-endpoint TTL caching, singleflight to prevent stampedes, and SWR (stale-while-revalidate) headers. A WebSocket feed broadcasts live BTC and macro instrument ticks.
+4. **Presentation** — SvelteKit SPA on Firebase Hosting consumes REST snapshots and WebSocket streams. Svelte 5 runes enable surgical DOM updates for real-time price flickers.
 
-**Backend** — A FastAPI app on Cloud Run hydrates per-index DuckDB in-memory tables from BigQuery on startup, with lazy loading per index. An API response cache (30min TTL) sits in front of DuckDB for hot-path queries. When the Cloud Function completes a sync, it fires a webhook that invalidates the cache and triggers a background DuckDB reload — non-blocking, so stale data is served during the refresh window. All SQL queries are extracted into standalone `.sql` files and loaded with a caching loader.
+### Key Technical Decisions
 
-**Real-time feed** — A background task polls Binance and Yahoo Finance every 10 seconds and broadcasts live prices via WebSocket to all connected clients.
+- **DuckDB in-memory** — Sub-millisecond OLAP queries without BigQuery costs on every request. RWLock serializes concurrent reads/writes.
+- **Circuit breakers** — Per-provider (Binance, Finnhub, FRED, Frankfurter) with configurable failure thresholds and recovery timeouts.
+- **Precomputed sector series** — Forward-filled sector/industry time series stored in DuckDB enable instant switching between indices.
+- **Hybrid data model** — Accurate EOD historical data from BigQuery combined with live intraday ticks from Binance and Yahoo Finance.
 
-**Frontend** — SvelteKit app hosted on Firebase Hosting. Connects to the REST API for historical data and opens a WebSocket for live price updates.
+## Project Structure
 
-### Stack
+```
+EXCHANGE_GCP_DEV/
+├── backend/                # FastAPI + DuckDB + WebSocket broadcaster
+│   ├── main.py             # API server (endpoints, startup, feeds)
+│   ├── index_config.py     # Index configuration loader
+│   ├── sql/                # 46 SQL template files
+│   └── config/             # indices.json (synced copy)
+├── ingestion/              # Cloud Function — daily EOD sync
+│   └── main.py             # Gap detection, download, BQ load, notify
+├── frontend/               # SvelteKit 5 + Tailwind v4 dashboard
+│   ├── src/lib/stores.js   # Global state + data loaders (SWR cache)
+│   ├── src/lib/styles/     # Design tokens, themes (dark/light), responsive
+│   ├── src/lib/components/ # 30+ panel components + 13 UI primitives
+│   └── src/routes/         # Single-page dashboard orchestrator
+├── config/
+│   └── indices.json        # Single source of truth for all index metadata
+└── docs/                   # Architecture diagram
+```
+
+## Local Development
+
+```bash
+# Start both backend and frontend
+./dev.sh
+
+# Or individually:
+cd backend && uvicorn main:app --port 8000 --reload
+cd frontend && npm run dev
+```
+
+Required environment variables for the backend:
+
+| Variable | Description |
+|---|---|
+| `PROJECT_ID` | GCP project ID |
+| `FINNHUB_API_KEY` | Finnhub API key (news, company data) |
+| `FRED_API_KEY` | FRED API key (macro indicators) |
+
+## Deployment
+
+**Backend** (Cloud Run):
+```bash
+cd backend
+gcloud run deploy exchange-api --source . \
+  --region europe-west3 --allow-unauthenticated \
+  --memory 4Gi --cpu 2 --cpu-boost --no-cpu-throttling \
+  --timeout 3600 --min-instances 1 --max-instances 3 \
+  --service-account exchange-backend-sa@esg-analytics-poc.iam.gserviceaccount.com \
+  --project esg-analytics-poc \
+  --set-env-vars PROJECT_ID=esg-analytics-poc
+```
+
+**Frontend** (Firebase Hosting):
+```bash
+cd frontend
+npm run build && firebase deploy --only hosting
+```
+
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Frontend | SvelteKit, TailwindCSS, Lightweight Charts |
-| Backend | FastAPI, DuckDB (in-memory), Python |
-| Warehouse | BigQuery |
-| Ingestion | Google Cloud Functions, yfinance, exchange-calendars |
-| Staging | Google Cloud Storage |
-| Hosting | Firebase Hosting (frontend), Cloud Run (backend) |
-| Real-time | WebSocket, Binance API, Yahoo Finance |
-
----
-
-## Features
-
-### Global Index Overview
-- Normalized % change chart across up to 6 indices simultaneously with unified timeline and forward-fill for sparse series
-- Interactive crosshair tooltip showing price, % change, and volume per index at any date
-- Volume bar chart synchronized with the main chart
-- Index performance table: current price, daily change, YTD, 52-week range, period return, volume
-- Period selector: 1W · 1MO · 3MO · 6MO · 1Y · 5Y · MAX · Custom Range
-
-### Sector Analysis
-- **Cross-index mode** — track one sector across all 6 indices on a single normalized chart
-- **Single-index mode** — compare multiple sectors within one index
-- Per-stock normalization + unified timeline + forward-fill prevents chart spikes from IPOs, delistings, and trading calendar mismatches
-- **Sector Heatmap** — all sectors × all indices, colour-coded by return magnitude, with cross-index average column
-- **Industry breakdown** — drill into sub-industries within any sector per index
-- **Top/bottom movers** — best and worst performing stocks within the selected sector and period
-- Sidebar industry filter with per-index stock counts and ctrl+click to isolate
-- Period selector with custom date range support
-
-### Stock Page
-- OHLCV candlestick chart with MA30 and MA90 overlays
-- Live price line (WebSocket) shown alongside historical candles with VS LIVE delta in tooltip
-- Sector/industry browse tree in sidebar with stock count per node
-- Symbol search
-- **Top Movers** panel — period return bar chart for top and bottom performers in the index
-- **Market Leaders** panel — real-time price and daily change for index blue chips
-- **Global Macro** panel — live BTC/USD, XAU/USD, EUR/USD via WebSocket
+| Frontend | SvelteKit 2, Svelte 5, Tailwind CSS v4, lightweight-charts, ECharts |
+| Backend | FastAPI, DuckDB, pandas, httpx, WebSockets |
+| Data | BigQuery, Cloud Storage (NDJSON archive), Yahoo Finance, Binance |
+| Infra | Cloud Run, Cloud Functions, Cloud Scheduler, Firebase Hosting |
+| Design | Geist + Geist Mono fonts, dark/light themes, 7-breakpoint responsive grid |

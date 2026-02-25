@@ -1,0 +1,107 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Responsive Design System
+   ═══════════════════════════════════════════════════════════════════════
+   Breakpoints: 375px → 1920px+
+   Mobile-first approach with progressive enhancement.
+
+   Breakpoint Reference:
+   - Mobile:     < 480px    — single column, bottom nav, compact cards
+   - Mobile-lg:  480–767px  — single column, horizontal chart scroll
+   - Tablet:     768–1023px — 2-column grid, hamburger nav
+   - Laptop:     1024–1279px — 2-3 columns, sidebar overlay
+   - Desktop:    1280–1439px — full layout, sidebar visible
+   - Wide:       1440–1919px — full layout, generous spacing
+   - Ultrawide:  ≥ 1920px    — 3-4 column grid
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Responsive Container Widths ── */
+.container-responsive {
+  width: 100%;
+  max-width: 1920px;
+  margin-inline: auto;
+  padding-inline: var(--space-lg);
+}
+
+@media (min-width: 1440px) {
+  .container-responsive {
+    padding-inline: var(--space-2xl);
+  }
+}
+
+/* ── Responsive Grid (auto-fit) ── */
+.grid-responsive {
+  display: grid;
+  gap: var(--space-xl);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 768px) {
+  .grid-responsive {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .grid-responsive {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1920px) {
+  .grid-responsive {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* ── Responsive Visibility Utilities ── */
+.hide-mobile {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .hide-mobile {
+    display: block;
+  }
+  .hide-tablet-up {
+    display: none;
+  }
+}
+
+@media (min-width: 1024px) {
+  .hide-below-laptop {
+    display: block;
+  }
+}
+
+.show-mobile-only {
+  display: block;
+}
+
+@media (min-width: 768px) {
+  .show-mobile-only {
+    display: none;
+  }
+}
+
+/* ── Touch Targets ── */
+@media (pointer: coarse) {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* ── Responsive Spacing Adjustments ── */
+@media (max-width: 767px) {
+  :root {
+    --space-xl:  16px;
+    --space-2xl: 20px;
+    --space-3xl: 24px;
+    --space-4xl: 32px;
+  }
+}
+
+/* ── No Horizontal Overflow ── */
+html, body {
+  overflow-x: hidden;
+}

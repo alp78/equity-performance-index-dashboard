@@ -1,0 +1,148 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Global Styles — Resets, Base Styles, Layout Primitives
+   ═══════════════════════════════════════════════════════════════════════
+   Imported first in layout.css. Sets up the foundational styling that
+   all components build upon.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Base Reset ── */
+
+html {
+  height: 100%;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  height: 100%;
+  margin: 0;
+  background-color: var(--surface-0);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  overflow: hidden;
+  min-height: 600px;
+}
+
+/* ── Selection ── */
+::selection {
+  background-color: var(--accent-primary);
+  color: white;
+}
+
+/* ── Mobile: scrollable ── */
+@media (max-width: 1023px) {
+  html { overflow: auto; }
+  body {
+    overflow: auto;
+    min-height: unset;
+    height: auto;
+    min-height: 100dvh;
+  }
+}
+
+/* ── Scrollbars ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ── Focus Styles ── */
+:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Skeleton Shimmer Animation ── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Card Entrance Animation ── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Pulse Animation (for live indicators) ── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Price Flash Animation ── */
+@keyframes flash-positive {
+  0%   { background-color: var(--color-positive-bg); }
+  100% { background-color: transparent; }
+}
+
+@keyframes flash-negative {
+  0%   { background-color: var(--color-negative-bg); }
+  100% { background-color: transparent; }
+}
+
+.flash-up {
+  animation: flash-positive 0.6s ease-out;
+}
+
+.flash-down {
+  animation: flash-negative 0.6s ease-out;
+}
+
+/* ── Tab Indicator Slide ── */
+@keyframes tab-slide {
+  from { opacity: 0.5; }
+  to   { opacity: 1; }
+}
+
+/* ── Utility: Staggered Card Entrance ── */
+.card-enter {
+  animation: fadeInUp 0.3s ease-out both;
+}
+
+.card-enter:nth-child(1) { animation-delay: 0ms; }
+.card-enter:nth-child(2) { animation-delay: 50ms; }
+.card-enter:nth-child(3) { animation-delay: 100ms; }
+.card-enter:nth-child(4) { animation-delay: 150ms; }
+.card-enter:nth-child(5) { animation-delay: 200ms; }
+.card-enter:nth-child(6) { animation-delay: 250ms; }
+.card-enter:nth-child(7) { animation-delay: 300ms; }
+.card-enter:nth-child(8) { animation-delay: 350ms; }

@@ -1,17 +1,21 @@
--- ranks sectors by average stock return across all indices over all available data
+-- =========================================================================
+--  Sector Rankings: Best/Worst Sectors Globally (Full History)
+-- =========================================================================
+--  Same as top_sectors_period.sql but over all available data.
+--
+--  Placeholders : {union}
+--  Called by    : GET /top-sectors
+-- =========================================================================
+
 WITH AllData AS ({union}),
 PerSymbol AS (
     SELECT symbol, sector,
-        FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-        LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
-        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+        ((ARG_MAX(close, trade_date) - ARG_MIN(close, trade_date)) / NULLIF(ARG_MIN(close, trade_date), 0)) * 100 as return_pct
     FROM AllData
     WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
+    GROUP BY symbol, sector
 )
-SELECT sector,
-    AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
-    COUNT(DISTINCT symbol) as stock_count
-FROM PerSymbol WHERE rn = 1
-GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 1
+SELECT sector, AVG(return_pct) as value, COUNT(*) as stock_count
+FROM PerSymbol
+GROUP BY sector HAVING COUNT(*) >= 1
 ORDER BY value DESC

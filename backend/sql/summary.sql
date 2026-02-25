@@ -1,4 +1,14 @@
--- returns the latest price summary with daily change percent for all stocks in an index
+-- =========================================================================
+--  Sidebar Stock List
+-- =========================================================================
+--  Returns every stock in one index with its latest price, daily change %,
+--  sector, and industry.  This is the primary data source for the sidebar
+--  stock browser and the "Most Active" panel (sorted by volume client-side).
+--
+--  Placeholders : {index} — index key (e.g. sp500)
+--  Called by    : GET /summary
+-- =========================================================================
+
 SELECT symbol, name, sector, industry,
     CAST(close AS FLOAT) as last_price,
     CAST(high AS FLOAT) as high,

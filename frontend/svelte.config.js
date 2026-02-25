@@ -8,7 +8,7 @@ const config = {
             pages: 'build',
             assets: 'build',
             fallback: 'index.html', // This is the "magic" line for SPAs
-            precompress: false,
+            precompress: true,
             strict: true
         })
     }

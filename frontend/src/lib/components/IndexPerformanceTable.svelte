@@ -1,11 +1,37 @@
-<!-- overview table with price, return, volatility, 52W range for all indices -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   IndexPerformanceTable — Multi-Index Stats Comparison Grid
+  ═══════════════════════════════════════════════════════════════════════════
+   Table comparing all 6 market indices: price, daily change, YTD return,
+   52-week range (visual bar), period return, and annualised volatility.
+   Rows animate position on re-sort.  Market open/closed status shown via
+   green/red dot next to the exchange name.  Retries with 3 s backoff
+   while the backend finishes loading index_prices from BigQuery.
+
+   Data source : GET /index-prices/stats?period={p}
+   Placement   : main chart area — "Global Macro" overview mode
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
     import { browser } from '$app/environment';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { overviewSelectedIndices } from '$lib/stores.js';
+    import { overviewSelectedIndices, INDEX_KEY_TO_TICKER } from '$lib/stores.js';
+    import { MARKET_HOURS, INDEX_META_BY_TICKER as INDEX_META } from '$lib/index-registry.js';
 
-    let { currentPeriod = '1y', customRange = null } = $props();
+    let { currentPeriod = '1y', customRange = null, highlightSymbol = null, highlightPair = null, onRowClick = null } = $props();
+
+    let highlightSet = $derived((() => {
+        if (highlightSymbol) return new Set([highlightSymbol]);
+        if (highlightPair) {
+            const t1 = INDEX_KEY_TO_TICKER[highlightPair.row];
+            const t2 = INDEX_KEY_TO_TICKER[highlightPair.col];
+            return new Set([t1, t2].filter(Boolean));
+        }
+        return null;
+    })());
 
     let stats = $state([]);
     let loading = $state(false);
@@ -19,26 +45,6 @@
         const iv = setInterval(() => { now = new Date(); }, 15000);
         return () => clearInterval(iv);
     });
-
-    // --- INDEX METADATA ---
-
-    const MARKET_HOURS = {
-        'US':  { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  cet: '15:30-22:00' },
-        'EU':  { tz: 'Europe/Berlin',     open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, cet: '09:00-17:30' },
-        'UK':  { tz: 'Europe/London',     open: { h: 8, m: 0 },  close: { h: 16, m: 30 }, cet: '09:00-17:30' },
-        'JP':  { tz: 'Asia/Tokyo',        open: { h: 9, m: 0 },  close: { h: 15, m: 0 },  cet: '01:00-07:00' },
-        'CN':  { tz: 'Asia/Shanghai',     open: { h: 9, m: 30 }, close: { h: 15, m: 0 },  cet: '02:30-08:00' },
-        'IN':  { tz: 'Asia/Kolkata',      open: { h: 9, m: 15 }, close: { h: 15, m: 30 }, cet: '04:45-11:00' },
-    };
-
-    const INDEX_META = {
-        '^GSPC':     { name: 'S&P 500',    flag: 'fi fi-us', color: '#e2e8f0', ccy: '$',  market: 'US' },
-        '^STOXX50E': { name: 'STOXX 50',   flag: 'fi fi-eu', color: '#2563eb', ccy: '€',  market: 'EU' },
-        '^FTSE':     { name: 'FTSE 100',   flag: 'fi fi-gb', color: '#ec4899', ccy: '£',  market: 'UK' },
-        '^N225':     { name: 'Nikkei 225',  flag: 'fi fi-jp', color: '#f59e0b', ccy: '¥',  market: 'JP' },
-        '000300.SS': { name: 'CSI 300',    flag: 'fi fi-cn', color: '#ef4444', ccy: '¥',  market: 'CN' },
-        '^NSEI':     { name: 'Nifty 50',   flag: 'fi fi-in', color: '#22c55e', ccy: '₹',  market: 'IN' },
-    };
 
     let selected = $derived(new Set($overviewSelectedIndices));
 
@@ -74,7 +80,7 @@
     }
 
     let isCustom = $derived(!!(customRange && customRange.start));
-    let periodTag = $derived(isCustom ? 'CUSTOM' : (currentPeriod || '1y').toUpperCase());
+    let periodTag = $derived(isCustom ? 'C' : (currentPeriod || '1y').toUpperCase());
 
     function headerLabel(period, range) {
         if (range && range.start && range.end) return `${fmtDate(range.start)} → ${fmtDate(range.end)}`;
@@ -142,7 +148,7 @@
 
     // --- FORMATTERS ---
 
-    const COL = [12, 9, 9, 8, 10, 8, 8, 16, 11, 9];
+    const COL = [20, 16, 11, 11, 12, 17, 13];
 
     function fmt(val, decimals = 2) {
         if (val == null || isNaN(val)) return '—';
@@ -153,119 +159,95 @@
         if (val >= 10000) return ccy + val.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 });
         return ccy + val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    function fmtCompact(val) {
-        if (val == null) return '—';
-        if (val >= 10000) return (val / 1000).toFixed(1) + 'k';
-        return val.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    // % distance from 52-week high (0 = at high, negative = below)
+    function fromHigh(current, high) {
+        if (current == null || high == null || high === 0) return null;
+        return ((current - high) / high) * 100;
     }
-    // returns 0-100 position of current price within 52-week range
-    function rangePosition(current, low, high) {
-        if (high === low) return 50;
-        return Math.min(100, Math.max(0, ((current - low) / (high - low)) * 100));
+
+    // grayscale intensity: brighter = larger magnitude (like heatmap cells)
+    // cap = value at which intensity maxes out
+    function grayColor(val, cap) {
+        if (val == null) return 'color:var(--text-disabled)';
+        const t = Math.min(Math.abs(val) / cap, 1);
+        const a = (0.35 + t * 0.6).toFixed(2);
+        return `color:var(--text-primary); opacity:${a}`;
+    }
+    // bold threshold: day ≥ 1.5%, YTD ≥ 8%
+    function isBold(val, threshold) {
+        return val != null && Math.abs(val) >= threshold;
     }
 </script>
 
-<div class="perf-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden">
+<Card fill padding={false} class="perf-root bg-bg-hover">
 
     <!-- header -->
-    <div class="flex items-center justify-between px-6 flex-shrink-0 header-row">
-        <div class="flex items-center gap-3">
-            <h3 class="hdr-title font-black text-white/30 uppercase">Index Performance Table</h3>
-            <span class="hdr-period font-bold text-orange-400/80 uppercase tracking-wider">{headerLabel(currentPeriod, customRange)}</span>
-        </div>
-        {#if loading}
-            <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
-        {/if}
+    <div class="px-5 pt-5 pb-3 flex-shrink-0 border-b border-border">
+        <SectionHeader title="Index Performance Table" subtitle="Key metrics across indices">
+            {#snippet action()}
+                <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{headerLabel(currentPeriod, customRange)}</span>
+                    {#if loading}
+                        <div class="w-3 h-3 border border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                    {/if}
+                </div>
+            {/snippet}
+        </SectionHeader>
     </div>
 
+  <div class="flex-1 min-h-0 flex flex-col overflow-x-auto" role="table" aria-label="Index performance comparison">
     <!-- column headers -->
-    <div class="grid-header flex items-center text-white/20 uppercase tracking-wider font-black px-2 flex-shrink-0">
-        <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left">Index</div>
-        <div style="width:{COL[1]}%" class="px-1 text-left">Exchange</div>
-        <div style="width:{COL[2]}%" class="px-1 text-right">CET Hours</div>
-        <div style="width:{COL[3]}%" class="px-1 text-right">Local Time</div>
-        <div style="width:{COL[4]}%" class="px-1 text-right">Current Price</div>
-        <div style="width:{COL[5]}%" class="px-1 text-right">Last Day</div>
-        <div style="width:{COL[6]}%" class="px-1 text-right">YTD</div>
-        <div style="width:{COL[7]}%" class="px-1 pl-6 text-right">52W Range</div>
-        <div style="width:{COL[8]}%" class="px-1 text-right">RETURN <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
-        <div style="width:{COL[9]}%" class="px-1 text-right">VOL <span class="text-orange-400/90 period-tag">{periodTag}</span></div>
+    <div class="grid-header perf-min-w flex items-center text-text-faint uppercase tracking-wider font-semibold px-2 shrink-0 bg-surface-2" role="row">
+        <div style="width:{COL[0]}%" class="pl-4 pr-1 text-left" role="columnheader">Index</div>
+        <div style="width:{COL[1]}%" class="px-1 text-right" role="columnheader">Price</div>
+        <div style="width:{COL[2]}%" class="px-1 text-right" role="columnheader">Day</div>
+        <div style="width:{COL[3]}%" class="px-1 text-right" role="columnheader">YTD</div>
+        <div style="width:{COL[4]}%" class="px-1 text-right" role="columnheader">Δ Hi</div>
+        <div style="width:{COL[5]}%" class="px-1 text-right" role="columnheader">Return <span class="text-accent period-tag">{periodTag}</span></div>
+        <div style="width:{COL[6]}%" class="px-1 text-right" role="columnheader">Vol <span class="text-accent period-tag">{periodTag}</span></div>
     </div>
 
     <!-- data rows — absolutely positioned for animated rank reordering -->
-    <div class="flex-1 min-h-0 overflow-hidden px-2 relative rows-container">
+    <div class="flex-1 overflow-hidden px-2 relative rows-container perf-min-w">
         {#each allStats as row (row.symbol)}
             {@const meta = INDEX_META[row.symbol] || {}}
-            {@const mkt = MARKET_HOURS[meta.market] || {}}
             {@const isSelected = selected.has(row.symbol)}
-            {@const pos = rangePosition(row.current_price, row.low_52w, row.high_52w)}
+            {@const deltaHi = fromHigh(row.current_price, row.high_52w)}
             {@const open = isMarketOpen(meta.market, now)}
-            {@const lt = localTime(meta.market, now)}
             {@const rank = rankMap[row.symbol] ?? 0}
             <div
-                class="data-row absolute left-0 right-0 flex items-center border-t border-white/[0.04]"
-                style="top: calc({rank} * (100% / 6)); height: calc(100% / 6); opacity: {isSelected ? 1 : 0.25}; transition: top 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s;"
+                class="data-row absolute left-0 right-0 flex items-center border-b border-border-subtle hover:bg-surface-2 transition-colors cursor-pointer"
+                style="top: calc({rank} * (100% / 6)); height: calc(100% / 6); opacity: {highlightSet ? (highlightSet.has(row.symbol) ? 1 : 0.15) : (isSelected ? 1 : 0.25)}; transition: top 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s;"
+                onclick={() => onRowClick?.(meta.key || '', row.symbol)}
+                role="row"
+                tabindex="0"
+                onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRowClick?.(meta.key || '', row.symbol); } }}
             >
                 <div style="width:{COL[0]}%" class="pl-4 pr-1">
-                    <div class="flex items-center gap-2">
-                        <div class="color-bar rounded-full flex-shrink-0" style="background: {meta.color}"></div>
-                        <span class="{meta.flag || ''} fis rounded-sm flex-shrink-0 flag-icon"></span>
-                        <span class="font-bold text-white/80 idx-name truncate">{meta.name || row.name}</span>
-                    </div>
+                    <span class="font-semibold idx-name truncate uppercase tracking-wider" style="color:{meta.color || '#A1A1AA'}">{meta.short || meta.name || row.name}</span>
                 </div>
 
-                <div style="width:{COL[1]}%" class="px-1">
-                    <div class="flex items-center gap-1.5">
-                        <span class="font-bold text-white/40 exch-text">{row.exchange || '—'}</span>
-                        <div class="flex items-center gap-0.5">
-                            <div class="status-dot-sm rounded-full flex-shrink-0 {open ? 'bg-green-500' : 'bg-red-500/60'}"
-                                style="{open ? 'box-shadow: 0 0 4px rgba(34,197,94,0.5)' : ''}"></div>
-                            <span class="status-text-sm font-bold uppercase {open ? 'text-green-400/80' : 'text-red-400/40'}">{open ? 'LIVE' : 'CLOSED'}</span>
-                        </div>
-                    </div>
+                <div style="width:{COL[1]}%" class="px-1 text-right font-mono tabular-nums text-text-secondary font-medium val-text">
+                    <span class="text-text-muted">{meta.ccy || ''}</span>{fmtPrice(row.current_price, '')}
                 </div>
 
-                <div style="width:{COL[2]}%" class="px-1 text-right text-white/50 font-mono tabular-nums font-medium local-time-text">
-                    {mkt.cet || '—'}
-                </div>
-
-                <div style="width:{COL[3]}%" class="px-1 text-right font-mono tabular-nums font-bold local-time-text {open ? 'text-white/70' : 'text-white/40'}">
-                    {lt.day} {lt.h}<span class="colon-blink">:</span>{lt.m}
-                </div>
-
-                <div style="width:{COL[4]}%" class="px-1 text-right font-mono tabular-nums text-white/70 font-bold val-text">
-                    {fmtPrice(row.current_price, meta.ccy || '')}
-                </div>
-
-                <div style="width:{COL[5]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
-                    style:color="{row.daily_change_pct >= 0 ? 'rgba(34,197,94,0.9)' : 'rgba(239,68,68,0.85)'}">
+                <div style="width:{COL[2]}%; {grayColor(row.daily_change_pct, 3)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
                     {row.daily_change_pct >= 0 ? '+' : ''}{fmt(row.daily_change_pct)}%
                 </div>
 
-                <div style="width:{COL[6]}%" class="px-1 text-right font-mono tabular-nums font-bold val-text"
-                    style:color="{row.ytd_return_pct >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'}">
+                <div style="width:{COL[3]}%; {grayColor(row.ytd_return_pct, 25)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
                     {row.ytd_return_pct >= 0 ? '+' : ''}{fmt(row.ytd_return_pct)}%
                 </div>
 
-                <!-- 52-week range bar with tick at current price position -->
-                <div style="width:{COL[7]}%" class="px-1 pl-6">
-                    <div class="flex items-center gap-1.5">
-                        <span class="range-num text-white/40 font-mono tabular-nums text-right font-bold" style="min-width:36px">{fmtCompact(row.low_52w)}</span>
-                        <div class="flex-1 range-track rounded-full relative overflow-hidden bg-white/[0.08]">
-                            <div class="absolute inset-y-0 left-0 rounded-full" style="width:100%;background:linear-gradient(to right,rgba(239,68,68,0.25),rgba(34,197,94,0.25))"></div>
-                            <div class="absolute top-1/2 range-tick bg-white/80"
-                                style="left:{pos}%;transform:translate(-50%,-50%)"></div>
-                        </div>
-                        <span class="range-num text-white/40 font-mono tabular-nums text-left font-bold" style="min-width:36px">{fmtCompact(row.high_52w)}</span>
-                    </div>
+                <div style="width:{COL[4]}%; {grayColor(deltaHi != null ? -deltaHi : null, 20)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
+                    {deltaHi != null ? (deltaHi === 0 ? '0.0' : (deltaHi > 0 ? '+' : '') + deltaHi.toFixed(1)) + '%' : '—'}
                 </div>
 
-                <div style="width:{COL[8]}%" class="px-1 text-right font-mono tabular-nums font-black period-text"
-                    style:color="{row.period_return_pct >= 0 ? 'rgba(34,197,94,1)' : 'rgba(239,68,68,0.95)'}">
+                <div style="width:{COL[5]}%; {grayColor(row.period_return_pct, 25)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
                     {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
                 </div>
 
-                <div style="width:{COL[9]}%" class="px-1 text-right font-mono tabular-nums text-white/40 font-bold val-text">
+                <div style="width:{COL[6]}%" class="px-1 text-right font-mono tabular-nums text-text-muted font-medium val-text">
                     {fmt(row.volatility_pct, 1)}%
                 </div>
             </div>
@@ -273,77 +255,25 @@
 
         {#if allStats.length === 0}
             <div class="absolute inset-0 flex items-center justify-center">
-                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+                <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin"></div>
             </div>
         {/if}
     </div>
-</div>
+  </div>
+</Card>
 
 <style>
-    .perf-root { container-type: size; }
-    .rows-container { overflow: hidden; }
+    :global(.perf-root) { container-type: inline-size; }
+    .rows-container { overflow: hidden; min-height: 180px; }
 
-    /* --- small (base) --- */
-    .header-row { padding-top: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-    .hdr-title { font-size: 11px; letter-spacing: 0.25em; }
-    .hdr-period { font-size: 9px; }
-    .grid-header { font-size: 9px; padding-top: 4px; padding-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .grid-header { font-size: 12px; padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid transparent; }
     .grid-header > div { white-space: nowrap; }
-    .period-tag { font-size: 7px; font-weight: 400; }
-    .color-bar { width: 3px; height: 16px; }
-    .flag-icon { font-size: 0.95rem !important; }
-    .idx-name { font-size: 12px; }
-    .exch-text { font-size: 11px; }
-    .status-dot-sm { width: 4px; height: 4px; }
-    .status-text-sm { font-size: 7px; letter-spacing: -0.02em; }
-    .colon-blink { animation: colonBlink 1s step-end infinite; }
-    @keyframes colonBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
-    .val-text { font-size: 12px; }
-    .period-text { font-size: 13px; }
-    .local-time-text { font-size: 10px; }
-    .range-num { font-size: 10px; }
-    .range-track { height: 4px; }
-    .range-tick { width: 2px; height: 10px; border-radius: 1px; }
+    .period-tag { font-size: 10px; font-weight: 400; }
+    .idx-name { font-size: 14px; }
+    .val-text { font-size: 14px; }
 
-    /* --- medium (220-320px) --- */
-    @container (min-height: 220px) {
-        .header-row { padding-top: 8px; padding-bottom: 8px; }
-        .hdr-title { font-size: 12px; letter-spacing: 0.25em; }
-        .hdr-period { font-size: 10px; }
-        .grid-header { font-size: 10px; padding-top: 5px; padding-bottom: 5px; }
-        .period-tag { font-size: 8px; }
-        .color-bar { width: 3px; height: 20px; }
-        .flag-icon { font-size: 1.1rem !important; }
-        .idx-name { font-size: 13px; }
-        .exch-text { font-size: 12px; }
-        .status-dot-sm { width: 5px; height: 5px; }
-        .status-text-sm { font-size: 8px; }
-        .val-text { font-size: 13px; }
-        .period-text { font-size: 14px; }
-        .local-time-text { font-size: 11px; }
-        .range-num { font-size: 11px; }
-        .range-track { height: 5px; }
-        .range-tick { width: 2px; height: 12px; border-radius: 1px; }
-    }
-
-    /* --- large (>320px) --- */
-    @container (min-height: 320px) {
-        .header-row { padding-top: 12px; padding-bottom: 10px; }
-        .hdr-title { font-size: 13px; letter-spacing: 0.3em; }
-        .hdr-period { font-size: 11px; }
-        .grid-header { font-size: 11px; padding-top: 6px; padding-bottom: 6px; }
-        .period-tag { font-size: 9px; }
-        .color-bar { width: 3px; height: 24px; }
-        .flag-icon { font-size: 1.25rem !important; }
-        .idx-name { font-size: 15px; }
-        .exch-text { font-size: 14px; }
-        .status-dot-sm { width: 6px; height: 6px; }
-        .status-text-sm { font-size: 9px; }
-        .val-text { font-size: 15px; }
-        .period-text { font-size: 16px; }
-        .local-time-text { font-size: 12px; }
-        .range-num { font-size: 12px; }
-        .range-track { height: 7px; }
-        .range-tick { width: 2px; height: 14px; border-radius: 1px; }
+    /* On narrow viewports, ensure table has minimum width for horizontal scroll */
+    @media (max-width: 768px) {
+        .perf-min-w { min-width: 580px; }
     }
 </style>

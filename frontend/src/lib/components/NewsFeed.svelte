@@ -1,10 +1,35 @@
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   NewsFeed — Live Financial News with Date Picker & Index Filter
+  ═══════════════════════════════════════════════════════════════════════════
+   Auto-scrolling news ticker fed by Finnhub (company + general news).
+   Features:
+     • Date-picker calendar (Mon-start) with per-day article indicators
+     • Index dropdown filter with per-index article counts
+     • Incremental updates via /news/latest?since=... (60 s poll)
+     • New-article flash animation (orange glow)
+     • Auto-scroll pauses on hover, resumes after 3 s
+     • Capped at 500 articles to prevent memory leaks
+
+   Data source : GET /news  (full fetch, 5-min cache)
+                 GET /news/latest?since=...  (incremental, 60 s poll)
+   Placement   : sidebar "Global Macro" mode, right column
+  ═══════════════════════════════════════════════════════════════════════════
+-->
+
 <script>
     import { onMount, onDestroy, tick } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
+    import { getCached, setCached, isCacheFresh, INDEX_CONFIG } from '$lib/stores.js';
+    import { INDEX_COLORS } from '$lib/theme.js';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
-    let articles = $state([]);
-    let loading = $state(true);
-    let connected = $state(false);
+    // Hydrate from cache before first render — avoids "Loading news..." flash
+    const _newsCache = getCached('news_feed');
+    let articles = $state(_newsCache?.data || []);
+    let loading = $state(!_newsCache);
+    let connected = $state(!!_newsCache?.data?.length);
     let scrollContainer = $state(null);
     let autoScrolling = true;
     let animFrame;
@@ -12,8 +37,10 @@
     let pollTimer;
     let resumeTimer;
 
-    // Track new articles for entrance animation
-    let knownUrls = new Set();
+    // Track new articles for entrance animation (capped to prevent memory leak)
+    let knownUrls = new Set(_newsCache?.data?.map(a => a.url) || []);
+    const KNOWN_URLS_MAX = 5000;
+    const ARTICLES_MAX = 500;
     let newArticleUrls = $state(new Set());
     let newClearTimer;
 
@@ -25,19 +52,7 @@
     let calMonth = $state(new Date().getMonth());
     let calYear = $state(new Date().getFullYear());
 
-    const INDEX_FLAG = {
-        sp500: 'fi-us', stoxx50: 'fi-eu', ftse100: 'fi-gb',
-        nikkei225: 'fi-jp', csi300: 'fi-cn', nifty50: 'fi-in',
-    };
-    const INDEX_LABEL = {
-        sp500: 'S&P', stoxx50: 'STOXX', ftse100: 'FTSE',
-        nikkei225: 'Nikkei', csi300: 'CSI', nifty50: 'NIFTY',
-    };
-    const INDEX_COLOR = {
-        sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899',
-        nikkei225: '#f59e0b', csi300: '#ef4444', nifty50: '#22c55e',
-    };
-    const INDEX_KEYS = ['sp500', 'stoxx50', 'ftse100', 'nikkei225', 'csi300', 'nifty50'];
+    const INDEX_KEYS = Object.keys(INDEX_CONFIG);
     const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const DAY_HEADERS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
 
@@ -172,10 +187,29 @@
         if (scrollContainer) scrollContainer.scrollTop = 0;
     }
 
-    let latestTimestamp = 0; // tracks newest article timestamp for diff polling
+    const TAG_COLORS = {
+        'Earnings':     { text: 'text-[#22c55e]', bg: 'bg-[#22c55e]/10' },
+        'Central Bank': { text: 'text-[#f59e0b]', bg: 'bg-[#f59e0b]/10' },
+        'M&A':          { text: 'text-[#a855f7]', bg: 'bg-[#a855f7]/10' },
+        'IPO':          { text: 'text-[#06b6d4]', bg: 'bg-[#06b6d4]/10' },
+        'Macro':        { text: 'text-[#3b82f6]', bg: 'bg-[#3b82f6]/10' },
+        'Commodities':  { text: 'text-[#eab308]', bg: 'bg-[#eab308]/10' },
+        'Crypto':       { text: 'text-[#f97316]', bg: 'bg-[#f97316]/10' },
+        'Tech':         { text: 'text-[#8b5cf6]', bg: 'bg-[#8b5cf6]/10' },
+        'Regulation':   { text: 'text-[#ef4444]', bg: 'bg-[#ef4444]/10' },
+        'Geopolitics':  { text: 'text-[#ec4899]', bg: 'bg-[#ec4899]/10' },
+        'Markets':      { text: 'text-[#14b8a6]', bg: 'bg-[#14b8a6]/10' },
+        'Energy':       { text: 'text-[#84cc16]', bg: 'bg-[#84cc16]/10' },
+        'Healthcare':   { text: 'text-[#f43f5e]', bg: 'bg-[#f43f5e]/10' },
+        'Finance':      { text: 'text-[#94a3b8]', bg: 'bg-[#94a3b8]/10' },
+    };
 
-    // Full load — used on mount only
+    const NEWS_TTL = 5 * 60 * 1000; // 5 min
+    let latestTimestamp = _newsCache?.data?.[0]?.datetime || 0;
+
+    // Full load — used on mount; skips network if cache is fresh
     async function fetchNewsFull() {
+        if (isCacheFresh('news_feed')) return;
         try {
             const res = await fetch(`${API_BASE_URL}/news`);
             if (res.ok) {
@@ -185,6 +219,7 @@
                     articles = data;
                     latestTimestamp = data[0].datetime;
                     connected = true;
+                    setCached('news_feed', data, NEWS_TTL);
                 }
             }
         } catch {}
@@ -209,9 +244,14 @@
                         }
                     }
                     if (newArticles.length > 0) {
-                        // Merge new articles at the top
-                        articles = [...newArticles, ...articles];
+                        // Merge new articles at the top, cap total
+                        articles = [...newArticles, ...articles].slice(0, ARTICLES_MAX);
                         latestTimestamp = articles[0].datetime;
+                        // Prune knownUrls if it grows too large
+                        if (knownUrls.size > KNOWN_URLS_MAX) {
+                            const keep = new Set(articles.map(a => a.url));
+                            knownUrls = keep;
+                        }
 
                         // Animate new articles
                         newArticleUrls = freshUrls;
@@ -275,16 +315,19 @@
     });
 </script>
 
-<div class="flex flex-col h-full flex-1 overflow-hidden">
+<Card fill padding={false} class="news-feed-root">
     <!-- header -->
-    <div class="flex items-center justify-between px-4 py-2.5 shrink-0">
-        <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">NEWS FEED</h3>
-        {#if connected}
-            <div class="flex items-center gap-1.5">
-                <div class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
-                <span class="text-[9px] font-bold text-white/30 uppercase">Live</span>
-            </div>
-        {/if}
+    <div class="px-4 py-2.5 shrink-0">
+        <SectionHeader title="News Feed" border>
+            {#snippet action()}
+                {#if connected}
+                    <div class="flex items-center gap-1.5">
+                        <div class="w-1.5 h-1.5 rounded-full bg-up animate-pulse"></div>
+                        <span class="text-[10px] font-bold text-text-faint uppercase">Live</span>
+                    </div>
+                {/if}
+            {/snippet}
+        </SectionHeader>
     </div>
 
     <!-- filters row -->
@@ -293,29 +336,31 @@
         <div class="relative flex-1 min-w-0">
             <button
                 onclick={() => { calendarOpen = !calendarOpen; indexDropdownOpen = false; }}
-                class="flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors w-full
-                    {selectedDate ? 'bg-white/15 text-white/60' : 'bg-white/5 text-white/30 hover:text-white/50 hover:bg-white/10'}"
+                aria-label="Filter news by date"
+                aria-expanded={calendarOpen}
+                class="flex items-center gap-2 px-3 py-1.5 text-[12px] font-bold uppercase tracking-wider rounded-lg transition-colors w-full
+                    {selectedDate ? 'bg-bg-active text-text-secondary' : 'bg-bg-hover text-text-faint hover:text-text-muted hover:bg-bg-active'}"
             >
-                <svg class="w-3.5 h-3.5 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                <svg aria-hidden="true" class="w-3.5 h-3.5 shrink-0 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
                 <span class="truncate">{dateButtonLabel}</span>
-                <svg class="w-3 h-3 shrink-0 opacity-40 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
+                <svg aria-hidden="true" class="w-3 h-3 shrink-0 opacity-40 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
             </button>
 
             {#if calendarOpen}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div class="absolute left-0 top-full mt-1 z-30 bg-[#1a1a22] border border-white/10 rounded-lg shadow-xl p-3 w-[240px]"
+                <div class="absolute left-0 top-full mt-1 z-30 bg-bg-card border border-border rounded-lg shadow-lg p-3 w-[240px]"
                      onmouseleave={() => { calendarOpen = false; }}>
                     <!-- month nav -->
                     <div class="flex items-center justify-between mb-2">
                         <button onclick={prevMonth} aria-label="Previous month"
-                            class="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-white/40 hover:text-white/70 transition-colors
+                            class="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-hover text-text-faint hover:text-text-secondary transition-colors
                                 {earliestMonth && calYear === earliestMonth.y && calMonth <= earliestMonth.m ? 'opacity-20 pointer-events-none' : ''}"
                         >
                             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
                         </button>
-                        <span class="text-[10px] font-black text-white/50 uppercase tracking-wider">{MONTH_NAMES[calMonth]} {calYear}</span>
+                        <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">{MONTH_NAMES[calMonth]} {calYear}</span>
                         <button onclick={nextMonth} aria-label="Next month"
-                            class="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-white/40 hover:text-white/70 transition-colors
+                            class="w-5 h-5 flex items-center justify-center rounded hover:bg-bg-hover text-text-faint hover:text-text-secondary transition-colors
                                 {calYear === new Date().getFullYear() && calMonth >= new Date().getMonth() ? 'opacity-20 pointer-events-none' : ''}"
                         >
                             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
@@ -324,7 +369,7 @@
                     <!-- day headers -->
                     <div class="grid grid-cols-7 gap-0.5 mb-1">
                         {#each DAY_HEADERS as dh}
-                            <span class="text-[8px] font-bold text-white/20 text-center uppercase">{dh}</span>
+                            <span class="text-[9px] font-bold text-text-faint text-center uppercase">{dh}</span>
                         {/each}
                     </div>
                     <!-- day cells -->
@@ -335,16 +380,16 @@
                             {:else}
                                 <button
                                     onclick={() => cell.has && pickDate(cell.key)}
-                                    class="w-full aspect-square rounded text-[10px] font-bold flex items-center justify-center transition-colors relative
+                                    class="w-full aspect-square rounded text-[11px] font-bold flex items-center justify-center transition-colors relative
                                         {selectedDate === cell.key
-                                            ? 'bg-orange-500/80 text-white'
+                                            ? 'bg-text-faint text-text'
                                             : cell.has
-                                                ? 'text-white/60 hover:bg-white/10 cursor-pointer'
-                                                : 'text-white/10 cursor-default'}"
+                                                ? 'text-text hover:bg-bg-hover cursor-pointer'
+                                                : 'text-text-faint cursor-default'}"
                                 >
                                     {cell.day}
                                     {#if cell.has && selectedDate !== cell.key}
-                                        <span class="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-orange-500/60"></span>
+                                        <span class="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-text-faint/60"></span>
                                     {/if}
                                 </button>
                             {/if}
@@ -353,8 +398,8 @@
                     <!-- all dates -->
                     <button
                         onclick={clearDate}
-                        class="w-full mt-2 px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-white/30 hover:text-white/60 bg-white/5 hover:bg-white/10 rounded transition-colors
-                            {selectedDate === null ? 'bg-white/15 text-white/50' : ''}"
+                        class="w-full mt-2 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-text-faint hover:text-text-muted bg-bg-hover hover:bg-bg-active rounded transition-colors
+                            {selectedDate === null ? 'bg-bg-active text-text-secondary' : ''}"
                     >All dates</button>
                 </div>
             {/if}
@@ -364,40 +409,42 @@
         <div class="relative shrink-0">
             <button
                 onclick={() => { indexDropdownOpen = !indexDropdownOpen; calendarOpen = false; }}
-                class="flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-colors
-                    {selectedIndex ? 'bg-white/15 text-white/60' : 'bg-white/5 text-white/30 hover:text-white/50 hover:bg-white/10'}"
+                aria-label="Filter news by market index"
+                aria-expanded={indexDropdownOpen}
+                class="flex items-center gap-2 px-3 py-1.5 text-[12px] font-bold uppercase tracking-wider rounded-lg transition-colors
+                    {selectedIndex ? 'bg-bg-active text-text-secondary' : 'bg-bg-hover text-text-faint hover:text-text-muted hover:bg-bg-active'}"
             >
                 {#if selectedIndex}
-                    <span class="fi {INDEX_FLAG[selectedIndex]} fis rounded-sm" style="font-size: 0.8rem;"></span>
-                    {INDEX_LABEL[selectedIndex]} ({indexCounts[selectedIndex] || 0})
+                    <span aria-hidden="true" class="{INDEX_CONFIG[selectedIndex]?.flag || ''} fis rounded-sm" style="font-size: 0.8rem;"></span>
+                    {INDEX_CONFIG[selectedIndex]?.abbr || selectedIndex} ({indexCounts[selectedIndex] || 0})
                 {:else}
-                    <svg class="w-3.5 h-3.5 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
+                    <svg aria-hidden="true" class="w-3.5 h-3.5 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/></svg>
                     All ({indexCounts._all || 0})
                 {/if}
-                <svg class="w-3 h-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
+                <svg aria-hidden="true" class="w-3 h-3 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"/></svg>
             </button>
 
             {#if indexDropdownOpen}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                    class="absolute right-0 top-full mt-1 z-30 bg-[#1a1a22] border border-white/10 rounded-lg shadow-xl overflow-hidden min-w-[140px]"
+                    class="absolute right-0 top-full mt-1 z-30 bg-bg-card border border-border rounded-lg shadow-lg overflow-hidden min-w-[140px]"
                     onmouseleave={() => { indexDropdownOpen = false; }}
                 >
                     <button
                         onclick={() => pickIndex(null)}
-                        class="w-full flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold text-white/40 hover:bg-white/10 hover:text-white/70 transition-colors
-                            {selectedIndex === null ? 'bg-white/10 text-white/60' : ''}"
-                    >All <span class="text-white/25 ml-auto">({indexCounts._all || 0})</span></button>
+                        class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold text-text-faint hover:bg-bg-hover hover:text-text-secondary transition-colors
+                            {selectedIndex === null ? 'bg-bg-active text-text-secondary' : ''}"
+                    >All <span class="text-text-faint ml-auto">({indexCounts._all || 0})</span></button>
                     {#each INDEX_KEYS as key}
                         <button
                             onclick={() => pickIndex(key)}
-                            class="w-full flex items-center gap-2 px-3 py-1.5 text-[10px] font-bold hover:bg-white/10 transition-colors
-                                {selectedIndex === key ? 'bg-white/10' : ''}"
-                            style="color: {INDEX_COLOR[key]}; opacity: {selectedIndex === key ? 1 : 0.7}"
+                            class="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-bold hover:bg-bg-hover transition-colors
+                                {selectedIndex === key ? 'bg-bg-active' : ''}"
+                            style="color: {INDEX_COLORS[key]}; opacity: {selectedIndex === key ? 1 : 0.7}"
                         >
-                            <span class="fi {INDEX_FLAG[key]} fis rounded-sm" style="font-size: 0.8rem;"></span>
-                            {INDEX_LABEL[key]}
-                            <span class="ml-auto text-white/30">({indexCounts[key] || 0})</span>
+                            <span aria-hidden="true" class="{INDEX_CONFIG[key]?.flag || ''} fis rounded-sm" style="font-size: 0.8rem;"></span>
+                            {INDEX_CONFIG[key]?.abbr || key}
+                            <span class="ml-auto text-text-faint">({indexCounts[key] || 0})</span>
                         </button>
                     {/each}
                 </div>
@@ -408,11 +455,11 @@
     <!-- news list -->
     {#if loading}
         <div class="flex-1 flex items-center justify-center">
-            <span class="text-[11px] text-white/20 animate-pulse">Loading news...</span>
+            <span class="text-[12px] text-text-faint animate-pulse">Loading news...</span>
         </div>
     {:else if filteredArticles.length === 0}
         <div class="flex-1 flex items-center justify-center">
-            <span class="text-[11px] text-white/20">No news for this filter</span>
+            <span class="text-[12px] text-text-faint">No news for this filter</span>
         </div>
     {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -424,30 +471,36 @@
         >
             {#each groupedItems as item}
                 {#if item.type === 'separator'}
-                    <div class="sticky top-0 z-10 px-4 py-1.5 bg-bloom-card/95 backdrop-blur-sm border-b border-white/5">
-                        <span class="text-[9px] font-black uppercase tracking-[0.2em] text-white/25">{item.label}</span>
+                    <div class="sticky top-0 z-10 px-4 py-1.5 bg-bg-card/95 border-b border-border-subtle">
+                        <span class="text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">{item.label}</span>
                     </div>
                 {:else}
                     <a
                         href={item.data.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        class="flex items-start gap-3 px-4 py-3 border-b border-white/[0.04] hover:bg-white/[0.04] transition-all group
+                        class="news-item flex items-start gap-3 px-4 py-3 border-b border-border-subtle hover:bg-bg-hover transition-all group
                             {newArticleUrls.has(item.data.url) ? 'news-flash' : ''}"
                     >
                         <div class="shrink-0 mt-0.5">
-                            <span class="fi {INDEX_FLAG[item.data.index] || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
+                            <span aria-hidden="true" class="{INDEX_CONFIG[item.data.index]?.flag || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <p class="text-[12px] font-semibold text-white/75 leading-snug line-clamp-2 group-hover:text-white/90 transition-colors">
+                            <p class="news-headline text-[13px] font-semibold text-text-secondary leading-snug line-clamp-2 group-hover:text-text transition-colors">
                                 {item.data.headline}
                             </p>
-                            <div class="flex items-center gap-2 mt-1.5">
-                                <span class="text-[9px] font-bold uppercase tracking-wider" style="color: {INDEX_COLOR[item.data.index] || '#f97316'}; opacity: 0.8">{INDEX_LABEL[item.data.index] || ''}</span>
-                                <span class="text-[9px] text-white/25">&middot;</span>
-                                <span class="text-[9px] font-medium text-white/30">{item.data.source}</span>
-                                <span class="text-[9px] text-white/25">&middot;</span>
-                                <span class="text-[9px] font-medium text-white/25">{timeAgo(item.data.datetime)}</span>
+                            <div class="news-meta flex items-center gap-2 mt-1.5 flex-wrap">
+                                <span class="text-[10px] font-bold uppercase tracking-wider" style="color: {INDEX_COLORS[item.data.index] || '#f97316'}; opacity: 0.8">{INDEX_CONFIG[item.data.index]?.abbr || ''}</span>
+                                <span class="text-[10px] text-text-faint">&middot;</span>
+                                <span class="text-[10px] font-medium text-text-faint">{item.data.source}</span>
+                                <span class="text-[10px] text-text-faint">&middot;</span>
+                                <span class="text-[10px] font-medium text-text-faint">{timeAgo(item.data.datetime)}</span>
+                                {#if item.data.tags?.length}
+                                    {#each item.data.tags as tag}
+                                        {@const tc = TAG_COLORS[tag] || { text: 'text-text-faint', bg: 'bg-bg-hover' }}
+                                        <span class="news-tag px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider {tc.text} {tc.bg}">{tag}</span>
+                                    {/each}
+                                {/if}
                             </div>
                         </div>
                     </a>
@@ -455,16 +508,26 @@
             {/each}
         </div>
     {/if}
-</div>
+</Card>
 
 <style>
+    :global(.news-feed-root) { container-type: inline-size; }
+
     .custom-scrollbar::-webkit-scrollbar { width: 4px; }
     .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+
+    @container (max-width: 280px) {
+        .news-headline { font-size: 12px; -webkit-line-clamp: 2; line-clamp: 2; }
+        .news-meta { font-size: 9px; }
+        .news-item { padding-left: 12px; padding-right: 12px; padding-top: 8px; padding-bottom: 8px; gap: 8px; }
+    }
+
     .line-clamp-2 {
         display: -webkit-box;
         -webkit-line-clamp: 2;
+        line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
     }
@@ -476,8 +539,8 @@
         to   { opacity: 1; transform: translateY(0); }
     }
     @keyframes newsGlow {
-        0%   { background: rgba(249, 115, 22, 0.15); box-shadow: inset 0 0 20px rgba(249, 115, 22, 0.1); }
-        40%  { background: rgba(249, 115, 22, 0.08); box-shadow: inset 0 0 10px rgba(249, 115, 22, 0.05); }
-        100% { background: transparent; box-shadow: none; }
+        0%   { background: color-mix(in srgb, var(--accent-primary) 12%, transparent); }
+        40%  { background: color-mix(in srgb, var(--accent-primary) 5%, transparent); }
+        100% { background: transparent; }
     }
 </style>

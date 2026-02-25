@@ -1,21 +1,59 @@
-<!-- main dashboard page: orchestrates stock view, overview mode, and sector comparison
-     mode (cross-index and single-index sub-modes) with period/range controls -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   +page.svelte — Main Dashboard Orchestrator
+  ═══════════════════════════════════════════════════════════════════════════
+   Single-page application root that wires together the Sidebar, PriceChart,
+   and all bottom/side panels across three display modes:
+
+     • Stock Browsing  — candlestick chart + technicals, rankings, macro
+     • Sector Rotation — cross-index or single-index sector comparison
+     • Global Macro    — multi-index overview, correlation, news, calendar
+
+   Manages period/range controls, backend startup gate, data loading for
+   each mode, and reactive $effect chains that keep panels in sync when
+   the user switches index, symbol, sector, or analysis mode.
+
+   Data sources : /data/{symbol}, /index-prices/data, /sector-comparison/*,
+                  /metadata/{symbol}, /health (startup gate)
+   Layout       : sidebar (left) + main area (header + chart + bottom grid)
+
+   Sections:
+     1. APPLICATION STATE       — reactive state for all three modes
+     2. SECTOR DATA PIPELINE    — preload + cache sector/industry/stock data
+     3. INDUSTRY COMPUTATION    — weighted-average series + return calc
+     4. SECTOR FETCH ORCHESTR.  — 3 fast paths + network fallback
+     5. REACTIVE EFFECTS        — $effect chains for sector/index/mode sync
+     6. PERIOD, RANGE & META    — period buttons, custom range, display name
+     7. DATA LOADING            — stock OHLCV, overview comparison, prefetch
+     8. LIFECYCLE & STARTUP     — onMount health gate, index/symbol watchers
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 <script>
-    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, overviewSelectedIndices, INDEX_TICKER_MAP, loadIndexOverviewData, isSectorMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, crossSelectedIndustries, singleModeIndustries, selectedSectors, sectorsByIndex } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER, loadIndexOverviewData, isSectorMode, isMacroContextMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, crossSelectedIndustries, singleModeIndustries, selectedSectors, sectorsByIndex, getCached, setCached, isCacheFresh, macroHighlightIndex, macroHighlightPair, ALL_SECTORS, sectorHighlightEnabled } from '$lib/stores.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
-    import Chart from '$lib/components/Chart.svelte';
-    import RankingPanel from '$lib/components/RankingPanel.svelte';
+    import PriceChart from '$lib/components/PriceChart.svelte';
+    import TopMovers from '$lib/components/TopMovers.svelte';
     import IndexPerformanceTable from '$lib/components/IndexPerformanceTable.svelte';
     import NewsFeed from '$lib/components/NewsFeed.svelte';
     import SectorHeatmap from '$lib/components/SectorHeatmap.svelte';
     import SectorTopStocks from '$lib/components/SectorTopStocks.svelte';
     import SectorRankings from '$lib/components/SectorRankings.svelte';
     import IndustryBreakdown from '$lib/components/IndustryBreakdown.svelte';
-    import LiveIndicators from '$lib/components/LiveIndicators.svelte';
+    import MostActive from '$lib/components/MostActive.svelte';
+    import CorrelationHeatmap from '$lib/components/CorrelationHeatmap.svelte';
+    import EconomicCalendar from '$lib/components/EconomicCalendar.svelte';
+    import MacroWatchlist from '$lib/components/MacroWatchlist.svelte';
+    import RiskDashboard from '$lib/components/RiskDashboard.svelte';
+    import TechnicalLevels from '$lib/components/TechnicalLevels.svelte';
+    import StockMetrics from '$lib/components/StockMetrics.svelte';
+    import Card from '$lib/components/ui/Card.svelte';
+    import { Newspaper, Globe, PieChart, TrendingUp } from 'lucide-svelte';
     import { onMount, untrack } from 'svelte';
+    import { INDEX_COLORS, SECTOR_PALETTE, SECTOR_INDEX_NAMES, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
+    import { MARKET_HOURS, SYMBOL_MARKET_MAP } from '$lib/index-registry.js';
 
-    // --- FETCH UTILITIES ---
+    // ─── Fetch Utilities ───
 
     async function fetchWithTimeout(url, timeout = 10000, opts = {}) {
         const controller = new AbortController();
@@ -31,33 +69,103 @@
         }
     }
 
-    // --- STOCK & COMPARISON STATE ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  1. APPLICATION STATE
+    // ═══════════════════════════════════════════════════════════════════════
+    //  All reactive state for the three display modes: stock browsing (chart
+    //  data, loading flags), overview (comparison series, macro highlight),
+    //  and sector rotation (sector series, industry cache, top stocks).
+
+    // ─── Stock & Comparison State ───
 
     let fullStockData = $state([]);
     let allComparisonData = $state(null);
     let comparisonData = $state(null);
+    let highlightKey = $derived($macroHighlightIndex);
+    let highlightTicker = $derived(highlightKey ? INDEX_KEY_TO_TICKER[highlightKey] : null);
 
-    // filter allComparisonData down to only the user-selected indices
+    // when an index is selected, clear the correlation pair filter
     $effect(() => {
-        const selected = $overviewSelectedIndices;
+        if (highlightKey) macroHighlightPair.set(null);
+    });
+
+    // sync comparisonData from allComparisonData, filtering to pair if selected
+    $effect(() => {
         const all = allComparisonData;
-        if (!all || !all.series) {
-            comparisonData = null;
-            return;
-        }
-        const filtered = all.series.filter(s => selected.includes(s.symbol));
-        if (filtered.length === 0) {
-            comparisonData = null;
+        if (!all || !all.series) { comparisonData = null; return; }
+        if ($macroHighlightPair) {
+            const filtered = all.series.filter(s =>
+                s.indexKey === $macroHighlightPair.row || s.indexKey === $macroHighlightPair.col
+            );
+            comparisonData = filtered.length > 0 ? { ...all, series: filtered } : all;
         } else {
-            comparisonData = { series: filtered };
+            comparisonData = all;
         }
     });
     let isInitialLoading = $state(true);
     let isIndexSwitching = $state(false);
     let inOverview = $derived($isOverviewMode);
     let inSectors = $derived($isSectorMode);
+    let inContext = $derived($isMacroContextMode);
 
-    // --- BACKEND STARTUP GATE ---
+    // ─── Macro Context — live ticker quotes (BTC, Gold, EUR/USD) ───
+    let macroTickerQuotes = $state({});
+    let _macroTickerInterval;
+    let _macroTickerAbort = null;
+    async function fetchMacroTicker() {
+        _macroTickerAbort?.abort();
+        _macroTickerAbort = new AbortController();
+        try {
+            const res = await fetch(`${API_BASE_URL}/market-data`, { signal: _macroTickerAbort.signal });
+            if (res.ok) {
+                const data = await res.json();
+                const syms = ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'];
+                for (const u of Object.values(data)) {
+                    for (const s of syms) {
+                        const clean = s.includes(':') ? s.split(':')[1] : s;
+                        if (u.symbol === s || u.symbol === clean) {
+                            macroTickerQuotes[s] = { price: u.price, pct: u.pct, diff: u.diff };
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            if (err.name !== 'AbortError') console.error('Macro ticker fetch error:', err);
+        }
+    }
+    $effect(() => {
+        if (!inContext) return;
+        fetchMacroTicker();
+        _macroTickerInterval = setInterval(fetchMacroTicker, 30000);
+        return () => {
+            clearInterval(_macroTickerInterval);
+            _macroTickerAbort?.abort();
+        };
+    });
+
+    // Market status for macro tickers
+    function macroTickerStatus(symbol) {
+        const mkey = SYMBOL_MARKET_MAP[symbol];
+        const market = MARKET_HOURS[mkey];
+        if (!market) return { label: '', color: '', dot: '', pulse: false };
+        if (!market.tz) return { label: 'LIVE', color: 'text-up', dot: 'bg-up', pulse: true }; // crypto always open
+        const now = new Date();
+        const tz = new Date(now.toLocaleString('en-US', { timeZone: market.tz }));
+        const day = tz.getDay(), mins = tz.getHours() * 60 + tz.getMinutes();
+        let open = false;
+        if (market.sundayOpen) {
+            open = !(day === 6 || (day === 0 && mins < market.open.h * 60 + market.open.m) || (day === 5 && mins >= market.close.h * 60 + market.close.m));
+        } else {
+            if (day >= 1 && day <= 5) {
+                open = mins >= market.open.h * 60 + market.open.m && mins < market.close.h * 60 + market.close.m;
+            }
+        }
+        return open
+            ? { label: 'LIVE', color: 'text-up', dot: 'bg-up', pulse: true }
+            : { label: 'CLOSED', color: 'text-down', dot: 'bg-down', pulse: false };
+    }
+
+    // ─── Backend Startup Gate ───
     // poll /health until backend reports ready before loading any data
 
     let backendReady = $state(false);
@@ -65,7 +173,7 @@
     let startupDone = $state([]);
     let startupLoading = $state([]);
 
-    // --- SECTOR COMPARISON STATE ---
+    // ─── Sector Comparison State ───
 
     let sectorComparisonData = $state(null);
     let sectorDataLoading = $state(false);
@@ -83,32 +191,9 @@
     let topStocksCache = $state(null);
     let _topStocksCachePeriod = '';
 
-    // --- SECTOR DISPLAY CONSTANTS ---
+    // ─── Sector Display Constants ───
 
-    const SECTOR_INDEX_COLORS = {
-        sp500: '#e2e8f0', stoxx50: '#2563eb', ftse100: '#ec4899',
-        nikkei225: '#f59e0b', csi300: '#ef4444', nifty50: '#22c55e',
-    };
-    const SECTOR_INDEX_NAMES = {
-        sp500: 'S&P 500', stoxx50: 'STOXX 50', ftse100: 'FTSE 100',
-        nikkei225: 'Nikkei 225', csi300: 'CSI 300', nifty50: 'Nifty 50',
-    };
-
-    // palette and abbreviations for single-index multi-sector chart legends
-    const SECTOR_PALETTE = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#22c55e', '#ec4899', '#3b82f6', '#f97316', '#84cc16', '#a855f7', '#14b8a6'];
-    const SECTOR_ABBREV = {
-        'Technology': 'Tech', 'Financial Services': 'Financials', 'Healthcare': 'Health',
-        'Industrials': 'Industls', 'Consumer Cyclical': 'Cons Cyc',
-        'Communication Services': 'Comms', 'Consumer Defensive': 'Cons Def',
-        'Basic Materials': 'Materials', 'Real Estate': 'Real Est',
-        'Energy': 'Energy', 'Utilities': 'Utilities'
-    };
-    const ALL_SECTORS = ['Technology', 'Financial Services', 'Healthcare', 'Industrials', 'Consumer Cyclical', 'Communication Services', 'Consumer Defensive', 'Energy', 'Basic Materials', 'Utilities', 'Real Estate'];
-
-    function getSectorColor(sec) {
-        const idx = ALL_SECTORS.indexOf(sec);
-        return SECTOR_PALETTE[(idx >= 0 ? idx : ALL_SECTORS.length) % SECTOR_PALETTE.length];
-    }
+    // SECTOR_ABBREV imported from theme.js; ALL_SECTORS from stores.js
 
     // map sector/index keys to colors depending on analysis mode
     let sectorCompareColors = $derived((() => {
@@ -117,7 +202,7 @@
             $selectedSectors.forEach(sec => { colors[sec] = getSectorColor(sec); });
             return colors;
         }
-        return SECTOR_INDEX_COLORS;
+        return INDEX_COLORS;
     })());
 
     // map sector/index keys to display names depending on analysis mode
@@ -131,8 +216,14 @@
     let _sectorDataVersion = 0;
     let _allSeriesVersion = $state(0);
 
-    // --- SECTOR DATA LOADING ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  2. SECTOR DATA PIPELINE
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Three preload functions fetch and cache sector/industry/stock data
+    //  from the backend.  Each retries pending indices with escalating delays
+    //  so switching between indices is instant once the initial load completes.
 
+    // ─── Sector Series Preload ───
     // fetch and cache all sector time series for every index at once
     async function preloadAllSectorSeries() {
         if (allSectorSeriesLoading || allSectorSeries) return;
@@ -181,6 +272,7 @@
         allSectorSeriesLoading = false;
     }
 
+    // ─── Industry Series Loading ───
     // fetch industry-level time series for a sector, merging into the cache.
     // _industrySeriesRequestedSet is never cleared for the same key — prevents re-requests
     // that would otherwise cause infinite reactive loops (cache update → effect re-fire → re-request).
@@ -212,6 +304,7 @@
         industrySeriesLoading = false;
     }
 
+    // ─── Top Stocks Preloading ───
     // preload all stock returns for a given period from precomputed backend tables
     async function preloadTopStocks(period) {
         if (!period || _topStocksCachePeriod === period) return;
@@ -257,7 +350,12 @@
         } catch {}
     }
 
-    // --- INDUSTRY SERIES COMPUTATION ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  3. INDUSTRY SERIES COMPUTATION
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Pure functions that derive weighted-average time series from selected
+    //  industries and compute return % over a period.  Results are LRU-cached
+    //  so toggling industry filters is instant.
 
     // produce a weighted-average time series from selected industries (weight = stock count per day)
     // LRU cache for weighted series so toggling back to a prior selection is instant
@@ -357,7 +455,12 @@
         return ((1 + endPct / 100) / (1 + startPct / 100) - 1) * 100;
     }
 
-    // --- SECTOR FETCH ORCHESTRATION ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  4. SECTOR FETCH ORCHESTRATION
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Resolves sector chart data via 3 fast paths (allSectorSeries cache,
+    //  industry weighted cache, per-sector mixed cache) before falling back
+    //  to a network call.  Each path updates sectorComparisonData for PriceChart.
 
     // resolve sector chart data from cache (fast path) or network (slow path)
     async function fetchSectorData(sector, indices, mode, industries, sectors, singleFilters = {}) {
@@ -533,7 +636,12 @@
         sectorDataLoading = false;
     }
 
-    // --- REACTIVE EFFECTS ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  5. REACTIVE EFFECTS
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Svelte $effect chains that keep panels in sync: sector/index/mode
+    //  changes trigger data fetches, preloads fire on mode entry, and cache
+    //  version counters cause re-evaluation when background retries complete.
 
     // track previous values to detect real changes.
     // _lastSelectedSector starts empty so the first effect run syncs selectedIndustries
@@ -635,8 +743,13 @@
         preloadTopStocks(period);
     });
 
-    // --- PERIOD / RANGE STATE ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  6. PERIOD, RANGE & METADATA
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Period buttons (1W–MAX) and custom date range selection, persisted to
+    //  sessionStorage.  Also resolves the stock display name via metadata API.
 
+    // ─── Period / Range State ───
     // read persisted period from sessionStorage synchronously to prevent button flash on load
     let initialPeriod = '5y';
     let initialRange = null;
@@ -660,11 +773,12 @@
     let customRange = $state(initialRange);
     let selectMode = $state(false);
 
-    // --- METADATA & DISPLAY NAME ---
+    // ─── Metadata & Display Name ───
 
     let metadataCache = {};
     let metadataFetchId = 0;
     let stockFetchId = 0;
+    let stockFetchAbort = null;    // AbortController to cancel in-flight HTTP requests
     let lastFetchedSymbol = '';
     let lastFetchedIndex = '';
     let displayNameText = $state('');
@@ -681,6 +795,12 @@
         return '';
     })());
 
+    let stockSectorName = $derived((() => {
+        const asset = assets.find(a => a.symbol === currentSymbol);
+        if (!asset) return '';
+        return (asset.sector && asset.sector !== 0) ? asset.sector : '';
+    })());
+
     let stockSectorIndustry = $derived((() => {
         const asset = assets.find(a => a.symbol === currentSymbol);
         if (!asset) return '';
@@ -690,7 +810,7 @@
         return sec || ind || '';
     })());
 
-    // --- PERIOD / RANGE HELPERS ---
+    // ─── Period / Range Helpers ───
 
     function fmtDate(d) {
         if (!d) return '';
@@ -732,11 +852,23 @@
         sessionStorage.removeItem('chart_period');
     }
 
-    // --- STOCK DATA LOADING ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  7. DATA LOADING
+    // ═══════════════════════════════════════════════════════════════════════
+    //  HTTP fetchers for stock OHLCV data, overview comparison series, and
+    //  background prefetch of macro widgets.  Stock fetch retries with backoff;
+    //  overview data uses SWR from the shared cache layer.
+
+    // ─── Stock Data ───
 
     async function fetchStockData(symbol) {
         if (!symbol) return;
         const myFetchId = ++stockFetchId;
+
+        // Abort any in-flight stock data request
+        stockFetchAbort?.abort();
+        stockFetchAbort = new AbortController();
+        const signal = stockFetchAbort.signal;
 
         // fire-and-forget metadata fetch to populate displayNameText
         const metaId = ++metadataFetchId;
@@ -753,15 +885,16 @@
         // retry with backoff — backend may be lazy-loading the index on first request
         const maxRetries = 3;
         for (let attempt = 0; attempt < maxRetries; attempt++) {
-            if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
+            if (myFetchId !== stockFetchId) return;
             try {
                 const res = await fetchWithTimeout(
-                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 15000
+                    `${API_BASE_URL}/data/${encodeURIComponent(symbol)}?period=max&t=${Date.now()}`, 15000,
+                    { signal }
                 );
-                if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
+                if (myFetchId !== stockFetchId) return;
                 if (res.ok) {
                     const json = await res.json();
-                    if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
+                    if (myFetchId !== stockFetchId) return;
                     if (json && json.length > 0) {
                         fullStockData = json;
                         isInitialLoading = false;
@@ -774,7 +907,7 @@
                     }
                 }
             } catch (e) {
-                if (myFetchId !== stockFetchId) return; // cancelled by newer fetch
+                if (signal.aborted || myFetchId !== stockFetchId) return;
                 if (attempt < maxRetries - 1) {
                     await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
                     continue;
@@ -788,8 +921,7 @@
         }
     }
 
-    // --- INDUSTRY RETURN OVERRIDES FOR SUB-COMPONENTS ---
-
+    // ─── Industry Return Overrides ───
     // single-index mode: override ranking values with industry-filtered returns
     // single-index: override ranking rows for sectors with industry filters.
     // depends on $selectedIndustries so it re-fires when the active sector's filter changes;
@@ -809,26 +941,60 @@
         return Object.keys(overrides).length > 0 ? overrides : null;
     })());
 
-    // --- OVERVIEW DATA LOADING ---
+    // ─── Background Prefetch ───
 
+    /** Prefetch all macro widget data into cache so they hydrate instantly on first mount. */
+    function prefetchMacroWidgets() {
+        const prefetches = [
+            ['news_feed',     '/news',               5 * 60 * 1000,  d => d?.length > 0],
+            ['eco_calendar',  '/macro/calendar',     15 * 60 * 1000, d => !!d],
+            ['macro_risk',    '/macro/risk-summary', 5 * 60 * 1000,  d => !!d],
+            ['macro_fx',      '/macro/fx',           5 * 60 * 1000,  d => !!(d?.rates),       d => d.rates],
+            ['macro_rates',   '/macro/rates',        60 * 60 * 1000, d => !!(d?.instruments), d => d.instruments],
+        ];
+        for (const [key, path, ttl, valid, transform] of prefetches) {
+            if (isCacheFresh(key)) continue;
+            fetch(`${API_BASE_URL}${path}`).then(r => r.ok ? r.json() : null).then(data => {
+                if (data && valid(data)) setCached(key, transform ? transform(data) : data, ttl);
+            }).catch(() => {});
+        }
+    }
+
+    // ─── Overview Data ───
     // fetch all 6 indices at once — client-side filtering keeps it responsive
+    const COMPARISON_TTL = 5 * 60 * 1000; // 5 min
+
     async function fetchComparisonData() {
+        // Serve cached data instantly (mode switch / browser refresh)
+        const cached = getCached('comparison_data');
+        if (cached && !allComparisonData) {
+            allComparisonData = cached.data;
+        }
+        // Skip network if still fresh
+        if (isCacheFresh('comparison_data')) return;
+
         const allTickers = Object.keys(INDEX_TICKER_MAP);
         try {
             const res = await fetchWithTimeout(
-                `${API_BASE_URL}/index-prices/data?symbols=${encodeURIComponent(allTickers.join(','))}&period=max&t=${Date.now()}`,
-                15000,
-                { headers: { 'Cache-Control': 'no-cache' } }
+                `${API_BASE_URL}/index-prices/data?symbols=${encodeURIComponent(allTickers.join(','))}&period=max`,
+                15000
             );
             if (res.ok) {
-                allComparisonData = await res.json();
+                const data = await res.json();
+                allComparisonData = data;
+                setCached('comparison_data', data, COMPARISON_TTL);
             }
         } catch (e) {
             console.error('Failed to fetch comparison data:', e);
         }
     }
 
-    // --- LIFECYCLE & REACTIVE INDEX/SYMBOL WATCHERS ---
+    // ═══════════════════════════════════════════════════════════════════════
+    //  8. LIFECYCLE & STARTUP
+    // ═══════════════════════════════════════════════════════════════════════
+    //  onMount polls /health until the backend is ready, then loads data for
+    //  the initial mode.  Background prefetches for other modes run in parallel.
+    //  Index/symbol watchers handle subsequent navigation.
 
     onMount(async () => {
         lastFetchedIndex = $marketIndex;
@@ -861,13 +1027,29 @@
             await loadIndexOverviewData();
             await fetchComparisonData();
             isInitialLoading = false;
+            // Prefetch other modes in background so switching is instant
+            prefetchMacroWidgets();
+            loadSummaryData($marketIndex).then(() => {
+                if ($selectedSymbol) fetchStockData($selectedSymbol);
+            });
+            preloadAllSectorSeries();
         } else if ($isSectorMode) {
             // sector mode loads its own data via $effects — no stock/summary data needed
             isInitialLoading = false;
+            // Prefetch other modes in background
+            prefetchMacroWidgets();
+            loadIndexOverviewData();
+            fetchComparisonData();
+            loadSummaryData(Object.keys(INDEX_CONFIG)[0]);
         } else {
             await loadSummaryData($marketIndex);
             await fetchStockData($selectedSymbol);
             isInitialLoading = false;
+            // Prefetch other modes in background so switching is instant
+            prefetchMacroWidgets();
+            loadIndexOverviewData();
+            fetchComparisonData();
+            preloadAllSectorSeries();
         }
 
         return () => clearInterval(keepAlive);
@@ -880,22 +1062,22 @@
         if (idx === lastFetchedIndex) return;
         lastFetchedIndex = idx;
 
-        if (idx === 'overview') {
+        if (idx === 'macro') {
             fullStockData = [];
             displayNameText = '';
             loadIndexOverviewData();
             fetchComparisonData();
             isInitialLoading = false;
             isIndexSwitching = false;
-        } else if (idx === 'sectors') {
-            // sector mode loads data via its own $effects
+        } else if (idx === 'sectors' || idx === 'context') {
+            // sector/context mode loads data via its own $effects
             fullStockData = [];
             allComparisonData = null;
             comparisonData = null;
             isInitialLoading = false;
             isIndexSwitching = false;
         } else {
-            fullStockData = [];
+            // Keep old chart data visible (stale-while-revalidate) — don't clear fullStockData
             allComparisonData = null;
             comparisonData = null;
             isIndexSwitching = true;
@@ -911,144 +1093,193 @@
     $effect(() => {
         if (!backendReady) return;
         const sym = $selectedSymbol;
-        if (!sym || $isOverviewMode || $isSectorMode) return;
+        if (!sym || $isOverviewMode || $isSectorMode || $isMacroContextMode) return;
         if (sym === lastFetchedSymbol) return;
         lastFetchedSymbol = sym;
         displayNameText = metadataCache[sym] || '';
-        fullStockData = [];
+        // Keep old chart data visible while new data loads — don't clear fullStockData
         selectMode = false;
         fetchStockData(sym);
     });
-    // overview index checkbox changes are handled reactively by the $effect that
-    // derives comparisonData from allComparisonData + overviewSelectedIndices
 
-    // --- MOBILE SIDEBAR STATE ---
+    // ─── Top Bar — Mode Switching ───
+
+    let currentMode = $derived(inContext ? 'context' : inOverview ? 'macro' : inSectors ? 'sectors' : 'stocks');
+
+    const modes = [
+        { key: 'macro',   label: 'Index Benchmarks', icon: Globe },
+        { key: 'sectors', label: 'Sector Analysis',  icon: PieChart },
+        { key: 'stocks',  label: 'Stock Browser',    icon: TrendingUp },
+        { key: 'context', label: 'Macro Context',    icon: Newspaper },
+    ];
+
+    function handleSwitchMode(mode) {
+        if (mode === 'macro') {
+            const cur = $marketIndex;
+            if (cur && cur !== 'macro' && cur !== 'sectors' && cur !== 'context' && INDEX_CONFIG[cur]) {
+                try { sessionStorage.setItem('dash_last_stock_index', cur); } catch {}
+            }
+            marketIndex.set('macro');
+            loadIndexOverviewData();
+        } else if (mode === 'sectors') {
+            const cur = $marketIndex;
+            if (cur && cur !== 'macro' && cur !== 'sectors' && cur !== 'context' && INDEX_CONFIG[cur]) {
+                try { sessionStorage.setItem('dash_last_stock_index', cur); } catch {}
+            }
+            marketIndex.set('sectors');
+        } else if (mode === 'context') {
+            const cur = $marketIndex;
+            if (cur && cur !== 'macro' && cur !== 'sectors' && cur !== 'context' && INDEX_CONFIG[cur]) {
+                try { sessionStorage.setItem('dash_last_stock_index', cur); } catch {}
+            }
+            marketIndex.set('context');
+        } else if (mode === 'stocks') {
+            const _defaultIdx = Object.keys(INDEX_CONFIG)[0];
+            const lastIdx = sessionStorage.getItem('dash_last_stock_index') || _defaultIdx;
+            if (lastIdx && INDEX_CONFIG[lastIdx]) {
+                marketIndex.set(lastIdx);
+            } else {
+                marketIndex.set(_defaultIdx);
+            }
+        }
+    }
+
+    // ─── Mobile Sidebar State ───
     let sidebarOpen = $state(false);
 
-    // --- NEWS FEED RESIZE ---
-    let newsFeedHeight = $state(280);
-    let useFlexNewsFeed = $state(true);
-    let _nfResizing = false;
-    let _nfStartY = 0;
-    let _nfStartH = 0;
-
-    function startNewsResize(e) {
-        _nfResizing = true;
-        _nfStartY = e.clientY;
-        _nfStartH = newsFeedHeight;
-        document.addEventListener('mousemove', onNewsResize);
-        document.addEventListener('mouseup', stopNewsResize);
-        document.body.style.cursor = 'row-resize';
-        document.body.style.userSelect = 'none';
-        e.preventDefault();
-    }
-    function onNewsResize(e) {
-        if (!_nfResizing) return;
-        const delta = _nfStartY - e.clientY;
-        newsFeedHeight = Math.max(150, Math.min(600, _nfStartH + delta));
-    }
-    function stopNewsResize() {
-        _nfResizing = false;
-        document.removeEventListener('mousemove', onNewsResize);
-        document.removeEventListener('mouseup', stopNewsResize);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-        useFlexNewsFeed = false;
-        try { sessionStorage.setItem('news_feed_height', String(newsFeedHeight)); } catch {}
-    }
-
-    // restore saved height
-    try { const h = sessionStorage.getItem('news_feed_height'); if (h) { newsFeedHeight = Number(h); useFlexNewsFeed = false; } } catch {}
     function toggleSidebar() { sidebarOpen = !sidebarOpen; }
     function closeSidebar() { sidebarOpen = false; }
 </script>
 
 {#if backendReady}
-<div class="flex h-screen w-screen bg-[#0d0d12] text-[#d1d1d6] overflow-hidden font-sans selection:bg-purple-500/30 max-lg:flex-col max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-auto">
+<div class="flex flex-col h-screen w-screen bg-bg text-text overflow-hidden font-sans selection:bg-bg-active">
 
-    <!-- mobile hamburger button -->
-    <button
-        onclick={toggleSidebar}
-        class="hidden max-lg:flex fixed top-3 left-3 z-[60] items-center justify-center w-10 h-10 rounded-xl bg-bloom-card/90 border border-white/10 backdrop-blur-md shadow-lg"
-        aria-label="Toggle sidebar"
-    >
-        <svg class="w-5 h-5 text-white/70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            {#if sidebarOpen}
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            {:else}
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-            {/if}
-        </svg>
-    </button>
+    <!-- ═══ TOP BAR ═══ -->
+    <div class="shrink-0 flex flex-col bg-bg-sidebar z-50 border-b border-border">
+        <!-- main row: branding + tabs + theme toggle -->
+        <div class="flex items-center h-16 px-5">
+            <!-- branding -->
+            <div class="flex items-center gap-2 shrink-0">
+                <span class="inline-flex items-center justify-center w-9 h-9 rounded-md bg-accent text-white text-[12px] font-extrabold tracking-wider">GEM</span>
+                <span class="text-[15px] font-semibold text-text-secondary tracking-wide whitespace-nowrap max-sm:hidden">Global Exchange Monitor</span>
+            </div>
 
-    <!-- sidebar backdrop (mobile) -->
-    {#if sidebarOpen}
-        <button
-            onclick={closeSidebar}
-            class="hidden max-lg:block fixed inset-0 z-[39] bg-black/60 backdrop-blur-sm"
-            aria-label="Close sidebar"
-        ></button>
-    {/if}
+            <!-- mode tabs — centered -->
+            <div class="flex-1 flex items-center justify-center">
+                <div class="flex items-stretch h-16 gap-1">
+                    {#each modes as mode}
+                        {@const active = currentMode === mode.key}
+                        {@const Icon = mode.icon}
+                        <button
+                            onclick={() => handleSwitchMode(mode.key)}
+                            class="relative flex items-center gap-3 px-10 text-[17px] font-bold uppercase tracking-wider transition-colors
+                                {active
+                                    ? 'text-text'
+                                    : 'text-text-faint hover:text-text-secondary'}"
+                        >
+                            <Icon size={24} strokeWidth={active ? 2.5 : 1.8} />
+                            <span class="max-sm:hidden">{mode.label}</span>
+                            {#if active}
+                                <div class="absolute bottom-0 left-4 right-4 h-[3px] bg-accent rounded-t-full"></div>
+                            {/if}
+                        </button>
+                    {/each}
+                </div>
+            </div>
 
-    <div class="w-[460px] h-full shrink-0 z-[40] shadow-2xl shadow-black/50 flex flex-col
-        max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300
-        {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
-        <div class="flex-1 min-h-0 overflow-hidden">
-            <Sidebar />
+            <div class="shrink-0"></div>
         </div>
-        {#if inOverview}
-            <!-- resize handle -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-                onmousedown={startNewsResize}
-                class="shrink-0 h-2 cursor-row-resize hover:bg-white/10 active:bg-white/15 transition-colors flex items-center justify-center group max-lg:hidden"
-            >
-                <div class="w-10 h-[3px] rounded-full bg-white/10 group-hover:bg-white/25 transition-colors"></div>
-            </div>
-            <div class="{useFlexNewsFeed ? 'flex-1' : 'shrink-0'} flex flex-col overflow-hidden border-t border-white/5 min-h-0 max-lg:hidden" style="{useFlexNewsFeed ? '' : `height: ${newsFeedHeight}px`}">
-                <NewsFeed />
-            </div>
-        {/if}
+
     </div>
 
-    <main class="flex-1 flex flex-col p-6 gap-6 h-screen overflow-hidden relative min-w-0
-        max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-visible max-lg:p-4 max-lg:pt-16 max-lg:gap-4
-        max-sm:p-3 max-sm:pt-14 max-sm:gap-3">
+    <!-- ═══ BODY: sidebar + main ═══ -->
+    <div class="flex flex-1 min-h-0 overflow-hidden max-lg:flex-col max-lg:overflow-auto">
 
-        <!-- header: title + period controls -->
-        <header class="flex shrink-0 justify-between items-center z-10 max-lg:flex-col max-lg:items-start max-lg:gap-3">
+        <!-- mobile hamburger button -->
+        <button
+            onclick={toggleSidebar}
+            class="hidden max-lg:flex fixed top-14 left-3 z-[60] items-center justify-center w-10 h-10 rounded-lg bg-bg-card border border-border shadow-sm"
+            aria-label="Toggle sidebar"
+        >
+            <svg aria-hidden="true" class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {#if sidebarOpen}
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                {:else}
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                {/if}
+            </svg>
+        </button>
+
+        <!-- sidebar backdrop (mobile) -->
+        {#if sidebarOpen}
+            <button
+                onclick={closeSidebar}
+                class="hidden max-lg:block fixed inset-0 z-[39] bg-black/20"
+                aria-label="Close sidebar"
+            ></button>
+        {/if}
+
+        {#if !inContext}
+        <div class="w-[460px] min-w-[300px] h-full shrink z-[40] flex flex-col
+            max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:w-[min(400px,85vw)] max-lg:transition-transform max-lg:duration-300 max-lg:shadow-lg
+            {sidebarOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full'}">
+            <div class="flex-1 min-h-0 overflow-hidden">
+                <Sidebar />
+            </div>
+        </div>
+        {/if}
+
+        <main class="flex-1 flex flex-col p-6 gap-6 overflow-hidden relative min-w-0
+            max-lg:h-auto max-lg:min-h-dvh max-lg:overflow-visible max-lg:p-4 max-lg:pt-14 max-lg:gap-4
+            max-sm:p-3 max-sm:pt-12 max-sm:gap-3"
+            style="">
+
+        <!-- header: title + period controls (hidden in context mode) -->
+        <header class="flex shrink-0 justify-between items-center z-10 max-lg:flex-col max-lg:items-start max-lg:gap-3" class:hidden={inContext}>
             <div>
                 {#if inOverview}
-                    <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">INDEX OVERVIEW</h1>
-                    <span class="text-sm font-bold uppercase tracking-[0.2em] pl-1 text-white/30">
-                        <span class="text-orange-400/70">{$overviewSelectedIndices.length} indices</span> · Normalized % change
-                    </span>
+                    {#if highlightKey}
+                        {@const hCfg = INDEX_CONFIG[highlightKey]}
+                        <div class="flex items-center gap-4">
+                            <span aria-hidden="true" class="{hCfg?.flag || ''} fis rounded-sm" style="font-size: 2rem;"></span>
+                            <div>
+                                <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">{hCfg?.shortLabel || highlightKey}</h1>
+                                <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">Normalized % change</span>
+                            </div>
+                        </div>
+                    {:else}
+                        <div>
+                            <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">Index Benchmarks</h1>
+                            <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">
+                                <span class="text-text-secondary">{Object.keys(INDEX_CONFIG).length} indices</span> · Normalized % change
+                            </span>
+                        </div>
+                    {/if}
                 {:else if inSectors}
-                    {@const sectorFlagMap = { sp500: 'fi fi-us', stoxx50: 'fi fi-eu', ftse100: 'fi fi-gb', nikkei225: 'fi fi-jp', csi300: 'fi fi-cn', nifty50: 'fi fi-in' }}
                     {#if $sectorAnalysisMode === 'single-index'}
                         {@const idxKey = $singleSelectedIndex[0] || 'sp500'}
                         {@const idxCfg = INDEX_CONFIG[idxKey]}
                         <div class="flex items-center gap-4">
-                            <span class="{sectorFlagMap[idxKey] || ''} fis rounded-sm" style="font-size: 2.2rem;"></span>
+                            <span aria-hidden="true" class="{idxCfg?.flag || ''} fis rounded-sm" style="font-size: 2rem;"></span>
                             <div>
-                                <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{idxCfg?.shortLabel || idxKey}</h1>
-                                <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
-                                    <span class="text-orange-400/70">{$selectedSectors.length < ALL_SECTORS.length ? `${$selectedSectors.length} of ${ALL_SECTORS.length}` : ALL_SECTORS.length} sectors</span> · Normalized % change
+                                <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">{idxCfg?.shortLabel || idxKey}</h1>
+                                <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">
+                                    <span class="text-text-secondary">{$selectedSectors.length < ALL_SECTORS.length ? `${$selectedSectors.length} of ${ALL_SECTORS.length}` : ALL_SECTORS.length} sectors</span> · Normalized % change
                                 </span>
                             </div>
                         </div>
                     {:else}
                         <div>
-                            <h1 class="text-4xl max-lg:text-2xl max-sm:text-xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{$selectedSector || 'SECTOR ANALYSIS'}</h1>
-                            <span class="text-sm font-bold uppercase tracking-[0.2em] pl-0.5 text-white/30">
-                                <span class="text-orange-400/70">{$sectorSelectedIndices.length} indices</span>
+                            <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold uppercase tracking-tight leading-none" style="color: {$selectedSector ? getSectorColor($selectedSector) : 'var(--text-primary)'}">{$selectedSector || 'Sector Analysis'}</h1>
+                            <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">
+                                <span class="text-text-secondary">{$sectorSelectedIndices.length} indices</span>
                                 {#if $selectedIndustries.length > 0}
                                     {@const totalInds = (() => { const sc = industrySeriesCache[$selectedSector]; if (!sc) return 0; const s = new Set(); for (const idx of Object.values(sc)) for (const k of Object.keys(idx)) s.add(k); return s.size; })()}
-                                    · <span class="text-orange-400/70">{$selectedIndustries.length}{totalInds ? ` of ${totalInds}` : ''} industries</span>
+                                    · <span class="text-blue-400">{$selectedIndustries.length}{totalInds ? ` of ${totalInds}` : ''} industries</span>
                                 {:else}
                                     {@const totalInds = (() => { const sc = industrySeriesCache[$selectedSector]; if (!sc) return 0; const s = new Set(); for (const idx of Object.values(sc)) for (const k of Object.keys(idx)) s.add(k); return s.size; })()}
                                     {#if totalInds > 0}
-                                        · <span class="text-orange-400/70">{totalInds} industries</span>
+                                        · <span class="text-text-secondary">{totalInds} industries</span>
                                     {/if}
                                 {/if}
                                 · Normalized % change
@@ -1056,84 +1287,184 @@
                         </div>
                     {/if}
                 {:else}
-                    <h1 class="text-5xl max-lg:text-3xl max-sm:text-2xl font-black text-white/85 uppercase tracking-tighter drop-shadow-lg leading-none">{currentSymbol}</h1>
-                    <div class="flex flex-col pl-1">
-                        <span class="text-sm font-bold uppercase tracking-[0.2em] {displayName ? 'text-white/40' : 'text-white/15'}">
+                    <h1 class="text-2xl max-lg:text-xl max-sm:text-lg font-semibold uppercase tracking-tight leading-none" style="color: {stockSectorName ? getSectorColor(stockSectorName) : 'var(--text-primary)'}">{currentSymbol}</h1>
+                    <div class="flex flex-col pl-0.5 mt-0.5">
+                        <span class="text-[14px] font-medium uppercase tracking-[0.15em] {displayName ? 'text-text-muted' : 'text-text-faint'}">
                             {displayName || 'Loading...'}
                         </span>
                         {#if stockSectorIndustry}
-                            <span class="text-[11px] font-bold uppercase tracking-widest text-orange-500/70">{stockSectorIndustry}</span>
+                            <span class="text-[12px] font-medium uppercase tracking-widest" style="color: {stockSectorName ? getSectorColor(stockSectorName) : 'var(--text-secondary)'}">{stockSectorIndustry}</span>
                         {/if}
                     </div>
                 {/if}
             </div>
 
-            <div class="flex items-center gap-3 max-lg:gap-2 max-lg:flex-wrap max-lg:w-full">
-                <div class="flex items-center gap-2 bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md max-sm:hidden">
-                    <button
-                        onclick={toggleCustomMode}
-                        class="px-4 py-1.5 text-[10px] font-black rounded-lg transition-all duration-300
-                        {selectMode
-                            ? 'bg-orange-500 text-white shadow-[0_0_15px_rgba(249,115,22,0.4)] animate-pulse'
-                            : customRange
-                                ? 'bg-orange-500/20 text-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.2)]'
-                                : 'text-white/40 hover:bg-white/5 hover:text-white'}"
-                    >
-                        {selectMode ? '⊞ SELECTING...' : 'CUSTOM'}
-                    </button>
-                    {#if customRange}
-                        <span class="text-[10px] font-bold text-orange-400/80 tabular-nums whitespace-nowrap pr-2">
-                            {fmtDate(customRange.start)} → {fmtDate(customRange.end)}
-                        </span>
-                    {/if}
-                </div>
-
-                <div class="flex flex-wrap bg-white/5 border border-white/10 p-1 rounded-xl shadow-2xl backdrop-blur-md">
-                    {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
+            {#if !inContext}
+            <div class="flex flex-col items-end gap-1.5 max-lg:w-full max-lg:items-start">
+                <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1 border border-border p-1 rounded-lg max-sm:hidden">
                         <button
-                            onclick={() => setPeriod(p.toLowerCase())}
-                            class="px-4 max-sm:px-2.5 py-1.5 text-[10px] font-black rounded-lg transition-all duration-300
-                            {currentPeriod === p.toLowerCase()
-                                ? 'bg-purple-500 text-white shadow-[0_0_15px_rgba(168,85,247,0.4)] scale-105'
-                                : 'text-white/40 hover:bg-white/5 hover:text-white'}"
-                        >{p}</button>
-                    {/each}
+                            onclick={toggleCustomMode}
+                            aria-label={selectMode ? 'Exit custom date range selection' : 'Select custom date range'}
+                            class="px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all
+                            {selectMode
+                                ? 'bg-accent text-white'
+                                : customRange
+                                    ? 'bg-bg-selected text-text'
+                                    : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
+                        >
+                            {selectMode ? 'SELECTING...' : 'CUSTOM'}
+                        </button>
+                        {#if customRange}
+                            <span class="text-[11px] font-medium text-text-secondary tabular-nums whitespace-nowrap pr-1">
+                                {fmtDate(customRange.start)} → {fmtDate(customRange.end)}
+                            </span>
+                        {/if}
+                    </div>
+
+                    <div class="flex border border-border p-1 rounded-lg">
+                        {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
+                            <button
+                                onclick={() => setPeriod(p.toLowerCase())}
+                                aria-label="Set period to {p}"
+                                aria-pressed={currentPeriod === p.toLowerCase()}
+                                class="px-3 max-sm:px-1.5 py-1.5 text-[11px] max-sm:text-[10px] font-semibold rounded-md transition-all whitespace-nowrap
+                                {currentPeriod === p.toLowerCase()
+                                    ? 'bg-accent text-white'
+                                    : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
+                            >{p}</button>
+                        {/each}
+                    </div>
                 </div>
             </div>
+            {/if}
         </header>
 
-        <!-- main content: chart + bottom panels, layout varies by mode -->
-        <div class="{inSectors ? 'gap-4' : 'gap-6'} flex-1 flex flex-col min-h-0 min-w-0 z-0 max-lg:gap-4 max-lg:min-h-0 max-lg:flex-none">
-            <section class="{inSectors ? 'flex-[9]' : 'flex-[2]'} w-full min-w-0 bg-[#111114] rounded-3xl max-lg:rounded-2xl border border-white/5 relative overflow-hidden flex flex-col shadow-2xl
-                max-lg:flex-none max-lg:h-[50vh] max-sm:h-[40vh]
-                {selectMode ? 'ring-2 ring-orange-500/30' : ''}" >
-                <div class="absolute inset-0 bg-gradient-to-b from-white/5 to-transparent pointer-events-none opacity-50"></div>
-                {#if inOverview}
+        <!-- main content: layout varies by mode -->
+        {#if inOverview}
+            <!-- OVERVIEW: single-column layout — chart + table + correlation -->
+            <div class="flex-1 flex flex-col gap-4 min-h-0 min-w-0 z-0
+                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden">
+                <Card fill padding={false} class="flex-1 w-full min-w-0 min-h-0 relative overflow-hidden
+                    max-xl:flex-none max-xl:h-[50vh] max-sm:h-[40vh]
+                    {selectMode ? 'ring-2 ring-text-faint/20' : ''}">
                     {#if comparisonData && comparisonData.series && comparisonData.series.length > 0}
                         <div class="flex-1 min-h-0 min-w-0">
-                            <Chart
+                            <PriceChart
                                 data={[]}
                                 {currentPeriod}
                                 {selectMode}
                                 {customRange}
                                 currency="%"
                                 compareData={comparisonData}
+                                hideVolume={true}
+                                highlightSymbol={highlightTicker}
                                 onResetPeriod={handleResetPeriod}
                                 onRangeSelect={handleRangeSelect}
                             />
                         </div>
                     {:else}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3 opacity-30">
-                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Comparison</span>
+                            <div class="flex flex-col items-center space-y-3">
+                                <div class="w-6 h-6 border-2 border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                                <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Loading Comparison</span>
                             </div>
                         </div>
                     {/if}
-                {:else if inSectors}
+                </Card>
+                <div class="flex-1 min-h-0 grid grid-cols-2 gap-4 max-xl:grid-cols-1 max-xl:flex-none max-xl:auto-rows-[minmax(280px,1fr)]">
+                    <div class="min-h-0 max-xl:min-h-[280px] card-enter">
+                        <IndexPerformanceTable {currentPeriod} {customRange} highlightSymbol={highlightTicker} highlightPair={$macroHighlightPair} onRowClick={(key) => {
+                            macroHighlightPair.set(null);
+                            macroHighlightIndex.set(highlightKey === key ? null : key);
+                        }} />
+                    </div>
+                    <div class="min-h-0 max-xl:min-h-[280px] card-enter">
+                        <CorrelationHeatmap {currentPeriod} {customRange} highlightPair={$macroHighlightPair} highlightIndex={highlightKey} onCellClick={(cell) => {
+                            if ($macroHighlightPair && $macroHighlightPair.row === cell.row && $macroHighlightPair.col === cell.col) {
+                                macroHighlightPair.set(null);
+                            } else {
+                                macroHighlightIndex.set(null);
+                                macroHighlightPair.set(cell);
+                            }
+                        }} />
+                    </div>
+                </div>
+            </div>
+
+        {:else if inContext}
+            <!-- MACRO CONTEXT: full-page layout — risk + tickers + 3-column grid -->
+            <div class="flex-1 flex flex-col gap-4 min-h-0 min-w-0 z-0
+                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden">
+                <!-- Risk dashboard strip -->
+                <Card fill={false} padding={false} class="shrink-0 !overflow-visible">
+                    <div class="px-4 py-3">
+                        <RiskDashboard />
+                    </div>
+                </Card>
+                <!-- BTC / Gold / EUR-USD ticker strip -->
+                <Card fill={false} padding={false} class="shrink-0">
+                    <div class="flex items-stretch gap-4 px-4 py-2.5">
+                        {#each ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'] as symbol}
+                            {@const data = macroTickerQuotes[symbol] || { price: 0, pct: 0, diff: 0 }}
+                            {@const hasData = data.price > 0}
+                            {@const sym = symbol.includes(':') ? symbol.split(':')[1] : symbol}
+                            {@const ccy = symbol.includes('EUR/USD') ? '' : '$'}
+                            {@const status = macroTickerStatus(symbol)}
+                            <div class="flex items-center gap-3 flex-1 min-w-0">
+                                <div class="flex flex-col shrink-0">
+                                    <span class="text-[13px] font-semibold text-text uppercase tracking-tighter">{sym}</span>
+                                    {#if status.label}
+                                        <span class="flex items-center gap-1 mt-0.5">
+                                            <span class="w-1.5 h-1.5 rounded-full {status.dot} {status.pulse ? 'animate-pulse' : ''}"></span>
+                                            <span class="text-[9px] font-bold {status.color} uppercase tracking-tighter">{status.label}</span>
+                                        </span>
+                                    {/if}
+                                </div>
+                                {#if hasData}
+                                    <span class="text-[13px] font-mono font-bold text-text-secondary tabular-nums">
+                                        <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
+                                            minimumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
+                                            maximumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
+                                        })}
+                                    </span>
+                                    <span class="text-[12px] font-mono font-bold tabular-nums {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
+                                        {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(2)}%
+                                    </span>
+                                {:else}
+                                    <span class="text-[12px] text-text-muted animate-pulse">---</span>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                </Card>
+                <!-- 3-column grid: watchlist, news, calendar -->
+                <div class="flex-1 min-h-0 grid grid-cols-3 gap-4
+                    max-xl:grid-cols-1 max-xl:flex-none max-xl:auto-rows-[minmax(280px,1fr)]">
+                    <div class="min-h-0 overflow-hidden card-enter">
+                        <MacroWatchlist />
+                    </div>
+                    <div class="min-h-0 overflow-hidden card-enter">
+                        <NewsFeed />
+                    </div>
+                    <div class="min-h-0 overflow-hidden card-enter">
+                        <EconomicCalendar {currentPeriod} {customRange} />
+                    </div>
+                </div>
+            </div>
+
+        {:else}
+        <div class="{inSectors ? 'gap-4' : 'gap-5'} flex-1 flex flex-col min-h-0 min-w-0 z-0 max-lg:gap-4 max-lg:min-h-0 max-lg:flex-none">
+            {#if !inSectors}
+                <StockMetrics />
+            {/if}
+            <Card fill padding={false} class="{inSectors ? 'flex-1' : 'flex-[2]'} w-full min-w-0 relative overflow-hidden
+                max-lg:flex-none max-lg:h-[50vh] max-sm:h-[40vh]
+                {selectMode ? 'ring-2 ring-text-faint/20' : ''}">
+                {#if inSectors}
                     {#if sectorComparisonData && sectorComparisonData.series && sectorComparisonData.series.length > 0}
                         <div class="flex-1 min-h-0 min-w-0">
-                            <Chart
+                            <PriceChart
                                 data={[]}
                                 {currentPeriod}
                                 {selectMode}
@@ -1143,18 +1474,20 @@
                                 compareColors={sectorCompareColors}
                                 compareNames={sectorCompareNames}
                                 hideVolume={true}
+                                hideLegend={$sectorAnalysisMode === 'single-index'}
+                                highlightSymbol={$sectorAnalysisMode === 'single-index' && $sectorHighlightEnabled ? $selectedSector : null}
                                 onResetPeriod={handleResetPeriod}
                                 onRangeSelect={handleRangeSelect}
                             />
                         </div>
                     {:else}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3 opacity-30">
+                            <div class="flex flex-col items-center space-y-3">
                                 {#if sectorDataLoading || !allSectorSeries}
-                                    <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                                    <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Sector Data</span>
+                                    <div class="w-6 h-6 border-2 border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                                    <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Loading Sector Data</span>
                                 {:else}
-                                    <span class="text-[10px] font-black uppercase tracking-widest text-white">Select a sector</span>
+                                    <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Select a sector</span>
                                 {/if}
                             </div>
                         </div>
@@ -1162,21 +1495,21 @@
                 {:else}
                     {#if (isInitialLoading || isIndexSwitching) && fullStockData.length === 0}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3 opacity-30">
-                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Chart</span>
+                            <div class="flex flex-col items-center space-y-3">
+                                <div class="w-6 h-6 border-2 border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                                <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Loading Chart</span>
                             </div>
                         </div>
                     {:else if fullStockData.length === 0}
                         <div class="absolute inset-0 flex items-center justify-center z-10">
-                            <div class="flex flex-col items-center space-y-3 opacity-30">
-                                <div class="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                                <span class="text-[10px] font-black uppercase tracking-widest text-white">Loading Data</span>
+                            <div class="flex flex-col items-center space-y-3">
+                                <div class="w-6 h-6 border-2 border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                                <span class="text-[11px] font-medium uppercase tracking-widest text-text-muted">Loading Data</span>
                             </div>
                         </div>
                     {/if}
                     <div class="flex-1 min-h-0 min-w-0 chart-no-animate" style="transition: none !important;">
-                        <Chart
+                        <PriceChart
                             data={fullStockData}
                             {currentPeriod}
                             {selectMode}
@@ -1187,82 +1520,79 @@
                         />
                     </div>
                 {/if}
-            </section>
+            </Card>
 
             <!-- bottom panels: vary by mode -->
-            {#if inOverview}
-                <div class="flex-1 min-h-0 max-lg:flex-none max-lg:h-[350px]">
-                    <IndexPerformanceTable {currentPeriod} {customRange} />
-                </div>
-                <div class="hidden max-lg:block max-lg:h-[400px]">
-                    <NewsFeed />
-                </div>
-            {:else if inSectors}
+            {#if inSectors}
                 {#if $sectorAnalysisMode === 'single-index'}
-                    <div class="flex-[11] grid grid-cols-2 gap-4 min-h-0
+                    <div class="flex-1 grid grid-cols-2 gap-4 min-h-0
                         max-lg:flex-none max-lg:grid-cols-1 max-lg:auto-rows-[minmax(280px,1fr)]">
-                        <div class="min-h-0 max-lg:min-h-[280px]">
+                        <div class="min-h-0 max-lg:min-h-[280px] card-enter">
                             <SectorRankings {currentPeriod} {customRange} industryReturnOverride={rankingsIndustryOverride} />
                         </div>
-                        <div class="min-h-0 max-lg:min-h-[350px]">
+                        <div class="min-h-0 max-lg:min-h-[350px] card-enter">
                             <IndustryBreakdown {currentPeriod} {customRange} />
                         </div>
                     </div>
                 {:else}
-                    <div class="flex-[11] grid grid-cols-12 gap-4 min-h-0 overflow-hidden
-                        max-lg:flex-none max-lg:grid-cols-1 max-lg:auto-rows-auto max-lg:overflow-visible">
-                        <div class="col-span-8 min-h-0 max-lg:col-span-1 max-lg:min-h-[320px]">
+                    <div class="flex-1 grid grid-cols-12 gap-4 min-h-0 overflow-hidden
+                        max-xl:grid-cols-1 max-xl:flex-none max-xl:auto-rows-auto max-xl:overflow-visible">
+                        <div class="col-span-8 min-h-0 max-xl:col-span-1 max-xl:min-h-[320px] card-enter">
                             <SectorHeatmap {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} filteredSector={$selectedSector} {allSectorSeries} {industrySeriesCache} />
                         </div>
-                        <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[300px]">
+                        <div class="col-span-4 min-h-0 max-xl:col-span-1 max-xl:min-h-[300px] card-enter">
                             <SectorTopStocks {currentPeriod} {customRange} industryFilter={$selectedIndustries.length > 0 ? $selectedIndustries : null} {topStocksCache} />
                         </div>
                     </div>
                 {/if}
             {:else}
-                <div class="flex-1 grid grid-cols-12 gap-6 min-h-0
-                    max-lg:flex-none max-lg:grid-cols-1 max-lg:gap-4 max-lg:auto-rows-[minmax(200px,1fr)]">
-                    <div class="col-span-4 min-h-0 flex flex-col max-lg:col-span-1 max-lg:min-h-[250px]">
-                        <RankingPanel {currentPeriod} {customRange} />
+                <div class="flex-[1.2] grid grid-cols-3 gap-4 min-h-0
+                    max-xl:grid-cols-2
+                    max-lg:grid-cols-1 max-lg:flex-none max-lg:auto-rows-[minmax(200px,1fr)]">
+                    <div class="min-h-0 max-lg:min-h-[200px] card-enter">
+                        <MostActive {currentPeriod} {customRange} />
                     </div>
-                    <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[200px]">
-                        <LiveIndicators title="MARKET LEADERS" symbols={['NVDA', 'AAPL', 'MSFT']} dynamicByIndex={true} />
+                    <div class="min-h-0 flex flex-col max-lg:min-h-[250px] card-enter">
+                        <TopMovers {currentPeriod} {customRange} />
                     </div>
-                    <div class="col-span-4 min-h-0 max-lg:col-span-1 max-lg:min-h-[200px]">
-                        <LiveIndicators title="GLOBAL MACRO" subtitle=" " symbols={['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD']} />
+                    <div class="min-h-0 max-lg:min-h-[250px] card-enter overflow-visible">
+                        <TechnicalLevels {currentPeriod} {customRange} />
                     </div>
                 </div>
             {/if}
         </div>
+        {/if}
+
     </main>
+    </div>
 </div>
 {:else}
 <!-- startup loading screen — shown while backend is warming up -->
-<div class="flex h-dvh w-screen bg-[#0d0d12] text-[#d1d1d6] items-center justify-center font-sans">
+<div class="flex h-dvh w-screen bg-bg text-text items-center justify-center font-sans">
     <div class="flex flex-col items-center gap-6 max-w-md w-full px-8">
-        <div class="w-10 h-10 border-2 border-white/10 border-t-purple-500 rounded-full animate-spin"></div>
+        <div class="w-8 h-8 border-2 border-border border-t-accent rounded-full animate-spin" role="status" aria-label="Loading"></div>
         <div class="text-center">
-            <h2 class="text-lg font-black text-white/70 uppercase tracking-widest mb-1">Loading Data</h2>
-            <p class="text-xs text-white/30 font-bold uppercase tracking-wider">{startupProgress || 'Connecting...'}</p>
+            <h2 class="text-lg font-semibold text-text uppercase tracking-widest mb-1">Loading Data</h2>
+            <p aria-live="polite" class="text-xs text-text-muted font-medium uppercase tracking-wider">{startupProgress || 'Connecting...'}</p>
         </div>
         {#if startupDone.length > 0}
             {@const parts = startupProgress.split('/')}
             {@const pctDone = parts.length === 2 ? (Number(parts[0]) / Number(parts[1]) * 100) : 0}
             <div class="w-full">
-                <div class="w-full bg-white/5 rounded-full h-1.5 overflow-hidden">
-                    <div class="h-full bg-purple-500 rounded-full transition-all duration-500"
+                <div class="w-full bg-border-subtle rounded-full h-1.5 overflow-hidden">
+                    <div class="h-full bg-accent rounded-full transition-all duration-500"
                          style="width: {pctDone}%"></div>
                 </div>
                 <div class="mt-4 max-h-48 overflow-y-auto space-y-1">
                     {#each startupLoading as item}
-                        <div class="flex items-center gap-2 text-[10px] font-bold text-orange-400/70 uppercase tracking-wider">
-                            <div class="w-2 h-2 border border-orange-400/50 border-t-orange-400 rounded-full animate-spin flex-shrink-0"></div>
+                        <div class="flex items-center gap-2 text-[11px] font-medium text-text-secondary uppercase tracking-wider">
+                            <div aria-hidden="true" class="w-2 h-2 border border-text-faint border-t-text-muted rounded-full animate-spin flex-shrink-0"></div>
                             {item}
                         </div>
                     {/each}
                     {#each startupDone.slice(-6) as item}
-                        <div class="flex items-center gap-2 text-[10px] font-bold text-white/20 uppercase tracking-wider">
-                            <div class="w-2 h-2 rounded-full bg-green-500/40 flex-shrink-0"></div>
+                        <div class="flex items-center gap-2 text-[11px] font-medium text-text-faint uppercase tracking-wider">
+                            <div aria-hidden="true" class="w-2 h-2 rounded-full bg-up/40 flex-shrink-0"></div>
                             {item}
                         </div>
                     {/each}
@@ -1272,3 +1602,10 @@
     </div>
 </div>
 {/if}
+
+<style>
+    .macro-scroll::-webkit-scrollbar { width: 4px; }
+    .macro-scroll::-webkit-scrollbar-track { background: transparent; }
+    .macro-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 10px; }
+    .macro-scroll::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
+</style>

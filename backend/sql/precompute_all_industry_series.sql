@@ -1,8 +1,19 @@
--- precomputes normalized percent-change time series for every industry with forward-fill across all stocks
+-- =========================================================================
+--  Startup Precompute: Industry Time-Series (Forward-Filled)
+-- =========================================================================
+--  Same approach as precompute_all_sector_series.sql but one level deeper:
+--  builds a normalised percent-change series for every industry within
+--  every sector.  Used when the user drills into a sector and wants to
+--  compare industry performance over time.
+--
+--  Placeholder : {table} — per-index table
+--  Called by   : _precompute_industry_series()
+-- =========================================================================
+
 WITH
 raw AS (
     SELECT symbol, sector, industry,
-           strftime(trade_date, '%Y-%m-%d') as time,
+           CAST(trade_date AS DATE)::VARCHAR as time,
            CAST(close AS FLOAT) as close
     FROM {table}
     WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
@@ -11,10 +22,9 @@ raw AS (
 ),
 
 bases AS (
-    SELECT symbol,
-           FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY time) as base_close
+    SELECT symbol, ARG_MIN(close, time) as base_close
     FROM raw
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time) = 1
+    GROUP BY symbol
 ),
 
 per_stock_pct AS (

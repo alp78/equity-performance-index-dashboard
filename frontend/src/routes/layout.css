@@ -1,50 +1,96 @@
 @import 'tailwindcss';
 @import 'flag-icons/css/flag-icons.min.css';
 
-/* --- Tailwind v4 Theme Variables --- */
+/* ── Design System Imports ── */
+@import '../lib/styles/tokens.css';
+@import '../lib/styles/themes/dark.css';
+@import '../lib/styles/themes/light.css';
+@import '../lib/styles/typography.css';
+@import '../lib/styles/responsive.css';
+@import '../lib/styles/global.css';
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tailwind v4 Theme — Maps design tokens to Tailwind utility classes
+   ═══════════════════════════════════════════════════════════════════════
+   All values reference CSS custom properties from the design system.
+   This ensures Tailwind classes like `bg-surface-0` or `text-primary`
+   automatically respond to theme changes via [data-theme].
+   ═══════════════════════════════════════════════════════════════════════ */
 @theme {
-  --color-bloom-dark: #0f0e17;
-  --color-bloom-card: #1e1b2e;
-  --color-bloom-text: #a7a9be;
-  --color-bloom-accent: #7e22ce;
-  --color-bloom-muted: #4a4e69;
-  --color-bloom-up: #26a69a;
-  --color-bloom-down: #ef5350;
-  
-  --font-sans: "Inter", sans-serif;
-}
+  /* ── Surface Backgrounds ── */
+  --color-surface-0: var(--surface-0);
+  --color-surface-1: var(--surface-1);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-surface-overlay: var(--surface-overlay);
 
-/* --- Global Reset & Base Styles --- */
-:root {
-  color-scheme: dark;
-}
+  /* ── Text Colors ── */
+  --color-primary:   var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted:     var(--text-muted);
+  --color-disabled:  var(--text-disabled);
+  --color-inverse:   var(--text-inverse);
 
-html {
-  height: 100%;
-  overflow: hidden;
-}
+  /* ── Border Colors ── */
+  --color-border-subtle:  var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong:  var(--border-strong);
 
-body {
-  height: 100%;
-  background-color: var(--color-bloom-dark);
-  color: #ffffff;
-  margin: 0;
-  font-family: var(--font-sans);
-  overflow: hidden;
-  min-height: 600px; /* below this the dashboard scrolls rather than crushing */
-}
+  /* ── Financial Semantics ── */
+  --color-positive:    var(--color-positive);
+  --color-positive-bg: var(--color-positive-bg);
+  --color-negative:    var(--color-negative);
+  --color-negative-bg: var(--color-negative-bg);
+  --color-warning:     var(--color-warning);
+  --color-warning-bg:  var(--color-warning-bg);
+  --color-neutral:     var(--color-neutral);
+  --color-info:        var(--color-info);
+  --color-info-bg:     var(--color-info-bg);
 
-/* --- Smooth Terminal Scrollbars --- */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: var(--color-bloom-dark);
-}
-::-webkit-scrollbar-thumb {
-  background: var(--color-bloom-muted);
-  border-radius: 10px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-bloom-accent);
+  /* ── Accent ── */
+  --color-accent:       var(--accent-primary);
+  --color-accent-hover: var(--accent-secondary);
+
+  /* ── Interactive ── */
+  --color-hover-overlay:    var(--hover-overlay);
+  --color-active-overlay:   var(--active-overlay);
+  --color-selected-overlay: var(--selected-overlay);
+
+  /* ── Skeleton ── */
+  --color-skeleton-base:  var(--skeleton-base);
+  --color-skeleton-shine: var(--skeleton-shine);
+
+  /* ── Legacy Aliases (backward compatibility during migration) ── */
+  --color-bg:             var(--surface-0);
+  --color-bg-card:        var(--surface-1);
+  --color-bg-sidebar:     var(--surface-0);
+  --color-bg-hover:       var(--surface-2);
+  --color-bg-active:      var(--surface-3);
+  --color-bg-selected:    var(--surface-2);
+  --color-text:           var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted:     var(--text-muted);
+  --color-text-faint:     var(--text-disabled);
+  --color-border:         var(--border-default);
+  --color-up:             var(--color-positive);
+  --color-down:           var(--color-negative);
+  --color-warn:           var(--color-warning);
+  --color-accent-blue:    var(--accent-secondary);
+  --color-selected-border: var(--border-strong);
+
+  /* ── Legacy bloom aliases ── */
+  --color-bloom-dark:      var(--surface-0);
+  --color-bloom-card:      var(--surface-1);
+  --color-bloom-text:      var(--text-muted);
+  --color-bloom-accent:    var(--text-secondary);
+  --color-bloom-muted:     var(--text-disabled);
+  --color-bloom-up:        var(--color-positive);
+  --color-bloom-down:      var(--color-negative);
+  --color-bloom-warn:      var(--color-warning);
+  --color-bloom-highlight: var(--text-secondary);
+  --color-bloom-info:      var(--text-secondary);
+
+  /* ── Font Families ── */
+  --font-sans: "Geist", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
 }

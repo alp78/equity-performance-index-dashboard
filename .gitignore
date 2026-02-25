@@ -5,6 +5,7 @@ __pycache__/
 venv/
 ENV/
 .env
+.env.*
 .cf/
 service_account.json
 .pytest_cache/
@@ -12,13 +13,11 @@ service_account.json
 node_modules/
 .svelte-kit/
 build/
-.env.local
-.env.*.local
 *.log
-package-lock.json
-.dockerignore
+*.duckdb
+*.duckdb.wal
+*.ndjson
 .firebase/
-.firebaserc
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
@@ -26,9 +25,4 @@ ui-debug.log
 .idea/
 .DS_Store
 Thumbs.db
-.npmrc
-firebase.json
 assets/
-config.js
-commit_msg.txt
-app.html

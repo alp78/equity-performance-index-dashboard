@@ -1,17 +1,51 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <style>html, body { overflow: hidden; max-width: 100vw; }</style>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.2.3/css/flag-icons.min.css">
+        <meta name="color-scheme" content="dark light" />
+
+        <!-- Fonts: Geist (UI) + Geist Mono (Data) -->
+        <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.min.css" />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.min.css" />
+
+        <!-- Fallback: Inter (for systems without Geist cached) -->
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+
+        <!-- Flag Icons -->
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/lipis/flag-icons@7.2.3/css/flag-icons.min.css" />
+
         <link rel="icon" href="%sveltekit.assets%/favicon.png" />
-        <script async src="https://www.googletagmanager.com/gtag/js?id=G-2M0F2CHWN3"></script>
+
+        <!-- Prevent FOUC: apply saved theme before first paint -->
         <script>
-            window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
-            gtag('config', 'G-2M0F2CHWN3');
+            (function() {
+                try {
+                    var theme = localStorage.getItem('gem-theme') || 'dark';
+                    document.documentElement.setAttribute('data-theme', theme);
+                    document.documentElement.style.colorScheme = theme;
+                } catch(e) {}
+            })();
+        </script>
+
+        <!-- Google Analytics (only in production) -->
+        <script>
+            (function() {
+                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') return;
+                var id = 'G-2M0F2CHWN3';
+                var s = document.createElement('script');
+                s.async = true;
+                s.src = 'https://www.googletagmanager.com/gtag/js?id=' + id;
+                document.head.appendChild(s);
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
+                window.gtag = gtag;
+                gtag('js', new Date());
+                gtag('config', id);
+            })();
         </script>
 
         %sveltekit.head%

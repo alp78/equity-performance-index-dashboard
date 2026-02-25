@@ -20,6 +20,8 @@
 		"vite": "^7.3.1"
 	},
 	"dependencies": {
+		"echarts": "^6.0.0",
+		"flag-icons": "^7.5.0",
 		"lightweight-charts": "^5.1.0",
 		"lucide-svelte": "^0.564.0"
 	}

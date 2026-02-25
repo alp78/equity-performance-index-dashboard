@@ -1,0 +1,9 @@
+frontend/
+ingestion/
+.git/
+*.md
+__pycache__/
+*.pyc
+backend/.ex/
+backend/service_account.json
+backend/.vscode/

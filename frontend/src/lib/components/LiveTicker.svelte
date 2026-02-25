@@ -1,46 +1,37 @@
-<!-- real-time prices via WebSocket with market open/closed status -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   LiveIndicators — Real-Time Price Ticker (WebSocket + HTTP Fallback)
+  ═══════════════════════════════════════════════════════════════════════════
+   Displays live instrument prices streamed via WebSocket (Binance BTC,
+   yfinance macro symbols).  Falls back to HTTP polling (/market-data)
+   every 60 s if WS fails.  Includes market open/closed/stale status
+   badges with colour-coded pulsing indicators.
+
+   When dynamicByIndex=true, the symbol set switches automatically to
+   match the current market index (e.g. NVDA/AAPL/MSFT for S&P 500).
+
+   Data source : WebSocket /ws  (primary, 10 s BTC / 30 s stocks)
+                 GET /market-data  (HTTP fallback, 60 s poll)
+   Placement   : bottom panel grid — "GLOBAL MACRO" instance
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
     import { onMount, onDestroy } from 'svelte';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { getWebSocketUrl, API_BASE_URL } from '$lib/config.js';
     import { marketIndex, currentCurrency, INDEX_CONFIG, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
+    import { MARKET_HOURS, SYMBOL_MARKET_MAP, SYMBOL_SETS, LEADER_TO_SIDEBAR } from '$lib/index-registry.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
     let quotes = $state({});
     let lastUpdateTime = {};
     let socket;
+    let destroyed = false;
     let currentIndex = $derived($marketIndex);
     let indexCurrency = $derived($currentCurrency);
-
-    // --- MARKET HOURS ---
-    // keyed by region; used to determine open/closed/live status
-
-    const MARKET_HOURS = {
-        US:     { tz: 'America/New_York',  open: { h: 9, m: 30 }, close: { h: 16, m: 0 },  weekdays: true },
-        EU:     { tz: 'Europe/Amsterdam',  open: { h: 9, m: 0 },  close: { h: 17, m: 30 }, weekdays: true },
-        UK:     { tz: 'Europe/London',     open: { h: 8, m: 0 },  close: { h: 16, m: 30 }, weekdays: true },
-        JP:     { tz: 'Asia/Tokyo',        open: { h: 9, m: 0 },  close: { h: 15, m: 0 },  weekdays: true },
-        CN:     { tz: 'Asia/Shanghai',     open: { h: 9, m: 30 }, close: { h: 15, m: 0 },  weekdays: true },
-        IN:     { tz: 'Asia/Kolkata',      open: { h: 9, m: 15 }, close: { h: 15, m: 30 }, weekdays: true },
-        CRYPTO: { tz: null },
-        FOREX:  { tz: 'America/New_York',  open: { h: 17, m: 0 }, close: { h: 17, m: 0 }, weekdays: true, sundayOpen: true },
-        COMMOD: { tz: 'America/New_York',  open: { h: 18, m: 0 }, close: { h: 17, m: 0 }, weekdays: true, sundayOpen: true },
-    };
-
-    // --- SYMBOL MAPPINGS ---
-
-    const SYMBOL_MARKET_MAP = {
-        'NVDA': 'US', 'AAPL': 'US', 'MSFT': 'US', 'AMZN': 'US',
-        'ASML': 'EU', 'SAP': 'EU', 'LVMH': 'EU',
-        'SHEL.L': 'UK', 'AZN.L': 'UK', 'HSBA.L': 'UK',
-        '7203.T': 'JP', '6758.T': 'JP', '9984.T': 'JP',
-        '600519.SS': 'CN', '000858.SZ': 'CN', '601318.SS': 'CN',
-        'RELIANCE.NS': 'IN', 'TCS.NS': 'IN', 'INFY.NS': 'IN',
-        'BINANCE:BTCUSDT': 'CRYPTO',
-        'FXCM:EUR/USD': 'FOREX',
-        'FXCM:XAU/USD': 'COMMOD',
-    };
 
     const SYMBOL_CURRENCY = {
         'BINANCE:BTCUSDT': '$',
@@ -48,25 +39,9 @@
         'FXCM:EUR/USD': '',
     };
 
-    // --- PER-INDEX LEADER STOCKS ---
-
-    const SYMBOL_SETS = {
-        sp500:     { title: 'MARKET LEADERS', subtitle: 'S&P 500',       symbols: ['NVDA', 'AAPL', 'MSFT'] },
-        stoxx50:   { title: 'MARKET LEADERS', subtitle: 'EURO STOXX 50', symbols: ['ASML', 'SAP', 'LVMH'] },
-        ftse100:   { title: 'MARKET LEADERS', subtitle: 'FTSE 100',      symbols: ['SHEL.L', 'AZN.L', 'HSBA.L'] },
-        nikkei225: { title: 'MARKET LEADERS', subtitle: 'Nikkei 225',    symbols: ['7203.T', '6758.T', '9984.T'] },
-        csi300:    { title: 'MARKET LEADERS', subtitle: 'CSI 300',       symbols: ['600519.SS', '000858.SZ', '601318.SS'] },
-        nifty50:   { title: 'MARKET LEADERS', subtitle: 'NIFTY 50',      symbols: ['RELIANCE.NS', 'TCS.NS', 'INFY.NS'] },
-    };
-
     let nameMap = $derived(
         Object.fromEntries(($summaryData.assets || []).map(a => [a.symbol, a.name || '']))
     );
-
-    // display symbol -> sidebar symbol (e.g. 'ASML' -> 'ASML.AS')
-    const LEADER_TO_SIDEBAR = {
-        'ASML': 'ASML.AS', 'SAP': 'SAP.DE', 'LVMH': 'MC.PA',
-    };
 
     function selectLeaderSymbol(symbol) {
         if (!dynamicByIndex) return;
@@ -130,17 +105,17 @@
 
         if (marketKey === 'CRYPTO') {
             const fresh = lastUpdateTime[symbol] && (Date.now() - lastUpdateTime[symbol] < 30000);
-            if (fresh) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
-            return { label: 'STALE', color: 'text-yellow-500', dot: 'bg-yellow-500', pulse: false };
+            if (fresh) return { label: 'LIVE', color: 'text-up', dot: 'bg-up', pulse: true };
+            return { label: 'STALE', color: 'text-warn', dot: 'bg-warn', pulse: false };
         }
 
         const marketOpen = isMarketOpen(symbol);
         const lastUpdate = lastUpdateTime[symbol];
         const fresh = lastUpdate && (Date.now() - lastUpdate < 120000);
 
-        if (marketOpen && fresh) return { label: 'LIVE', color: 'text-green-500', dot: 'bg-green-500', pulse: true };
-        if (marketOpen) return { label: 'DELAYED', color: 'text-yellow-500', dot: 'bg-yellow-500', pulse: false };
-        return { label: 'CLOSED', color: 'text-red-500', dot: 'bg-red-500', pulse: false };
+        if (marketOpen && fresh) return { label: 'LIVE', color: 'text-up', dot: 'bg-up', pulse: true };
+        if (marketOpen) return { label: 'DELAYED', color: 'text-warn', dot: 'bg-warn', pulse: false };
+        return { label: 'CLOSED', color: 'text-down', dot: 'bg-down', pulse: false };
     }
 
     // --- WEBSOCKET + HTTP FALLBACK ---
@@ -154,28 +129,34 @@
         }
         allSyms.forEach(s => { quotes[s] = { price: 0, pct: 0, diff: 0, live: false }; });
 
+        let wsReconnectAttempts = 0;
+
         function connectWs() {
+            if (destroyed) return;
             socket = new WebSocket(wsUrl);
-            socket.onopen = () => { console.log("WS connected"); };
+            socket.onopen = () => { wsReconnectAttempts = 0; };
             socket.onmessage = (event) => {
                 try {
-                    const update = JSON.parse(event.data);
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'ping') return; // keepalive
+                    const updates = Array.isArray(msg) ? msg : [msg];
                     const now = Date.now();
-                    allSyms.forEach(s => {
-                        if (s === update.symbol || clean(s) === update.symbol) {
-                            quotes[s] = { price: update.price, pct: update.pct, diff: update.diff, live: update.live };
-                            lastUpdateTime[s] = now;
-                        }
-                    });
+                    for (const update of updates) {
+                        allSyms.forEach(s => {
+                            if (s === update.symbol || clean(s) === update.symbol) {
+                                quotes[s] = { price: update.price, pct: update.pct, diff: update.diff, live: update.live };
+                                lastUpdateTime[s] = now;
+                            }
+                        });
+                    }
                 } catch (e) { console.error("WS Error", e); }
             };
             socket.onclose = () => {
-                setTimeout(connectWs, 3000);
+                if (destroyed) return;
+                const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts++), 30000);
+                setTimeout(connectWs, delay);
             };
-            socket.onerror = (e) => {
-                console.error("WS Error:", e);
-                socket.close();
-            };
+            socket.onerror = () => { socket.close(); };
         }
 
         connectWs();
@@ -207,18 +188,18 @@
         return () => clearInterval(pollInterval);
     });
 
-    onDestroy(() => socket?.close());
+    onDestroy(() => {
+        destroyed = true;
+        socket?.close();
+        lastUpdateTime = {};
+    });
 </script>
 
-<div class="flex flex-col h-full bg-white/5 rounded-3xl p-5 border border-white/5 shadow-2xl backdrop-blur-md overflow-x-hidden">
+<Card fill class="live-ticker-root overflow-x-hidden">
 
     <!-- header -->
-    <div class="flex flex-col items-start mb-4 border-b border-white/5 pb-3 flex-shrink-0">
-        <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">{resolvedTitle}</h3>
-        <span class="text-[11px] font-black uppercase tracking-wider mt-1
-            {hasRealSubtitle ? 'text-bloom-accent' : 'text-transparent select-none'}"
-        >{hasRealSubtitle ? resolvedSubtitle : 'PLACEHOLDER'}</span>
-    </div>
+    <SectionHeader title={resolvedTitle} subtitle={hasRealSubtitle ? resolvedSubtitle : ''} border />
+
 
     <!-- symbol cards -->
     <div class="flex-1 flex flex-col overflow-y-auto overflow-x-hidden justify-around min-h-0">
@@ -228,27 +209,28 @@
             {@const hasData = data.price > 0}
             {@const ccy = getCurrency(symbol)}
 
-            <div class="flex items-center justify-between group py-1 flex-shrink-0">
+            <div class="ticker-row flex items-center justify-between group py-1 flex-shrink-0">
                 <div class="flex flex-col">
                     {#if dynamicByIndex}
                         <button
                             onclick={() => selectLeaderSymbol(symbol)}
                             title="{symbol}{getLeaderName(symbol) ? ' — ' + getLeaderName(symbol) : ''}"
-                            class="text-sm font-black text-white/80 uppercase tracking-normal text-left hover:text-bloom-accent transition-colors cursor-pointer"
+                            aria-label="Select {clean(symbol)}{getLeaderName(symbol) ? ' - ' + getLeaderName(symbol) : ''}"
+                            class="text-[14px] font-semibold text-text uppercase tracking-tighter text-left hover:text-text transition-colors cursor-pointer"
                         >{clean(symbol)}</button>
                     {:else}
-                        <span class="text-sm font-black text-white/80 uppercase tracking-normal">{clean(symbol)}</span>
+                        <span class="text-[14px] font-semibold text-text uppercase tracking-tighter">{clean(symbol)}</span>
                     {/if}
                     <div class="flex items-center gap-1.5 mt-0.5">
                         <div class="w-1.5 h-1.5 rounded-full {status.dot} {status.pulse ? 'animate-pulse' : ''}"></div>
-                        <span class="text-[9px] font-bold {status.color} uppercase tracking-tighter">{status.label}</span>
+                        <span class="text-[10px] font-bold {status.color} uppercase tracking-tighter">{status.label}</span>
                     </div>
                 </div>
 
-                <div class="flex flex-col items-end">
-                    <span class="text-base font-mono font-black text-white/85 leading-none mb-1 tabular-nums">
+                <div class="ticker-price-col flex flex-col items-end">
+                    <span class="text-[14px] font-mono font-bold text-text-secondary leading-none mb-1 tabular-nums">
                         {#if hasData}
-                            {ccy}{data.price.toLocaleString(undefined, {
+                            <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
                                 minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
                                 maximumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
                             })}
@@ -257,20 +239,29 @@
                         {/if}
                     </span>
 
-                    <div class="flex items-center gap-1.5 font-bold {(data.pct ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}">
+                    <div class="flex items-center gap-1.5 font-bold {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
                         {#if hasData}
-                            <span class="text-sm tabular-nums">
+                            <span class="text-[12px] font-mono tabular-nums">
                                 {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
                             </span>
-                            <span class="text-[11px] opacity-70 tabular-nums font-black">
+                            <span class="text-[11px] opacity-70 font-mono tabular-nums font-bold">
                                 ({(data.diff ?? 0) >= 0 ? '+' : ''}{(data.diff ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
                             </span>
                         {:else}
-                            <span class="text-[10px] opacity-20">waiting...</span>
+                            <span class="text-[11px] opacity-20">waiting...</span>
                         {/if}
                     </div>
                 </div>
             </div>
         {/each}
     </div>
-</div>
+</Card>
+
+<style>
+    :global(.live-ticker-root) { container-type: inline-size; }
+
+    @container (max-width: 280px) {
+        .ticker-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+        .ticker-row .ticker-price-col { align-items: flex-start; }
+    }
+</style>

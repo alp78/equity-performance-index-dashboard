@@ -1,4 +1,13 @@
--- computes total turnover (close * volume) per industry within a sector over all available data
+-- =========================================================================
+--  Industry Turnover: Trading Volume by Industry (Full History)
+-- =========================================================================
+--  Same as industry_turnover_period.sql but over all available data.
+--
+--  Placeholders : {table}
+--  Params       : ? — sector name
+--  Called by    : GET /industry-turnover
+-- =========================================================================
+
 SELECT industry,
     SUM(close * volume) as turnover,
     COUNT(DISTINCT symbol) as stock_count

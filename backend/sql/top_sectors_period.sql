@@ -1,23 +1,28 @@
--- ranks sectors by average stock return across all indices for a recent lookback period
+-- =========================================================================
+--  Sector Rankings: Best/Worst Sectors Globally (Lookback Period)
+-- =========================================================================
+--  Ranks the 11 GICS sectors by average stock return across ALL loaded
+--  indices combined.  Used by the SectorRankings component in the sector
+--  analysis view to show which sectors are leading or lagging worldwide.
+--
+--  The {union} placeholder is dynamically replaced with a UNION ALL of
+--  every loaded per-index table (prices_sp500 UNION ALL prices_stoxx50 …).
+--
+--  Placeholders : {union}, {days}
+--  Called by    : GET /top-sectors
+-- =========================================================================
+
 WITH AllData AS ({union}),
 MaxDate AS (SELECT MAX(trade_date) as md FROM AllData),
-Filtered AS (
-    SELECT a.symbol, a.sector, a.close, a.trade_date
+PerSymbol AS (
+    SELECT a.symbol, a.sector,
+        ((ARG_MAX(a.close, a.trade_date) - ARG_MIN(a.close, a.trade_date)) / NULLIF(ARG_MIN(a.close, a.trade_date), 0)) * 100 as return_pct
     FROM AllData a, MaxDate m
     WHERE a.trade_date >= m.md - INTERVAL '{days} days'
       AND a.sector IS NOT NULL AND a.sector NOT IN ('N/A', '0', '')
-),
-PerSymbol AS (
-    SELECT symbol, sector,
-        FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-        LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
-        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
-    FROM Filtered
+    GROUP BY a.symbol, a.sector
 )
-SELECT sector,
-    AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
-    COUNT(DISTINCT symbol) as stock_count
-FROM PerSymbol WHERE rn = 1
-GROUP BY sector HAVING COUNT(DISTINCT symbol) >= 1
+SELECT sector, AVG(return_pct) as value, COUNT(*) as stock_count
+FROM PerSymbol
+GROUP BY sector HAVING COUNT(*) >= 1
 ORDER BY value DESC

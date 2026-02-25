@@ -1,17 +1,21 @@
--- ranks industries by average stock return across all indices over all available data
+-- =========================================================================
+--  Industry Rankings: Best/Worst Industries Globally (Full History)
+-- =========================================================================
+--  Same as top_industries_period.sql but over all available data.
+--
+--  Placeholders : {union}
+--  Called by    : GET /top-industries
+-- =========================================================================
+
 WITH AllData AS ({union}),
 PerSymbol AS (
     SELECT symbol, industry,
-        FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC) as first_val,
-        LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) as last_val,
-        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) as rn
+        ((ARG_MAX(close, trade_date) - ARG_MIN(close, trade_date)) / NULLIF(ARG_MIN(close, trade_date), 0)) * 100 as return_pct
     FROM AllData
     WHERE industry IS NOT NULL AND industry NOT IN ('N/A', '0', '')
+    GROUP BY symbol, industry
 )
-SELECT industry,
-    AVG(((last_val - first_val) / NULLIF(first_val, 0)) * 100) as value,
-    COUNT(DISTINCT symbol) as stock_count
-FROM PerSymbol WHERE rn = 1
-GROUP BY industry HAVING COUNT(DISTINCT symbol) >= 1
+SELECT industry, AVG(return_pct) as value, COUNT(*) as stock_count
+FROM PerSymbol
+GROUP BY industry HAVING COUNT(*) >= 1
 ORDER BY value DESC

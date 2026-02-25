@@ -1,0 +1,74 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Light Theme — Clean & Bright
+   ═══════════════════════════════════════════════════════════════════════
+   Professional light palette for daytime use on data-heavy financial
+   screens. High contrast text on bright surfaces with saturated
+   financial semantics.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* ── Surface / Background Layers ── */
+  --surface-0: #F3F4F6;   /* main bg — light gray */
+  --surface-1: #FFFFFF;   /* card bg — white */
+  --surface-2: #E8EAF0;   /* recessed panels */
+  --surface-3: #DDE0E6;   /* deeper insets */
+  --surface-overlay: #FFFFFF;
+
+  /* ── Text Hierarchy ── */
+  --text-primary:   #111318;  /* near-black */
+  --text-secondary: #333842;  /* dark gray */
+  --text-muted:     #5C6370;  /* medium gray */
+  --text-disabled:  #8B919A;  /* faded gray */
+  --text-inverse:   #F3F4F6;
+
+  /* ── Borders ── */
+  --border-subtle:  #E2E4EA;  /* soft */
+  --border-default: #CDD1D8;  /* medium */
+  --border-strong:  #A8ADB6;  /* strong */
+
+  /* ── Financial Semantics ── */
+  --color-positive:    #15803D;
+  --color-positive-bg: rgba(21,128,61,0.10);
+  --color-negative:    #C41C1C;
+  --color-negative-bg: rgba(196,28,28,0.10);
+  --color-warning:     #A85E00;
+  --color-warning-bg:  rgba(168,94,0,0.10);
+  --color-neutral:     #333842;
+  --color-info:        #1D5BD6;
+  --color-info-bg:     rgba(29,91,214,0.10);
+
+  /* ── Accent ── */
+  --accent-primary:   #1D5BD6;
+  --accent-secondary: #2E6CE8;
+
+  /* ── Interactive Overlays ── */
+  --hover-overlay:    rgba(17, 19, 24, 0.05);
+  --active-overlay:   rgba(17, 19, 24, 0.10);
+  --selected-overlay: rgba(29, 91, 214, 0.10);
+
+  /* ── Shadows ── */
+  --shadow-sm: 0 1px 3px rgba(17,19,24,0.08), 0 1px 2px rgba(17,19,24,0.05);
+  --shadow-md: 0 4px 12px rgba(17,19,24,0.10);
+  --shadow-lg: 0 12px 32px rgba(17,19,24,0.14);
+  --shadow-tooltip: 0 4px 16px rgba(17,19,24,0.12);
+
+  /* ── Scrollbar ── */
+  --scrollbar-thumb:       rgba(17, 19, 24, 0.18);
+  --scrollbar-thumb-hover: rgba(17, 19, 24, 0.28);
+
+  /* ── Skeleton Loading ── */
+  --skeleton-base:  #E2E4EA;
+  --skeleton-shine: #F0F1F4;
+
+  /* ── Chart Palette (saturated for light backgrounds) ── */
+  --chart-1: #1D5BD6;  /* Blue */
+  --chart-2: #D64A0E;  /* Orange */
+  --chart-3: #C2185B;  /* Pink */
+  --chart-4: #6D28D9;  /* Violet */
+  --chart-5: #0D7D76;  /* Teal */
+  --chart-6: #A87400;  /* Yellow */
+  --chart-7: #C41C1C;  /* Coral */
+  --chart-8: #527A0E;  /* Lime */
+}

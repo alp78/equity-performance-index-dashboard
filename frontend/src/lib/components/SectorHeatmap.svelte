@@ -1,7 +1,25 @@
-<!-- cross-index heatmap grid showing sector returns; click row to select sector -->
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+   SectorHeatmap — Cross-Index Sector Return Grid
+  ═══════════════════════════════════════════════════════════════════════════
+   Colour-coded grid of sector returns across selected indices.  Each
+   cell is green (positive) or red (negative) with intensity capped at
+   the 80th percentile to prevent outlier washout.  Clicking a row sets
+   selectedSector (orange highlight) which drives SectorTopStocks and the
+   comparison chart.  Supports industry filtering (weighted by stock count)
+   and precomputed allSectorSeries / industrySeriesCache for fast path.
+
+   Data source : GET /sector-comparison/table?indices=...&period=...
+                 allSectorSeries prop (preloaded /sector-comparison/all-series)
+   Placement   : sidebar "Sector Rotation" → cross-index mode, right col
+  ═══════════════════════════════════════════════════════════════════════════
+-->
 
 <script>
-    import { sectorSelectedIndices, selectedSector } from '$lib/stores.js';
+    import { sectorSelectedIndices, selectedSector, INDEX_CONFIG } from '$lib/stores.js';
+    import { INDEX_COLORS, getSectorColor } from '$lib/theme.js';
+    import Card from '$lib/components/ui/Card.svelte';
+    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
     let {
         currentPeriod = '1y',
@@ -15,41 +33,7 @@
     let indices   = $derived($sectorSelectedIndices);
     let activeSec = $derived($selectedSector);
 
-    // --- INDEX DISPLAY CONFIG ---
-
-    const INDEX_COLORS = {
-        sp500:     '#e2e8f0',
-        stoxx50:   '#2563eb',
-        ftse100:   '#ec4899',
-        nikkei225: '#f59e0b',
-        csi300:    '#ef4444',
-        nifty50:   '#22c55e',
-    };
-    const INDEX_FLAGS = {
-        sp500:     'fi fi-us',
-        stoxx50:   'fi fi-eu',
-        ftse100:   'fi fi-gb',
-        nikkei225: 'fi fi-jp',
-        csi300:    'fi fi-cn',
-        nifty50:   'fi fi-in',
-    };
-    // abbreviated labels for narrow column headers
-    const INDEX_ABBR = {
-        sp500:     'S&P',
-        stoxx50:   'STX',
-        ftse100:   'FTSE',
-        nikkei225: 'NIK',
-        csi300:    'CSI',
-        nifty50:   'NFT',
-    };
-    const INDEX_FULL = {
-        sp500:     'S&P 500',
-        stoxx50:   'STOXX 50',
-        ftse100:   'FTSE 100',
-        nikkei225: 'Nikkei 225',
-        csi300:    'CSI 300',
-        nifty50:   'Nifty 50',
-    };
+    // Use INDEX_CONFIG[key].flag / .abbr / .label from stores.js
 
     // --- PERIOD HELPERS ---
 
@@ -212,115 +196,93 @@
         return Math.max(Math.abs(p80), Math.abs(p20), 5);
     });
 
-    // opaque green/red mixed onto dark base — prevents parent color bleed
+    // grayscale intensity — brightness scales with magnitude
     function cellBg(val) {
-        if (val == null) return 'background:#1a1a20';
+        if (val == null) return 'background:var(--surface-1)';
         const s = scale();
         const t = Math.min(Math.abs(val) / s, 1);
-        const alpha = 0.07 + t * 0.52;
-        const bg = 14;
-        if (val >= 0) {
-            const r = Math.round(bg + alpha * (34  - bg));
-            const g = Math.round(bg + alpha * (197 - bg));
-            const b = Math.round(bg + alpha * (94  - bg));
-            return `background:rgb(${r},${g},${b})`;
-        } else {
-            const r = Math.round(bg + alpha * (239 - bg));
-            const g = Math.round(bg + alpha * (68  - bg));
-            const b = Math.round(bg + alpha * (68  - bg));
-            return `background:rgb(${r},${g},${b})`;
-        }
+        const pct = Math.round(t * 18);
+        return `background:color-mix(in srgb, var(--text-primary) ${pct}%, var(--surface-1))`;
     }
-    // white text, opacity scales with magnitude
     function cellTextColor(val) {
-        if (val == null) return 'color:rgba(255,255,255,0.2)';
+        if (val == null) return 'color:var(--text-disabled)';
         const s = scale();
         const t = Math.min(Math.abs(val) / s, 1);
         const a = (0.6 + t * 0.4).toFixed(2);
-        return `color:rgba(255,255,255,${a})`;
+        return `color:var(--text-primary); opacity:${a}`;
     }
     function avgTextColor(val) {
-        if (val == null) return 'color:rgba(255,255,255,0.3)';
-        return val >= 0 ? 'color:rgba(34,197,94,0.95)' : 'color:rgba(239,68,68,0.95)';
+        if (val == null) return 'color:var(--text-disabled)';
+        return val >= 0 ? 'color:var(--color-positive)' : 'color:var(--color-negative)';
     }
 </script>
 
-<div class="heatmap-root h-full w-full flex flex-col bg-white/[0.03] rounded-2xl border border-white/5 overflow-hidden min-h-0 max-lg:overflow-x-auto">
+<Card fill padding={false} class="heatmap-root min-h-0 max-lg:overflow-x-auto">
 
     <!-- header -->
-    <div class="flex items-start justify-between px-5 pt-5 pb-3 flex-shrink-0 border-b border-white/5">
-        <div class="flex flex-col items-start">
-            <div class="flex items-center gap-2">
-                <h3 class="text-[10px] font-black text-white/40 uppercase tracking-[0.3em]">Sector Heatmap</h3>
-                <span class="text-[9px] font-black text-orange-400 uppercase tracking-wider">{periodLabel}</span>
-            </div>
-            <div class="flex items-center gap-1.5 mt-1">
-                {#if activeSec}
-                    <span class="text-[11px] font-black text-bloom-accent uppercase tracking-wider">{activeSec}</span>
-                    <span class="text-[11px] text-white/15">·</span>
+    <div class="px-5 pt-5 pb-3 flex-shrink-0">
+        <SectionHeader title="Sector Heatmap" subtitle="Normalized % Change" border>
+            {#snippet action()}
+                <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
+                {#if !allSectorSeries}
+                    <div class="w-3 h-3 border border-border border-t-text-muted rounded-full animate-spin"></div>
                 {/if}
-                <span class="text-[11px] font-bold text-white/20 uppercase tracking-wider">Normalized % Change</span>
-            </div>
-        </div>
-        {#if !allSectorSeries}
-            <div class="w-3 h-3 border border-white/10 border-t-white/40 rounded-full animate-spin mt-1"></div>
-        {/if}
+            {/snippet}
+        </SectionHeader>
     </div>
 
     <!-- column headers -->
-    <div class="flex items-center col-hdr-row px-3 border-b border-white/[0.03] flex-shrink-0 heatmap-min-w">
+    <div class="flex items-center col-hdr-row px-3 border-b border-border-subtle flex-shrink-0 heatmap-min-w">
         <div style="width:{sectorW}" class="pl-3 text-left flex-shrink-0">
-            <span class="col-hdr-text font-black text-white/15 uppercase tracking-widest">Sector</span>
+            <span class="col-hdr-text font-semibold text-text-muted uppercase tracking-widest">Sector</span>
         </div>
         <div style="width:{avgW}" class="text-right pr-2 flex-shrink-0">
-            <span class="col-hdr-text font-black text-white/15 uppercase tracking-widest">Avg</span>
+            <span class="col-hdr-text font-semibold text-text-muted uppercase tracking-widest">Avg</span>
         </div>
         {#each indices as idx}
-            <div style="width:{idxW}" class="text-center flex-shrink-0" title="{INDEX_FULL[idx]||idx}">
+            <div style="width:{idxW}" class="text-center flex-shrink-0" title="{INDEX_CONFIG[idx]?.label||idx}">
                 <div class="flex items-center justify-center gap-1.5">
-                    <span class="{INDEX_FLAGS[idx] || ''} fis rounded-sm flex-shrink-0 col-flag"></span>
-                    <span class="col-hdr-text font-black uppercase tracking-wider truncate"
-                          style="color:{INDEX_COLORS[idx]||'#8b5cf6'}">{INDEX_ABBR[idx]||idx}</span>
+                    <span class="{INDEX_CONFIG[idx]?.flag || ''} fis rounded-sm flex-shrink-0 col-flag"></span>
+                    <span class="col-hdr-text font-semibold uppercase tracking-wider truncate"
+                          style="color:{INDEX_COLORS[idx]||'#8b5cf6'}">{INDEX_CONFIG[idx]?.abbr||idx}</span>
                 </div>
             </div>
         {/each}
     </div>
 
     <!-- data rows -->
-    <div class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden heatmap-min-w">
+    <div class="flex-1 min-h-0 overflow-y-auto overflow-x-auto heatmap-min-w">
         {#if sorted.length === 0 && !allSectorSeries}
             <div class="flex items-center justify-center h-full">
-                <div class="w-4 h-4 border border-white/10 border-t-white/40 rounded-full animate-spin"></div>
+                <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin"></div>
             </div>
         {/if}
 
-        {#each sorted as row (row.sector)}
+        {#each sorted as row, rowIdx (row.sector)}
             {@const isActive = row.sector === activeSec}
             <!-- inset box-shadow acts as bg colour without creating a stacking context -->
-            <div class="row-wrap relative border-b border-white/[0.04] transition-all duration-150">
+            <div class="row-wrap relative border-b border-border-subtle transition-all duration-150 {rowIdx % 2 === 1 ? 'bg-surface-1' : ''}">
 
                 {#if isActive}
-                    <div class="absolute left-0 top-0 bottom-0 w-[3px] pointer-events-none
-                        bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
+                    <div class="absolute left-0 top-0 bottom-0 w-[3px] pointer-events-none bg-selected-border"></div>
                 {/if}
 
-                <button
-                    class="data-row w-full flex items-center
-                        {isActive ? '' : 'hover:bg-white/[0.02]'}"
-                    onclick={() => selectedSector.set(row.sector)}
+                <div
+                    class="data-row w-full flex items-center"
                 >
-                    <!-- sector name — orange highlight only on active row -->
-                    <div style="width:{sectorW}; {isActive ? 'background:rgba(249,115,22,0.12)' : ''}"
-                         class="pl-4 pr-2 text-left flex-shrink-0 h-full flex items-center">
-                        <span class="row-sec font-bold truncate block
-                            {isActive ? 'text-white/90' : 'text-white/50'}">
+                    <!-- sector name — highlight only on active row -->
+                    <button style="width:{sectorW}"
+                         class="pl-4 pr-2 text-left flex-shrink-0 h-full flex items-center cursor-pointer hover:bg-bg-hover transition-colors {isActive ? 'bg-bg-active' : ''}"
+                         onclick={() => selectedSector.set(row.sector)}>
+                        <span class="row-sec font-bold truncate block"
+                              style="color:{isActive ? getSectorColor(row.sector) : 'var(--text-secondary)'}">
                             {row.sector}
                         </span>
-                    </div>
+                    </button>
 
                     <!-- average return -->
                     <div style="width:{avgW}" class="pr-2 text-right flex-shrink-0">
-                        <span class="row-avg font-black font-mono tabular-nums"
+                        <span class="row-avg font-semibold font-mono tabular-nums"
                               style="{avgTextColor(row.avg_return_pct)}">
                             {fmt(row.avg_return_pct)}
                         </span>
@@ -329,25 +291,25 @@
                     <!-- per-index cells -->
                     {#each indices as idx}
                         {@const val = row.indices?.[idx]?.return_pct ?? null}
-                        <div style="width:{idxW}" class="px-1 flex-shrink-0" title="{INDEX_FULL[idx]||idx}: {fmt(val)}">
+                        <div style="width:{idxW}" class="px-1 flex-shrink-0" title="{INDEX_CONFIG[idx]?.label||idx}: {fmt(val)}">
                             <div class="cell-inner rounded flex items-center justify-center transition-colors duration-300"
                                  style="{cellBg(val)}">
-                                <span class="cell-text font-mono tabular-nums font-bold"
+                                <span class="cell-text font-mono tabular-nums font-medium"
                                       style="{cellTextColor(val)}">
                                     {useShort ? fmtShort(val) : fmt(val)}
                                 </span>
                             </div>
                         </div>
                     {/each}
-                </button>
+                </div>
             </div>
         {/each}
     </div>
-</div>
+</Card>
 
 <style>
     /* container queries drive responsive sizing via cqh units */
-    .heatmap-root { container-type: size; }
+    :global(.heatmap-root) { container-type: size; }
 
     .col-hdr-row  { padding: clamp(2px, 0.8cqh, 6px) 0; }
     .col-hdr-text { font-size: clamp(11px, 1.5cqh, 13px); }
@@ -372,8 +334,16 @@
                    min-height: 16px;
                    max-height: 36px; }
 
-    /* On mobile, ensure table has minimum width for readability with horizontal scroll */
+    /* On mobile/narrow, ensure table has minimum width for readability with horizontal scroll */
     @media (max-width: 1024px) {
         .heatmap-min-w { min-width: 500px; }
+    }
+
+    /* Container width query: shrink text for narrow inline widths */
+    @container (max-width: 450px) {
+        .row-sec   { font-size: 11px; }
+        .row-avg   { font-size: 11px; }
+        .cell-text { font-size: 10px; }
+        .col-hdr-text { font-size: 10px; }
     }
 </style>

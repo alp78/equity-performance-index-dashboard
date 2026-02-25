@@ -1,4 +1,13 @@
--- returns the latest price summary with daily change percent for all index symbols
+-- =========================================================================
+--  Macro Overview: Index Summary Table
+-- =========================================================================
+--  Returns the latest price snapshot for all six benchmark indices with
+--  daily change %.  Powers the IndexPerformanceTable component on the
+--  macro overview page.
+--
+--  Called by : GET /index-prices/summary
+-- =========================================================================
+
 SELECT symbol, name, currency, exchange, trade_date,
     CAST(open AS FLOAT) as open,
     CAST(close AS FLOAT) as last_price,

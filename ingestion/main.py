@@ -1,12 +1,38 @@
 """
-Cloud Function — Daily Price Sync (Multi-Index + Index Prices)
-==============================================================
-Resilient sync with per-symbol gap detection and
-market-specific holiday/calendar awareness.
+═══════════════════════════════════════════════════════════════════════════
+ ingestion/main.py — Daily Price Sync (Cloud Function)
+═══════════════════════════════════════════════════════════════════════════
+ Google Cloud Function triggered daily by Cloud Scheduler that syncs
+ stock and index-level OHLCV prices from Yahoo Finance into BigQuery.
+ Uses per-symbol gap detection with exchange-calendar awareness to fill
+ only missing trading days, making each run idempotent and incremental.
 
-Syncs two types of data:
-  1. Stock prices per index (stoxx50_prices, sp500_prices, etc.)
-  2. Index-level prices (index_prices table — ^GSPC, ^STOXX50E, etc.)
+ Pipeline:
+   1. GAP DETECTION  — query BigQuery for each symbol's last date +
+                       interior gaps within a 16-day lookback window
+   2. DOWNLOAD       — bulk yfinance download for gap symbols only, with
+                       batch fallback if bulk coverage < 30%
+   3. LOAD           — write NDJSON to GCS (archive) + append to BigQuery
+   4. NOTIFY         — POST to backend /api/admin/refresh/{index} so the
+                       in-memory DuckDB reloads the updated table
+
+ Covers 6 stock indices (S&P 500, STOXX 50, FTSE 100, Nikkei 225,
+ CSI 300, Nifty 50) plus 6 index-level tickers (^GSPC, ^STOXX50E, etc.).
+
+ Trigger     : Cloud Scheduler → HTTP POST (body: {"index": "all"|key})
+ Destination : BigQuery {PROJECT_ID}.{DATASET_ID}.{table_id}
+ Archive     : GCS gs://{BUCKET_NAME}/{index}/{YYYY/MM/DD}/prices.json
+
+ Sections:
+   1. CONFIGURATION        — index configs, tickers, constants
+   2. CALENDAR HELPERS      — trading day validation
+   3. GAP DETECTION         — per-symbol missing-date scan
+   4. DOWNLOAD & TRANSFORM  — yfinance bulk/batch + record extraction
+   5. LOAD TO GCS & BQ      — archive + BigQuery append
+   6. STOCK SYNC LOGIC      — orchestrate steps 1–3 per stock index
+   7. INDEX PRICES SYNC     — same pipeline for index-level tickers
+   8. ENTRY POINT           — Cloud Function handler + backend notify
+═══════════════════════════════════════════════════════════════════════════
 """
 
 import functions_framework
@@ -29,7 +55,14 @@ PROJECT_ID  = getenv("PROJECT_ID")
 DATASET_ID  = getenv("DATASET_ID")
 BUCKET_NAME = getenv("BUCKET_NAME")
 
-# --- Stock index configs (per-stock prices) ---
+# ═══════════════════════════════════════════════════════════════════════════
+#  1. CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════
+#  Per-index table mappings, index-level tickers, exchange suffixes, and
+#  retry constants.  sync_after_utc sets the earliest UTC hour at which
+#  the sync assumes that day's market close has occurred.
+
+# ─── Stock Index Configs (per-stock prices) ───
 INDICES = {
     "stoxx50": {
         "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
@@ -63,7 +96,7 @@ INDICES = {
     },
 }
 
-# --- Index-level price tickers (the indices themselves) ---
+# ─── Index-Level Price Tickers ───
 INDEX_PRICE_TABLE = getenv("INDEX_PRICE_TABLE_ID", "index_prices")
 
 INDEX_TICKERS = {
@@ -95,9 +128,11 @@ def to_yf_ticker(db_ticker):
 def get_full_table_ref(short_table_id):
     return f"{PROJECT_ID}.{DATASET_ID}.{short_table_id}"
 
-# ============================================================================
-# CALENDAR HELPERS
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  2. CALENDAR HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
+#  Uses the exchange_calendars library to determine valid trading sessions.
+#  Weekends and exchange-specific holidays are excluded automatically.
 
 def get_expected_last_trading_day(cal, d):
     """Most recent valid trading session on or before date d."""
@@ -115,9 +150,12 @@ def get_valid_trading_days(cal, start_date, end_date):
         d += timedelta(days=1)
     return days
 
-# ============================================================================
-# STEP 1 — PER-SYMBOL GAP DETECTION (stocks)
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  3. GAP DETECTION — Per-Symbol Missing-Date Scan (Stocks)
+# ═══════════════════════════════════════════════════════════════════════════
+#  Queries BigQuery for every symbol's last known date and scans the most
+#  recent 16 trading days for interior gaps (e.g. a holiday that was later
+#  corrected).  Returns the set of symbols + dates that need downloading.
 
 def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
     meta_query = f"""
@@ -182,9 +220,12 @@ def get_db_state_detailed(bq_client, table_ref, effective_today, cal):
 
     return tickers, global_last_date, name_map, sector_map, industry_map, symbol_last_dates, symbol_missing_dates
 
-# ============================================================================
-# STEP 2 — DOWNLOAD & TRANSFORM (stocks)
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  4. DOWNLOAD & TRANSFORM — yfinance Bulk/Batch + Record Extraction
+# ═══════════════════════════════════════════════════════════════════════════
+#  Downloads OHLCV data via yfinance.  Tries a single bulk call first; if
+#  coverage is below 30% (common with large ticker lists), falls back to
+#  batches of 30.  Also backfills missing sector/industry metadata.
 
 def download_and_transform(tickers, name_map, sector_map, industry_map,
                            start_date, end_date, symbol_last_dates):
@@ -229,6 +270,7 @@ def download_and_transform(tickers, name_map, sector_map, industry_map,
     return _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, symbol_last_dates)
 
 
+# ─── Bulk Download with Retry ───
 def _try_download(yf_tickers, start_str, end_str):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -247,6 +289,7 @@ def _try_download(yf_tickers, start_str, end_str):
     return None
 
 
+# ─── Batch Fallback ───
 def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
     all_frames = []
     for i in range(0, len(yf_tickers), batch_size):
@@ -277,6 +320,7 @@ def _batch_download(yf_tickers, start_str, end_str, batch_size=30):
         return all_frames[0] if all_frames else None
 
 
+# ─── Record Extraction ───
 def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, symbol_last_dates):
     records = []
     failed_tickers = []
@@ -333,9 +377,11 @@ def _extract_records(data, tickers, yf_map, name_map, sector_map, industry_map, 
     logger.info(f"  Result: {len(records)} records for {len(updated_symbols)} symbols")
     return records
 
-# ============================================================================
-# STEP 3 — LOAD TO GCS & BIGQUERY
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  5. LOAD TO GCS & BIGQUERY
+# ═══════════════════════════════════════════════════════════════════════════
+#  Writes records as JSON to GCS (date-partitioned archive) then appends
+#  NDJSON to the BigQuery table via a load job.
 
 def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix, effective_today):
     bucket = storage_client.bucket(BUCKET_NAME)
@@ -351,9 +397,12 @@ def load_to_gcs_and_bq(bq_client, storage_client, records, table_ref, gcs_prefix
     bq_client.load_table_from_file(StringIO(ndjson), table_ref, job_config=job_config).result()
     logger.info(f"  BigQuery: {len(records)} records → {table_ref}")
 
-# ============================================================================
-# SYNC LOGIC — Stock prices
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  6. STOCK SYNC LOGIC
+# ═══════════════════════════════════════════════════════════════════════════
+#  Orchestrates steps 1–3 for a single stock index: detect gaps, download
+#  only gap symbols, load to BQ.  Adjusts the "effective today" based on
+#  sync_after_utc so pre-close runs target the previous trading day.
 
 def sync_index(bq_client, storage_client, index_key, config, now_utc):
     table_ref = get_full_table_ref(config["table_id"])
@@ -441,9 +490,12 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
         return 0, f"Load error: {e}"
 
 
-# ============================================================================
-# INDEX PRICES SYNC — Per-symbol gap detection for index-level prices
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  7. INDEX PRICES SYNC
+# ═══════════════════════════════════════════════════════════════════════════
+#  Same gap-detection pipeline for the 6 index-level tickers (^GSPC, etc.).
+#  Each ticker uses its own exchange calendar for accurate gap detection.
+#  Falls back to individual downloads if bulk yfinance call fails.
 
 def _get_index_prices_state(bq_client, table_ref, now_utc):
     """
@@ -643,9 +695,12 @@ def sync_index_prices(bq_client, storage_client, now_utc):
         return 0, f"Load error: {e}"
 
 
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
+# ═══════════════════════════════════════════════════════════════════════════
+#  8. ENTRY POINT — Cloud Function Handler
+# ═══════════════════════════════════════════════════════════════════════════
+#  HTTP handler invoked by Cloud Scheduler.  Accepts {"index": "all"|key}
+#  to target a specific index or all.  After syncing, notifies the backend
+#  via POST /api/admin/refresh/{index} so DuckDB reloads the updated table.
 
 @functions_framework.http
 def sync_stocks(request):

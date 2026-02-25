@@ -1,0 +1,12 @@
+.ex/
+__pycache__/
+service_account.json
+.env*
+*.pyc
+*.log
+.git/
+.vscode/
+.idea/
+.pytest_cache/
+.venv/
+venv/

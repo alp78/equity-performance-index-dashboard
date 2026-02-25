@@ -1,8 +1,23 @@
--- precomputes normalized percent-change time series for every sector with forward-fill across all stocks
+-- =========================================================================
+--  Startup Precompute: Sector Time-Series (Forward-Filled)
+-- =========================================================================
+--  Builds a daily percent-change time series for every GICS sector in an
+--  index.  Each stock is normalised to 0 % at its first available date,
+--  then forward-filled across any missing trading days.  The daily average
+--  across all stocks in a sector becomes that sector's series.
+--
+--  Run once per index at startup.  The result is stored as a DuckDB table
+--  (sector_series_{index}) and pre-loaded into ALL_SERIES_CACHE so the
+--  /all-series endpoint serves instantly without a cold query.
+--
+--  Placeholder : {table} — per-index table (e.g. prices_sp500)
+--  Called by   : _precompute_sector_series()
+-- =========================================================================
+
 WITH
 raw AS (
     SELECT symbol, sector,
-           strftime(trade_date, '%Y-%m-%d') as time,
+           CAST(trade_date AS DATE)::VARCHAR as time,
            CAST(close AS FLOAT) as close
     FROM {table}
     WHERE sector IS NOT NULL AND sector NOT IN ('N/A', '0', '')
@@ -10,10 +25,9 @@ raw AS (
 ),
 
 bases AS (
-    SELECT symbol,
-           FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY time) as base_close
+    SELECT symbol, ARG_MIN(close, time) as base_close
     FROM raw
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY time) = 1
+    GROUP BY symbol
 ),
 
 per_stock_pct AS (
