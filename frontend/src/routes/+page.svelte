@@ -49,7 +49,8 @@
     import StockMetrics from '$lib/components/StockMetrics.svelte';
     import Card from '$lib/components/ui/Card.svelte';
     import ThemeToggle from '$lib/components/ui/ThemeToggle.svelte';
-    import { Newspaper, Globe, PieChart, TrendingUp } from 'lucide-svelte';
+    import { Newspaper, Globe, PieChart, TrendingUp, Info } from 'lucide-svelte';
+    import Tooltip from '$lib/components/ui/Tooltip.svelte';
     import { onMount, untrack } from 'svelte';
     import { INDEX_COLORS, SECTOR_PALETTE, SECTOR_INDEX_NAMES, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
     import { MARKET_HOURS, SYMBOL_MARKET_MAP } from '$lib/index-registry.js';
@@ -82,6 +83,8 @@
     let fullStockData = $state([]);
     let allComparisonData = $state(null);
     let comparisonData = $state(null);
+    let currencyMode = $state('local'); // 'local' or 'usd'
+    let fxError = $state(false);
     let highlightKey = $derived($macroHighlightIndex);
     let highlightTicker = $derived(highlightKey ? INDEX_KEY_TO_TICKER[highlightKey] : null);
 
@@ -108,22 +111,46 @@
     let inOverview = $derived($isOverviewMode);
     let inSectors = $derived($isSectorMode);
     let inContext = $derived($isMacroContextMode);
+    let contextEverVisited = $state(false);
+    $effect(() => { if (inContext) contextEverVisited = true; });
 
     // ─── Macro Context — live ticker quotes (BTC, Gold, EUR/USD) ───
     let macroTickerQuotes = $state({});
-    let _macroTickerInterval;
+    let _macroTickerWs = null;
+    let _btcInterval = null;
+    let _fxInterval = null;
     let _macroTickerAbort = null;
-    async function fetchMacroTicker() {
+
+    // BTC: direct Binance fetch every 3s for near-real-time price
+    async function fetchBtcDirect() {
+        try {
+            const [tickerR, klineR] = await Promise.all([
+                fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
+                fetch('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=1'),
+            ]);
+            if (tickerR.ok && klineR.ok) {
+                const ticker = await tickerR.json();
+                const kline = await klineR.json();
+                const price = parseFloat(ticker.price);
+                const openPrice = parseFloat(kline[0][1]);
+                const diff = price - openPrice;
+                const pct = openPrice !== 0 ? (diff / openPrice) * 100 : 0;
+                macroTickerQuotes['BINANCE:BTCUSDT'] = { price: Math.round(price * 100) / 100, pct: Math.round(pct * 100) / 100, diff: Math.round(diff * 100) / 100 };
+            }
+        } catch {}
+    }
+
+    // XAU/EUR: fetch from backend every 60s
+    async function fetchFxTicker() {
         _macroTickerAbort?.abort();
         _macroTickerAbort = new AbortController();
         try {
             const res = await fetch(`${API_BASE_URL}/market-data`, { signal: _macroTickerAbort.signal });
             if (res.ok) {
                 const data = await res.json();
-                const syms = ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'];
-                for (const u of Object.values(data)) {
-                    for (const s of syms) {
-                        const clean = s.includes(':') ? s.split(':')[1] : s;
+                for (const s of ['FXCM:XAU/USD', 'FXCM:EUR/USD']) {
+                    const clean = s.split(':')[1];
+                    for (const u of Object.values(data)) {
                         if (u.symbol === s || u.symbol === clean) {
                             macroTickerQuotes[s] = { price: u.price, pct: u.pct, diff: u.diff };
                         }
@@ -131,15 +158,22 @@
                 }
             }
         } catch (err) {
-            if (err.name !== 'AbortError') console.error('Macro ticker fetch error:', err);
+            if (err.name !== 'AbortError') console.error('FX ticker fetch error:', err);
         }
     }
+
     $effect(() => {
         if (!inContext) return;
-        fetchMacroTicker();
-        _macroTickerInterval = setInterval(fetchMacroTicker, 30000);
+        // Initial fetch for all 3
+        fetchBtcDirect();
+        fetchFxTicker();
+        // BTC: 3s interval
+        _btcInterval = setInterval(fetchBtcDirect, 3000);
+        // XAU/EUR: 60s interval
+        _fxInterval = setInterval(fetchFxTicker, 60000);
         return () => {
-            clearInterval(_macroTickerInterval);
+            clearInterval(_btcInterval);
+            clearInterval(_fxInterval);
             _macroTickerAbort?.abort();
         };
     });
@@ -969,28 +1003,42 @@
     const COMPARISON_TTL = 5 * 60 * 1000; // 5 min
 
     async function fetchComparisonData() {
+        const mode = currencyMode;
+        const cacheKey = mode === 'usd' ? 'comparison_data_usd' : 'comparison_data';
+
         // Serve cached data instantly (mode switch / browser refresh)
-        const cached = getCached('comparison_data');
+        const cached = getCached(cacheKey);
         if (cached && !allComparisonData) {
             allComparisonData = cached.data;
+            fxError = cached.data?.fxError || false;
         }
         // Skip network if still fresh
-        if (isCacheFresh('comparison_data')) return;
+        if (isCacheFresh(cacheKey)) return;
 
         const allTickers = Object.keys(INDEX_TICKER_MAP);
+        const currencyParam = mode === 'usd' ? '&currency=usd' : '';
         try {
             const res = await fetchWithTimeout(
-                `${API_BASE_URL}/index-prices/data?symbols=${encodeURIComponent(allTickers.join(','))}&period=max`,
-                15000
+                `${API_BASE_URL}/index-prices/data?symbols=${encodeURIComponent(allTickers.join(','))}&period=max${currencyParam}`,
+                20000
             );
             if (res.ok) {
                 const data = await res.json();
                 allComparisonData = data;
-                setCached('comparison_data', data, COMPARISON_TTL);
+                fxError = data?.fxError || false;
+                setCached(cacheKey, data, COMPARISON_TTL);
             }
         } catch (e) {
             console.error('Failed to fetch comparison data:', e);
         }
+    }
+
+    function setCurrencyMode(mode) {
+        if (mode === currencyMode) return;
+        currencyMode = mode;
+        allComparisonData = null;
+        comparisonData = null;
+        fetchComparisonData();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1291,14 +1339,22 @@
                             <span aria-hidden="true" class="{hCfg?.flag || ''} fis rounded-sm" style="font-size: 2rem;"></span>
                             <div>
                                 <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">{hCfg?.shortLabel || highlightKey}</h1>
-                                <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">Normalized % change</span>
+                                <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted inline-flex items-center gap-1.5">
+                                    {currencyMode === 'usd' ? 'USD-adjusted' : 'Normalized'} % change
+                                    <Tooltip text="Price return only (excludes dividends). {currencyMode === 'usd' ? 'Prices converted to USD at historical ECB daily rates. ' : 'Returns in local currency. '}Indices have different sector compositions." position="bottom">
+                                        <Info size={13} class="text-text-disabled hover:text-text-muted cursor-help transition-colors" />
+                                    </Tooltip>
+                                </span>
                             </div>
                         </div>
                     {:else}
                         <div>
                             <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">Index Benchmarks</h1>
-                            <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted">
-                                <span class="text-text-secondary">{Object.keys(INDEX_CONFIG).length} indices</span> · Normalized % change
+                            <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted inline-flex items-center gap-1.5">
+                                <span class="text-text-secondary">{Object.keys(INDEX_CONFIG).length} indices</span> · {currencyMode === 'usd' ? 'USD-adjusted' : 'Local currency'} % change
+                                <Tooltip text="Price return only (excludes dividends). {currencyMode === 'usd' ? 'Prices converted to USD at historical ECB daily rates. ' : 'Returns in local currency. '}Indices have different sector compositions." position="bottom">
+                                    <Info size={13} class="text-text-disabled hover:text-text-muted cursor-help transition-colors" />
+                                </Tooltip>
                             </span>
                         </div>
                     {/if}
@@ -1369,6 +1425,31 @@
                         {/if}
                     </div>
 
+                    {#if inOverview}
+                        <div class="flex border border-border p-1 rounded-lg">
+                            <button
+                                onclick={() => setCurrencyMode('local')}
+                                aria-label="Show local currency returns"
+                                aria-pressed={currencyMode === 'local'}
+                                class="px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap
+                                {currencyMode === 'local'
+                                    ? 'bg-accent text-white'
+                                    : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
+                            >LOCAL</button>
+                            <button
+                                onclick={() => setCurrencyMode('usd')}
+                                aria-label="Show USD-adjusted returns"
+                                aria-pressed={currencyMode === 'usd'}
+                                class="px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap
+                                {currencyMode === 'usd'
+                                    ? 'bg-accent text-white'
+                                    : fxError
+                                        ? 'text-text-disabled cursor-not-allowed'
+                                        : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
+                            >USD</button>
+                        </div>
+                    {/if}
+
                     <div class="flex border border-border p-1 rounded-lg">
                         {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
                             <button
@@ -1391,7 +1472,7 @@
         {#if inOverview}
             <!-- OVERVIEW: single-column layout — chart + table + correlation -->
             <div class="flex-1 flex flex-col gap-4 min-h-0 min-w-0 z-0
-                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden">
+                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden max-lg:pb-20 max-sm:pb-18">
                 <Card fill padding={false} class="flex-1 w-full min-w-0 min-h-0 relative overflow-hidden
                     max-xl:flex-none max-xl:h-[50vh] max-sm:h-[40vh]
                     {selectMode ? 'ring-2 ring-text-faint/20' : ''}">
@@ -1408,6 +1489,7 @@
                                 highlightSymbol={highlightTicker}
                                 onResetPeriod={handleResetPeriod}
                                 onRangeSelect={handleRangeSelect}
+                                currencyLabel={currencyMode === 'usd' ? '$' : ''}
                             />
                         </div>
                     {:else}
@@ -1439,69 +1521,8 @@
                 </div>
             </div>
 
-        {:else if inContext}
-            <!-- MACRO CONTEXT: full-page layout — risk + tickers + 3-column grid -->
-            <div class="flex-1 flex flex-col gap-4 min-h-0 min-w-0 z-0
-                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden">
-                <!-- Risk dashboard strip -->
-                <Card fill={false} padding={false} class="shrink-0 !overflow-visible">
-                    <div class="px-4 py-3">
-                        <RiskDashboard />
-                    </div>
-                </Card>
-                <!-- BTC / Gold / EUR-USD ticker strip -->
-                <Card fill={false} padding={false} class="shrink-0">
-                    <div class="flex items-stretch gap-4 px-4 py-2.5 max-sm:flex-col max-sm:gap-2">
-                        {#each ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'] as symbol}
-                            {@const data = macroTickerQuotes[symbol] || { price: 0, pct: 0, diff: 0 }}
-                            {@const hasData = data.price > 0}
-                            {@const sym = symbol.includes(':') ? symbol.split(':')[1] : symbol}
-                            {@const ccy = symbol.includes('EUR/USD') ? '' : '$'}
-                            {@const status = macroTickerStatus(symbol)}
-                            <div class="flex items-center gap-3 flex-1 min-w-0">
-                                <div class="flex flex-col shrink-0">
-                                    <span class="text-[13px] font-semibold text-text uppercase tracking-tighter">{sym}</span>
-                                    {#if status.label}
-                                        <span class="flex items-center gap-1 mt-0.5">
-                                            <span class="w-1.5 h-1.5 rounded-full {status.dot} {status.pulse ? 'animate-pulse' : ''}"></span>
-                                            <span class="text-[9px] font-bold {status.color} uppercase tracking-tighter">{status.label}</span>
-                                        </span>
-                                    {/if}
-                                </div>
-                                {#if hasData}
-                                    <span class="text-[13px] font-mono font-bold text-text-secondary tabular-nums">
-                                        <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
-                                            minimumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
-                                            maximumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
-                                        })}
-                                    </span>
-                                    <span class="text-[12px] font-mono font-bold tabular-nums {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
-                                        {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(2)}%
-                                    </span>
-                                {:else}
-                                    <span class="text-[12px] text-text-muted animate-pulse">---</span>
-                                {/if}
-                            </div>
-                        {/each}
-                    </div>
-                </Card>
-                <!-- 3-column grid: watchlist, news, calendar -->
-                <div class="flex-1 min-h-0 grid grid-cols-3 gap-4
-                    max-xl:grid-cols-1 max-xl:flex-none">
-                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
-                        <MacroWatchlist />
-                    </div>
-                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
-                        <NewsFeed />
-                    </div>
-                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
-                        <EconomicCalendar {currentPeriod} {customRange} />
-                    </div>
-                </div>
-            </div>
-
-        {:else}
-        <div class="{inSectors ? 'gap-4' : 'gap-5'} flex-1 flex flex-col min-h-0 min-w-0 z-0 max-lg:gap-4 max-lg:min-h-0 max-lg:flex-none">
+        {:else if !inContext}
+        <div class="{inSectors ? 'gap-4' : 'gap-5'} flex-1 flex flex-col min-h-0 min-w-0 z-0 max-lg:gap-4 max-lg:min-h-0 max-lg:flex-none max-lg:pb-20 max-sm:pb-18">
             {#if !inSectors}
                 <StockMetrics />
             {/if}
@@ -1605,6 +1626,69 @@
                 </div>
             {/if}
         </div>
+        {/if}
+
+        <!-- MACRO CONTEXT: persisted after first visit to avoid destroy/recreate delay -->
+        {#if contextEverVisited}
+            <div class="flex-1 flex flex-col gap-4 min-h-0 min-w-0 z-0
+                max-xl:flex-none max-xl:gap-4 max-xl:overflow-y-auto max-xl:overflow-x-hidden max-lg:pb-20 max-sm:pb-18"
+                class:hidden={!inContext}>
+                <!-- Risk dashboard strip -->
+                <Card fill={false} padding={false} class="shrink-0 !overflow-visible">
+                    <div class="px-4 py-3">
+                        <RiskDashboard />
+                    </div>
+                </Card>
+                <!-- BTC / Gold / EUR-USD ticker strip -->
+                <Card fill={false} padding={false} class="shrink-0">
+                    <div class="flex items-stretch gap-4 px-4 py-2.5 max-sm:flex-col max-sm:gap-2">
+                        {#each ['BINANCE:BTCUSDT', 'FXCM:XAU/USD', 'FXCM:EUR/USD'] as symbol}
+                            {@const data = macroTickerQuotes[symbol] || { price: 0, pct: 0, diff: 0 }}
+                            {@const hasData = data.price > 0}
+                            {@const sym = symbol.includes(':') ? symbol.split(':')[1] : symbol}
+                            {@const ccy = symbol.includes('EUR/USD') ? '' : '$'}
+                            {@const status = macroTickerStatus(symbol)}
+                            <div class="flex items-center gap-3 flex-1 min-w-0">
+                                <div class="flex flex-col shrink-0">
+                                    <span class="text-[13px] font-semibold text-text uppercase tracking-tighter">{sym}</span>
+                                    {#if status.label}
+                                        <span class="flex items-center gap-1 mt-0.5">
+                                            <span class="w-1.5 h-1.5 rounded-full {status.dot} {status.pulse ? 'animate-pulse' : ''}"></span>
+                                            <span class="text-[9px] font-bold {status.color} uppercase tracking-tighter">{status.label}</span>
+                                        </span>
+                                    {/if}
+                                </div>
+                                {#if hasData}
+                                    <span class="text-[13px] font-mono font-bold text-text-secondary tabular-nums">
+                                        <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
+                                            minimumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
+                                            maximumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
+                                        })}
+                                    </span>
+                                    <span class="text-[12px] font-mono font-bold tabular-nums {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
+                                        {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(2)}%
+                                    </span>
+                                {:else}
+                                    <span class="text-[12px] text-text-muted animate-pulse">---</span>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                </Card>
+                <!-- 3-column grid: watchlist, news, calendar -->
+                <div class="flex-1 min-h-0 grid grid-cols-3 gap-4
+                    max-xl:grid-cols-1 max-xl:flex-none">
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
+                        <MacroWatchlist />
+                    </div>
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
+                        <NewsFeed />
+                    </div>
+                    <div class="min-h-0 overflow-hidden max-xl:h-[70vh]">
+                        <EconomicCalendar {currentPeriod} {customRange} />
+                    </div>
+                </div>
+            </div>
         {/if}
 
     </main>
