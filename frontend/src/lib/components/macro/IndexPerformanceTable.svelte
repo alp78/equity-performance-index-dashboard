@@ -2,7 +2,7 @@
   ═══════════════════════════════════════════════════════════════════════════
    IndexPerformanceTable — Multi-Index Stats Comparison Grid
   ═══════════════════════════════════════════════════════════════════════════
-   Table comparing all 6 market indices: price, daily change, YTD return,
+   Table comparing all configured market indices: price, daily change, YTD return,
    52-week range (visual bar), period return, and annualised volatility.
    Rows animate position on re-sort.  Market open/closed status shown via
    green/red dot next to the exchange name.  Retries with 3 s backoff
@@ -181,6 +181,16 @@
     <!-- header -->
     <div class="px-5 pt-5 pb-3 flex-shrink-0 border-b border-border">
         <SectionHeader title="Index Performance Table" subtitle="Key metrics across indices">
+            {#snippet tooltip()}
+                <div class="tt-title">Index Performance Metrics</div>
+                <div class="tt-desc">Compares key statistics across all configured indices. Rows rank by period return; brightness encodes magnitude.</div>
+                <div class="tt-row"><span class="tt-label">Price</span><span class="tt-meaning">Latest close in native currency (or USD when toggled)</span></div>
+                <div class="tt-row"><span class="tt-label">Day</span><span class="tt-meaning">Single-session % change from previous close</span></div>
+                <div class="tt-row"><span class="tt-label">YTD</span><span class="tt-meaning">Year-to-date cumulative return from Jan 1</span></div>
+                <div class="tt-row"><span class="tt-label">Δ Hi</span><span class="tt-meaning">Distance below the 52-week high (0% = at peak)</span></div>
+                <div class="tt-row"><span class="tt-label">Return</span><span class="tt-meaning">Total price return over the selected period</span></div>
+                <div class="tt-row"><span class="tt-label">Vol</span><span class="tt-meaning">Annualised volatility from daily returns</span></div>
+            {/snippet}
             {#snippet action()}
                 <div class="flex items-center gap-2">
                     <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{headerLabel(currentPeriod, customRange)}</span>
@@ -214,7 +224,7 @@
             {@const rank = rankMap[row.symbol] ?? 0}
             <div
                 class="data-row absolute left-0 right-0 flex items-center border-b border-border-subtle hover:bg-surface-2 transition-colors cursor-pointer"
-                style="top: calc({rank} * (100% / 6)); height: calc(100% / 6); opacity: {highlightSet ? (highlightSet.has(row.symbol) ? 1 : 0.15) : (isSelected ? 1 : 0.25)}; transition: top 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s;"
+                style="top: calc({rank} * (100% / {allStats.length || 1})); height: calc(100% / {allStats.length || 1}); opacity: {highlightSet ? (highlightSet.has(row.symbol) ? 1 : 0.15) : (isSelected ? 1 : 0.25)}; transition: top 0.5s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.15s;"
                 onclick={() => onRowClick?.(meta.key || '', row.symbol)}
                 role="row"
                 tabindex="0"

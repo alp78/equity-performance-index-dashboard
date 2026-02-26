@@ -4,7 +4,7 @@
   ═══════════════════════════════════════════════════════════════════════════
    Extracted from Sidebar.svelte.  Handles the stock browsing mode:
 
-   - Index dropdown selector (6 indices grouped West / East)
+   - Index dropdown selector (indices grouped by world region)
    - Full-text search across symbols and names
    - Collapsible sector > industry > stock hierarchy
    - Session-persisted open sectors and per-index symbol history

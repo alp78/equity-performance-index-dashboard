@@ -118,6 +118,13 @@
     <!-- header -->
     <div class="px-5 pt-5 pb-3 flex-shrink-0">
         <SectionHeader title="Sector Rankings" subtitle="Normalized % Change" border>
+            {#snippet tooltip()}
+                <div class="tt-title">Sector Performance</div>
+                <div class="tt-desc">Ranks GICS sectors by average constituent return for the selected index and period.</div>
+                <div class="tt-row"><span class="tt-label">Bar</span><span class="tt-meaning">Average stock return across all sector constituents, normalized so the top sector fills the chart</span></div>
+                <div class="tt-row"><span class="tt-label">Color</span><span class="tt-meaning">Each sector's unique GICS palette color</span></div>
+                <div class="tt-row"><span class="tt-label">Click</span><span class="tt-meaning">Select a sector to highlight it in the heatmap and top-stocks panels</span></div>
+            {/snippet}
             {#snippet action()}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
                 {#if loading}

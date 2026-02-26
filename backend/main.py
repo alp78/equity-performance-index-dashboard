@@ -88,6 +88,10 @@ from index_config import (
     INDEX_CONFIG_PUBLIC,
     INDEX_TICKER_TO_CURRENCY,
     PROJECT_ID,
+    FX_NEEDED_CURRENCIES_STR,
+    FX_ALL_SYMBOLS_STR,
+    FX_INVERTED as _CFG_FX_INVERTED,
+    FX_DISPLAY_CURRENCIES,
 )
 
 FINNHUB_API_KEY = getenv("FINNHUB_API_KEY")
@@ -744,20 +748,27 @@ def ensure_index_loaded(index_key):
     if status and status.get("loading"):
         return False
 
+    # Also retry if previously failed (loaded=False, loading=False)
     INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": True, "row_count": 0}
 
     def _bg_load():
-        row_count = _load_index_from_bq(index_key)
-        INDEX_LOAD_STATUS[index_key] = {
-            "loaded": row_count > 0,
-            "loading": False,
-            "row_count": row_count,
-        }
-        if row_count > 0:
-            _precompute_sector_series(index_key)
-            _precompute_industry_series(index_key)
-            _precompute_stock_returns(index_key)
-            _prewarm_sector_caches(index_key)
+        try:
+            row_count = _load_index_from_bq(index_key)
+            INDEX_LOAD_STATUS[index_key] = {
+                "loaded": row_count > 0,
+                "loading": False,
+                "row_count": row_count,
+            }
+            if row_count > 0:
+                _precompute_sector_series(index_key)
+                _precompute_industry_series(index_key)
+                _precompute_stock_returns(index_key)
+                _prewarm_sector_caches(index_key)
+                with db_rwlock.write():
+                    _rebuild_unified_view()
+        except Exception as e:
+            logger.error(f"ensure_index_loaded bg error for {index_key}: {e}")
+            INDEX_LOAD_STATUS[index_key] = {"loaded": False, "loading": False, "row_count": 0}
 
     import concurrent.futures
     _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1104,6 +1115,59 @@ async def preload_all_indices():
     logger.info("All indices preloaded")
 
 
+async def _data_watchdog():
+    """Periodic watchdog: retry any failed index loads and index_prices.
+    Runs every 30s for the first 5 min, then every 5 min thereafter.
+    Stops retrying an item after it's successfully loaded."""
+    await asyncio.sleep(30)  # wait for initial startup to settle
+    attempt = 0
+    while True:
+        attempt += 1
+        loop = asyncio.get_event_loop()
+        retried = []
+
+        # Retry failed stock indices
+        for key in list(MARKET_INDICES.keys()):
+            status = INDEX_LOAD_STATUS.get(key, {})
+            if not status.get("loaded") and not status.get("loading"):
+                retried.append(key)
+                try:
+                    await refresh_single_index(key)
+                    logger.info(f"[watchdog] Recovered {key}")
+                except Exception as e:
+                    logger.warning(f"[watchdog] Retry failed for {key}: {e}")
+
+        # Retry index_prices if not loaded
+        if not INDEX_PRICES_LOADED:
+            retried.append("index_prices")
+            try:
+                row_count = await loop.run_in_executor(None, _load_index_prices_from_bq)
+                if row_count > 0:
+                    logger.info(f"[watchdog] Recovered index_prices ({row_count} rows)")
+            except Exception as e:
+                logger.warning(f"[watchdog] Retry failed for index_prices: {e}")
+
+        # Rebuild unified view if anything was retried
+        if retried:
+            try:
+                with db_rwlock.write():
+                    _rebuild_unified_view()
+                logger.info(f"[watchdog] Retried: {', '.join(retried)}")
+            except Exception as e:
+                logger.warning(f"[watchdog] Rebuild error: {e}")
+
+        # All loaded? Check and log
+        all_loaded = all(
+            INDEX_LOAD_STATUS.get(k, {}).get("loaded") for k in MARKET_INDICES
+        ) and INDEX_PRICES_LOADED
+        if all_loaded:
+            logger.info("[watchdog] All data loaded — watchdog sleeping (5 min interval)")
+
+        # Faster interval during first 5 min, then slow down
+        interval = 30 if attempt <= 10 else 300
+        await asyncio.sleep(interval)
+
+
 async def background_startup():
     global STARTUP_TIME, STARTUP_DONE_TIME
     STARTUP_TIME = time.time()
@@ -1111,6 +1175,8 @@ async def background_startup():
     STARTUP_DONE_TIME = time.time()
     # Preload news feed in background so it's cached before first request
     asyncio.create_task(_preload_news())
+    # Start watchdog to recover from any failed loads
+    asyncio.create_task(_data_watchdog())
 
 
 async def _preload_news():
@@ -1483,7 +1549,7 @@ async def get_index_prices_summary():
 _FX_HISTORY_CACHE = {}   # (start, end) -> (rates_dict, timestamp)
 _FX_HISTORY_TTL = 24 * 3600
 _FX_HISTORY_LOCK = threading.Lock()
-_FX_NEEDED_CURRENCIES = "EUR,GBP,JPY,CNY,INR"
+_FX_NEEDED_CURRENCIES = FX_NEEDED_CURRENCIES_STR
 
 
 async def _fetch_fx_history(start_date: str, end_date: str) -> dict:
@@ -3269,18 +3335,28 @@ def _resolve_news_index(article):
                 return idx
     return None
 
+_finnhub_semaphore = asyncio.Semaphore(3)  # max 3 concurrent Finnhub requests (~15 req/s)
+
 async def _fetch_company_news_async(ticker, index_key, from_date, to_date):
-    """Fetch company news from Finnhub for a single ticker (async, connection-pooled)."""
-    try:
-        resp = await _http_finnhub.get(
-            "/api/v1/company-news",
-            params={"symbol": ticker, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
-        )
-        if resp.status_code == 200:
-            return [(item, index_key) for item in resp.json()]
-    except Exception as e:
-        logger.debug("Suppressed: %s", e)
-    return []
+    """Fetch company news from Finnhub for a single ticker (async, rate-limited)."""
+    async with _finnhub_semaphore:
+        try:
+            resp = await _http_finnhub.get(
+                "/api/v1/company-news",
+                params={"symbol": ticker, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
+            )
+            await asyncio.sleep(0.15)  # throttle: ~20 req/s with 3 concurrent
+            if resp.status_code == 429:
+                await asyncio.sleep(2)
+                resp = await _http_finnhub.get(
+                    "/api/v1/company-news",
+                    params={"symbol": ticker, "from": from_date, "to": to_date, "token": FINNHUB_API_KEY},
+                )
+            if resp.status_code == 200:
+                return [(item, index_key) for item in resp.json()]
+        except Exception as e:
+            logger.debug("Suppressed: %s", e)
+        return []
 
 @app.get("/news")
 async def get_news():
@@ -3305,11 +3381,17 @@ async def get_news():
             for ticker in tickers:
                 company_tasks.append(_fetch_company_news_async(ticker, index_key, three_months_ago, today))
 
-        # 2) Also fetch general + merger news concurrently
-        category_tasks = [
-            _http_finnhub.get("/api/v1/news", params={"category": cat, "token": FINNHUB_API_KEY})
-            for cat in ("general", "merger")
-        ]
+        # 2) Also fetch general + merger news concurrently (rate-limited)
+        async def _fetch_category(cat):
+            async with _finnhub_semaphore:
+                resp = await _http_finnhub.get("/api/v1/news", params={"category": cat, "token": FINNHUB_API_KEY})
+                await asyncio.sleep(0.15)
+                if resp.status_code == 429:
+                    await asyncio.sleep(2)
+                    resp = await _http_finnhub.get("/api/v1/news", params={"category": cat, "token": FINNHUB_API_KEY})
+                return resp
+
+        category_tasks = [_fetch_category(cat) for cat in ("general", "merger")]
 
         # Fire all requests concurrently — company news + category news
         all_results = await asyncio.gather(*company_tasks, *category_tasks, return_exceptions=True)
@@ -3554,8 +3636,11 @@ async def get_correlation(period: str = "1y", currency: str = "local"):
 
 # ─── FX rates via Frankfurter (ECB data, no API key needed) ───
 
-_FX_SYMBOLS = "EUR,GBP,JPY,CNY,INR,CHF,AUD"
-_FX_INVERTED = {"EUR", "GBP", "AUD"}  # pairs quoted as X/USD → invert
+_FX_SYMBOLS = FX_ALL_SYMBOLS_STR
+_FX_INVERTED = _CFG_FX_INVERTED
+
+# Zero-decimal currencies (ISO 4217) get 2 decimal places for FX, others get 4
+_ZERO_DECIMAL_CCYS = {"JPY", "KRW", "VND", "CLP", "ISK", "HUF"}
 
 
 def _fx_pair_val(raw_rates, ccy):
@@ -3563,7 +3648,7 @@ def _fx_pair_val(raw_rates, ccy):
     v = raw_rates.get(ccy)
     if v is None or v == 0:
         return None
-    return round(1 / v, 6) if ccy in _FX_INVERTED else round(v, 4 if ccy not in ("JPY", "INR") else 2)
+    return round(1 / v, 6) if ccy in _FX_INVERTED else round(v, 2 if ccy in _ZERO_DECIMAL_CCYS else 4)
 
 
 def _fx_pair_name(ccy):
@@ -3608,7 +3693,7 @@ async def get_macro_fx():
             elif len(sorted_dates) == 1:
                 prev_rates = ts_rates[sorted_dates[0]]
 
-        ccys = ["EUR", "GBP", "JPY", "CNY", "INR", "CHF", "AUD"]
+        ccys = FX_DISPLAY_CURRENCIES
         rates_out = {}
         for ccy in ccys:
             val = _fx_pair_val(latest_rates, ccy)
@@ -3635,53 +3720,338 @@ async def get_macro_fx():
 # ─── Economic calendar: upcoming high-impact FRED releases ───
 
 _HIGH_IMPACT_RELEASES = {
-    # (name, country, impact, description, source_url)
+    # ── US releases (verified against FRED /fred/release API) ─────────────────
+    # Format: release_id → (name, country, impact, description, source_url)
     10:  ("CPI", "US", "high", "Consumer Price Index — measures average change in prices paid by urban consumers for a basket of goods and services. Key inflation gauge watched by the Fed.", "https://www.bls.gov/cpi/"),
     9:   ("Retail Sales", "US", "high", "Monthly retail and food services sales. Indicator of consumer spending strength, which drives ~70% of US GDP.", "https://www.census.gov/retail/"),
     11:  ("Employment Cost Index", "US", "high", "Quarterly measure of total compensation costs (wages + benefits). Closely watched by the Fed for wage-driven inflation pressures.", "https://www.bls.gov/eci/"),
     13:  ("Industrial Production", "US", "high", "Output of factories, mines, and utilities. Measures manufacturing sector health and capacity utilization.", "https://www.federalreserve.gov/releases/g17/"),
-    46:  ("PCE Price Index", "US", "high", "Personal Consumption Expenditures price index — the Fed's preferred inflation measure. Broader than CPI, includes employer-paid healthcare.", "https://www.bea.gov/data/personal-consumption-expenditures-price-index"),
+    54:  ("PCE Price Index", "US", "high", "Personal Consumption Expenditures price index — the Fed's preferred inflation measure. Broader than CPI, includes employer-paid healthcare.", "https://www.bea.gov/data/personal-consumption-expenditures-price-index"),
     50:  ("Nonfarm Payrolls", "US", "high", "Monthly change in employed persons excluding farm workers. The most closely watched employment indicator; major market mover.", "https://www.bls.gov/ces/"),
     53:  ("GDP", "US", "high", "Gross Domestic Product — broadest measure of economic output. Quarterly estimate of total goods and services produced.", "https://www.bea.gov/data/gdp"),
-    21:  ("Housing Starts", "US", "medium", "New residential construction projects started. Leading indicator of housing market health and construction activity.", "https://www.census.gov/construction/nrc/"),
-    32:  ("ISM Manufacturing", "US", "medium", "Institute for Supply Management manufacturing PMI. Above 50 = expansion, below 50 = contraction. Leading economic indicator.", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/"),
-    33:  ("ISM Services", "US", "medium", "ISM services sector PMI. Services represent ~80% of US economy, making this a key activity gauge.", "https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/"),
+    27:  ("Housing Starts", "US", "medium", "New residential construction projects started. Leading indicator of housing market health and construction activity.", "https://www.census.gov/construction/nrc/"),
     14:  ("Consumer Credit", "US", "medium", "Outstanding consumer credit (auto loans, credit cards, student loans). Signals consumer borrowing appetite and financial health.", "https://www.federalreserve.gov/releases/g19/"),
-    19:  ("PPI", "US", "medium", "Producer Price Index — measures price changes from the seller's perspective. Leading indicator for consumer inflation (CPI).", "https://www.bls.gov/ppi/"),
-    22:  ("Existing Home Sales", "US", "medium", "Monthly sales of previously owned homes. Largest segment of the housing market; sensitive to mortgage rates.", "https://www.nar.realtor/research-and-statistics/housing-statistics/existing-home-sales"),
-    47:  ("Durable Goods", "US", "medium", "Orders for manufactured goods expected to last 3+ years (machinery, vehicles, aircraft). Proxy for business investment intentions.", "https://www.census.gov/manufacturing/m3/"),
-    83:  ("Treasury Budget", "US", "medium", "Monthly US government budget surplus or deficit. Tracks federal spending vs revenue; impacts Treasury supply outlook.", "https://fiscaldata.treasury.gov/datasets/monthly-treasury-statement/"),
-    116: ("ADP Employment", "US", "medium", "ADP private-sector employment estimate, released 2 days before Nonfarm Payrolls. Used as an early read on the labor market.", "https://adpemploymentreport.com/"),
-    180: ("Trade Balance", "US", "medium", "Difference between exports and imports of goods and services. Large deficits can pressure the dollar; surplus supports it.", "https://www.bea.gov/data/intl-trade-investment/international-trade-goods-and-services"),
-    323: ("JOLTS", "US", "medium", "Job Openings and Labor Turnover Survey. Measures labor demand (openings), hires, and quits. Fed watches quits rate closely.", "https://www.bls.gov/jlt/"),
-    175: ("Beige Book", "US", "medium", "Fed's qualitative summary of economic conditions across 12 districts. Published 2 weeks before each FOMC meeting.", "https://www.federalreserve.gov/monetarypolicy/beige-book-default.htm"),
-    # International releases tracked by FRED
-    192: ("EU CPI", "EU", "high", "Eurozone Harmonised Index of Consumer Prices. Primary inflation measure for ECB monetary policy decisions.", "https://ec.europa.eu/eurostat/databrowser/view/prc_hicp_manr/default/table?lang=en"),
-    194: ("EU GDP", "EU", "high", "Eurozone gross domestic product. Quarterly aggregate output for the 20-member euro area.", "https://ec.europa.eu/eurostat/databrowser/view/namq_10_gdp/default/table?lang=en"),
-    193: ("EU Unemployment", "EU", "medium", "Eurozone unemployment rate. Structural indicator of labor market slack across the euro area.", "https://ec.europa.eu/eurostat/databrowser/view/une_rt_m/default/table?lang=en"),
-    205: ("UK CPI", "GB", "high", "UK Consumer Prices Index. Bank of England's target inflation measure; drives rate decisions.", "https://www.ons.gov.uk/economy/inflationandpriceindices/bulletins/consumerpriceinflation/latest"),
-    206: ("UK GDP", "GB", "high", "UK gross domestic product. Quarterly estimate of total economic output for the United Kingdom.", "https://www.ons.gov.uk/economy/grossdomesticproductgdp/bulletins/gdpfirstquarterlyestimateuk/latest"),
-    207: ("UK Unemployment", "GB", "medium", "UK unemployment rate from the Labour Force Survey. Key input for Bank of England policy.", "https://www.ons.gov.uk/employmentandlabourmarket/peoplenotinwork/unemployment/timeseries/mgsx/lms"),
-    253: ("Japan CPI", "JP", "high", "Japan Consumer Price Index. Watched for signs of reflation after decades of deflationary pressure.", "https://www.stat.go.jp/english/data/cpi/1581-z.html"),
-    254: ("Japan GDP", "JP", "high", "Japan gross domestic product. Quarterly output measure for the world's 4th-largest economy.", "https://www.esri.cao.go.jp/en/sna/data/sokuhou/top_index.html"),
+    46:  ("PPI", "US", "medium", "Producer Price Index — measures price changes from the seller's perspective. Leading indicator for consumer inflation (CPI).", "https://www.bls.gov/ppi/"),
+    291: ("Existing Home Sales", "US", "medium", "Monthly sales of previously owned homes. Largest segment of the housing market; sensitive to mortgage rates.", "https://www.nar.realtor/research-and-statistics/housing-statistics/existing-home-sales"),
+    95:  ("Durable Goods", "US", "medium", "Orders for manufactured goods expected to last 3+ years (machinery, vehicles, aircraft). Proxy for business investment intentions.", "https://www.census.gov/manufacturing/m3/"),
+    363: ("Treasury Budget", "US", "medium", "Monthly US government budget surplus or deficit. Tracks federal spending vs revenue; impacts Treasury supply outlook.", "https://fiscaldata.treasury.gov/datasets/monthly-treasury-statement/"),
+    194: ("ADP Employment", "US", "medium", "ADP private-sector employment estimate, released 2 days before Nonfarm Payrolls. Used as an early read on the labor market.", "https://adpemploymentreport.com/"),
+    51:  ("Trade Balance", "US", "medium", "Difference between exports and imports of goods and services. Large deficits can pressure the dollar; surplus supports it.", "https://www.bea.gov/data/intl-trade-investment/international-trade-goods-and-services"),
+    192: ("JOLTS", "US", "medium", "Job Openings and Labor Turnover Survey. Measures labor demand (openings), hires, and quits. Fed watches quits rate closely.", "https://www.bls.gov/jlt/"),
+    # ── EU releases ───────────────────────────────────────────────────────────
+    251: ("EU CPI (HICP)", "EU", "high", "Eurozone Harmonised Index of Consumer Prices. Primary inflation measure for ECB monetary policy decisions.", "https://ec.europa.eu/eurostat/databrowser/view/prc_hicp_manr/default/table?lang=en"),
+    267: ("EU GDP", "EU", "high", "Eurozone gross domestic product (Eurostat). Quarterly aggregate output for the 20-member euro area.", "https://ec.europa.eu/eurostat/databrowser/view/namq_10_gdp/default/table?lang=en"),
+    # ── UK releases ───────────────────────────────────────────────────────────
+    268: ("UK GDP", "GB", "high", "UK gross domestic product (ONS). Quarterly estimate of total economic output for the United Kingdom.", "https://www.ons.gov.uk/economy/grossdomesticproductgdp/bulletins/gdpfirstquarterlyestimateuk/latest"),
+    # ── Japan releases ────────────────────────────────────────────────────────
+    269: ("Japan GDP", "JP", "high", "Japan gross domestic product. Quarterly output measure for the world's 4th-largest economy.", "https://www.esri.cao.go.jp/en/sna/menu.html"),
+    # NOTE: FOMC, ECB rate decisions, ISM PMI, Beige Book, UK CPI/Unemployment,
+    # Japan CPI, and CN/IN/BR/AU national statistics are either not available
+    # as FRED releases or produce daily noise via /releases/dates.
+    # FRED's release calendar primarily covers US + limited Eurostat/OECD data.
 }
 
 
-@app.get("/macro/calendar")
-async def get_macro_calendar():
-    """Fetch upcoming high-impact economic releases from FRED (US + international)."""
-    cache_key = "macro_calendar"
-    cached = get_cached_response(cache_key)
-    if cached:
-        return cached
+# ── Forex Factory / Fair Economy Media calendar (free, no auth) ──
+# Covers: USD, EUR, GBP, JPY, CNY, AUD, CHF, CAD, NZD — current week only
+# Source: https://nfs.faireconomy.media/ff_calendar_thisweek.json
+# Rate limit: max 2 downloads per 5 min. Recommended: 1/week.
 
-    if not FRED_API_KEY:
-        return []
+_FF_CCY_TO_COUNTRY = {
+    "USD": "US", "EUR": "EU", "GBP": "GB", "JPY": "JP",
+    "CNY": "CN", "AUD": "AU", "CHF": "CH", "CAD": "CA",
+    "NZD": "NZ", "INR": "IN", "BRL": "BR",
+}
+# EUR events with country prefix → specific EU country code
+_FF_EU_COUNTRY_PREFIXES = {
+    "german": "DE", "germany": "DE",
+    "french": "FR", "france": "FR",
+    "italian": "IT", "italy": "IT",
+    "spanish": "ES", "spain": "ES",
+    "dutch": "NL", "netherlands": "NL",
+    "belgian": "BE", "belgium": "BE",
+    "finnish": "FI", "finland": "FI",
+    "irish": "IE", "ireland": "IE",
+    "austrian": "AT", "austria": "AT",
+    "portuguese": "PT", "portugal": "PT",
+    "greek": "GR", "greece": "GR",
+}
+# All countries we want to show (index countries + individual EU members)
+_FF_WANTED = {
+    "CN", "AU", "JP", "GB", "EU", "IN", "BR",
+    "DE", "FR", "IT", "ES", "NL", "BE", "FI", "IE", "AT", "PT", "GR",
+}
+
+# ── FF event descriptions & source links (keyword → (description, link)) ──
+# Keys are lowercased substrings matched against the FF event title.
+# Country-specific links use {CC} placeholder, resolved at runtime.
+_FF_EVENT_INFO: dict[str, tuple[str, str]] = {
+    # ── Inflation ──
+    "cpi": (
+        "Consumer Price Index — measures the change in the price of goods and services purchased by consumers. Primary inflation gauge.",
+        {"AU": "https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation",
+         "JP": "https://www.stat.go.jp/english/data/cpi/",
+         "GB": "https://www.ons.gov.uk/economy/inflationandpriceindices",
+         "CN": "https://www.stats.gov.cn/english/",
+         "EU": "https://ec.europa.eu/eurostat/web/hicp",
+         "DE": "https://www.destatis.de/EN/Themes/Economy/Prices/Consumer-Price-Index/_node.html",
+         "FR": "https://www.insee.fr/en/statistiques?categorie=2",
+         "IT": "https://www.istat.it/en/archivio/consumer+prices",
+         "ES": "https://www.ine.es/en/",
+         "_": ""},
+    ),
+    "ppi": (
+        "Producer Price Index — measures the change in selling prices received by domestic producers. Leading indicator for consumer inflation.",
+        {"_": ""},
+    ),
+    # ── GDP ──
+    "gdp": (
+        "Gross Domestic Product — broadest measure of economic output. Quarterly estimate of total goods and services produced.",
+        {"AU": "https://www.abs.gov.au/statistics/economy/national-accounts",
+         "JP": "https://www.esri.cao.go.jp/en/sna/menu.html",
+         "GB": "https://www.ons.gov.uk/economy/grossdomesticproductgdp",
+         "CN": "https://www.stats.gov.cn/english/",
+         "_": ""},
+    ),
+    # ── Employment ──
+    "employment change": (
+        "Change in the number of employed people. Key indicator of labor market health and economic momentum.",
+        {"AU": "https://www.abs.gov.au/statistics/labour/employment-and-unemployment",
+         "_": ""},
+    ),
+    "unemployment": (
+        "Unemployment rate — percentage of the labor force that is jobless and actively seeking work.",
+        {"AU": "https://www.abs.gov.au/statistics/labour/employment-and-unemployment",
+         "GB": "https://www.ons.gov.uk/employmentandlabourmarket/peoplenotinwork/unemployment",
+         "JP": "https://www.stat.go.jp/english/data/roudou/",
+         "_": ""},
+    ),
+    "claimant count": (
+        "Number of people claiming unemployment benefits. Timely measure of UK labor market slack.",
+        {"GB": "https://www.ons.gov.uk/employmentandlabourmarket/peoplenotinwork/outofworkbenefits",
+         "_": ""},
+    ),
+    # ── Central bank ──
+    "interest rate": (
+        "Central bank policy interest rate decision. Primary monetary policy tool that directly impacts borrowing costs and currency valuations.",
+        {"AU": "https://www.rba.gov.au/monetary-policy/",
+         "JP": "https://www.boj.or.jp/en/mopo/index.htm",
+         "GB": "https://www.bankofengland.co.uk/monetary-policy",
+         "CN": "https://www.pbc.gov.cn/english/",
+         "_": ""},
+    ),
+    "monetary policy": (
+        "Monetary policy statement or report from the central bank. Provides insight into the central bank's economic outlook and policy direction.",
+        {"AU": "https://www.rba.gov.au/monetary-policy/",
+         "GB": "https://www.bankofengland.co.uk/monetary-policy",
+         "JP": "https://www.boj.or.jp/en/mopo/index.htm",
+         "_": ""},
+    ),
+    "rba": (
+        "Reserve Bank of Australia — central bank policy communication or rate decision.",
+        {"AU": "https://www.rba.gov.au/monetary-policy/", "_": ""},
+    ),
+    "boj": (
+        "Bank of Japan — central bank policy communication or rate decision.",
+        {"JP": "https://www.boj.or.jp/en/mopo/index.htm", "_": ""},
+    ),
+    "ecb": (
+        "European Central Bank — monetary policy communication. Key driver of eurozone interest rates and financial conditions.",
+        {"EU": "https://www.ecb.europa.eu/mopo/html/index.en.html",
+         "_": "https://www.ecb.europa.eu/mopo/html/index.en.html"},
+    ),
+    "pboc": (
+        "People's Bank of China — central bank policy rate or communication.",
+        {"CN": "https://www.pbc.gov.cn/english/", "_": ""},
+    ),
+    # ── PMI ──
+    "pmi": (
+        "Purchasing Managers' Index — survey of business conditions. Above 50 indicates expansion, below 50 indicates contraction.",
+        {"AU": "https://www.markiteconomics.com/",
+         "JP": "https://www.markiteconomics.com/",
+         "GB": "https://www.markiteconomics.com/",
+         "CN": "https://www.stats.gov.cn/english/",
+         "EU": "https://www.markiteconomics.com/",
+         "_": "https://www.markiteconomics.com/"},
+    ),
+    "manufacturing pmi": (
+        "Manufacturing PMI — survey of manufacturing sector activity. Above 50 = expansion, below 50 = contraction. Leading economic indicator.",
+        {"_": "https://www.markiteconomics.com/"},
+    ),
+    "services pmi": (
+        "Services PMI — survey of services sector activity. Services represent the largest share of GDP in developed economies.",
+        {"_": "https://www.markiteconomics.com/"},
+    ),
+    # ── Trade ──
+    "trade balance": (
+        "Difference between exports and imports. Surplus supports the currency; deficit pressures it.",
+        {"AU": "https://www.abs.gov.au/statistics/economy/international-trade",
+         "JP": "https://www.customs.go.jp/toukei/info/index_e.htm",
+         "CN": "https://www.stats.gov.cn/english/",
+         "_": ""},
+    ),
+    # ── Retail / consumer ──
+    "retail sales": (
+        "Monthly retail sales — measures consumer spending, which is the largest component of GDP.",
+        {"AU": "https://www.abs.gov.au/statistics/industry/retail-and-wholesale-trade",
+         "GB": "https://www.ons.gov.uk/businessindustryandtrade/retailindustry",
+         "JP": "https://www.meti.go.jp/english/statistics/",
+         "_": ""},
+    ),
+    "consumer confidence": (
+        "Survey measuring consumer optimism about the economy. Higher values signal willingness to spend.",
+        {"_": ""},
+    ),
+    # ── Industrial ──
+    "industrial production": (
+        "Output of factories, mines, and utilities. Measures manufacturing sector health and capacity utilization.",
+        {"JP": "https://www.meti.go.jp/english/statistics/",
+         "CN": "https://www.stats.gov.cn/english/",
+         "_": ""},
+    ),
+    # ── Ifo / ZEW (Germany-specific) ──
+    "ifo": (
+        "Ifo Business Climate Index — Germany's most closely watched leading indicator, based on a survey of ~9,000 firms on current conditions and expectations.",
+        {"DE": "https://www.ifo.de/en/survey/ifo-business-climate-index", "_": ""},
+    ),
+    "zew": (
+        "ZEW Economic Sentiment — survey of financial experts on their expectations for the German economy over the next 6 months.",
+        {"DE": "https://www.zew.de/en/", "_": ""},
+    ),
+    # ── Tankan (Japan-specific) ──
+    "tankan": (
+        "BOJ Tankan Survey — Japan's most important business confidence survey, covering ~10,000 firms on business conditions.",
+        {"JP": "https://www.boj.or.jp/en/statistics/tk/index.htm", "_": ""},
+    ),
+    # ── Current account ──
+    "current account": (
+        "Current account balance — broadest measure of a country's trade with the rest of the world, including goods, services, and investment income.",
+        {"_": ""},
+    ),
+}
+
+
+def _ff_enrich(title: str, country: str) -> tuple[str, str]:
+    """Return (description, source_url) for an FF event based on keyword matching."""
+    lower = title.lower()
+    for keyword, (desc, links) in _FF_EVENT_INFO.items():
+        if keyword in lower:
+            if isinstance(links, dict):
+                url = links.get(country, links.get("_", ""))
+            else:
+                url = links
+            return desc, url
+    return "", ""
+
+
+_http_ff = httpx.AsyncClient(
+    timeout=httpx.Timeout(10.0, connect=3.0),
+    limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+)
+
+# In-memory cache for FF data — survives across calendar cache refreshes
+# FF data is weekly, so cache for 6 hours
+_ff_cache: dict = {"data": None, "ts": 0}
+_FF_CACHE_TTL = 6 * 3600  # 6 hours
+
+
+def _ff_extract_country(ccy: str, title: str) -> str:
+    """Map FF currency+title to a country code. EUR events may be EU-wide or country-specific."""
+    base = _FF_CCY_TO_COUNTRY.get(ccy)
+    if not base:
+        return ""
+    if base != "EU":
+        return base
+    # For EUR events, check if the title starts with a country name
+    lower = title.lower()
+    for prefix, code in _FF_EU_COUNTRY_PREFIXES.items():
+        if lower.startswith(prefix):
+            return code
+    # EU-wide events (ECB, Eurozone PMI, etc.)
+    return "EU"
+
+
+async def _fetch_ff_calendar() -> list[dict]:
+    """Fetch international economic calendar from Fair Economy Media (Forex Factory data)."""
+    # Check in-memory cache (6-hour TTL, separate from API response cache)
+    now_ts = time.time()
+    if _ff_cache["data"] is not None and (now_ts - _ff_cache["ts"]) < _FF_CACHE_TTL:
+        return _ff_cache["data"]
 
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        four_weeks = (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d")
+        resp = await _http_ff.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+        if resp.status_code == 429:
+            logger.info("FF calendar rate-limited, using stale cache")
+            return _ff_cache["data"] or []
+        if resp.status_code != 200:
+            logger.warning("FF calendar HTTP %s", resp.status_code)
+            return _ff_cache["data"] or []
+        data = resp.json()
+        if not isinstance(data, list):
+            return _ff_cache["data"] or []
 
+        result = []
+        seen = set()
+        for ev in data:
+            ccy = ev.get("country", "")
+            title = ev.get("title", "")
+            country = _ff_extract_country(ccy, title)
+            if not country or country not in _FF_WANTED:
+                continue
+
+            impact_raw = (ev.get("impact") or "").lower()
+            if impact_raw not in ("high", "medium"):
+                continue
+
+            if not title or "holiday" in title.lower():
+                continue
+
+            date_str = ev.get("date", "")
+            if not date_str or len(date_str) < 10:
+                continue
+            try:
+                dt = datetime.fromisoformat(date_str)
+                date_fmt = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                date_fmt = date_str[:16]
+
+            dedup_key = (date_fmt[:10], country, title[:30])
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            forecast = ev.get("forecast", "")
+            prev = ev.get("previous", "")
+
+            desc, link = _ff_enrich(title, country)
+            result.append({
+                "date": date_fmt,
+                "country": country,
+                "event": title,
+                "impact": impact_raw,
+                "actual": None,
+                "estimate": forecast if forecast else None,
+                "prev": prev if prev else None,
+                "unit": "",
+                "description": desc,
+                "link": link,
+            })
+
+        # Update in-memory cache
+        _ff_cache["data"] = result
+        _ff_cache["ts"] = now_ts
+        logger.info("FF calendar loaded: %d events", len(result))
+        return result
+    except Exception as e:
+        logger.warning("FF calendar error: %s", e)
+        return _ff_cache["data"] or []
+
+
+async def _fetch_fred_calendar(today: str, end: str) -> list[dict]:
+    """Fetch US + limited international economic calendar from FRED."""
+    if not FRED_API_KEY:
+        return []
+    try:
         resp = await _http_fred.get(
             "/fred/releases/dates",
             params={
@@ -3691,7 +4061,7 @@ async def get_macro_calendar():
                 "include_release_dates_with_no_data": "true",
                 "limit": 400,
                 "realtime_start": today,
-                "realtime_end": four_weeks,
+                "realtime_end": end,
             },
         )
         if resp.status_code != 200:
@@ -3722,15 +4092,56 @@ async def get_macro_calendar():
                 "description": desc,
                 "link": source_url,
             })
-
-        result.sort(key=lambda x: x["date"])
-        result = result[:80]
-
-        set_cached_response(cache_key, result)
         return result
     except Exception as e:
-        logger.error(f"Macro calendar error: {e}")
-        return get_stale_response(cache_key) or []
+        logger.warning("FRED calendar error: %s", e)
+        return []
+
+
+@app.get("/macro/calendar")
+async def get_macro_calendar():
+    """Fetch upcoming economic releases from FRED (US, 4 weeks) + FF (international, this week)."""
+    cache_key = "macro_calendar"
+    cached = get_cached_response(cache_key)
+    if cached:
+        return cached
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    four_weeks = (datetime.now() + timedelta(days=28)).strftime("%Y-%m-%d")
+
+    # Fetch FRED (US + EU/UK/JP GDP, 4 weeks) and FF (international, this week) in parallel
+    fred_events, ff_events = await asyncio.gather(
+        _fetch_fred_calendar(today, four_weeks),
+        _fetch_ff_calendar(),
+        return_exceptions=True,
+    )
+    if isinstance(fred_events, Exception):
+        logger.error("FRED calendar failed: %s", fred_events)
+        fred_events = []
+    if isinstance(ff_events, Exception):
+        logger.error("FF calendar failed: %s", ff_events)
+        ff_events = []
+
+    # Deduplicate: if FRED and FF both report the same country on the same date,
+    # keep FRED entry (richer descriptions and source links)
+    fred_keys = set()
+    for ev in fred_events:
+        fred_keys.add((ev["date"][:10], ev["country"]))
+
+    merged = list(fred_events)
+    for ev in ff_events:
+        key = (ev["date"][:10], ev["country"])
+        # Skip FF event if FRED already covers this country on this date
+        if key in fred_keys and ev["country"] in ("EU", "GB", "JP"):
+            continue
+        merged.append(ev)
+
+    merged.sort(key=lambda x: x["date"])
+    result = merged[:80]
+
+    if result:
+        set_cached_response(cache_key, result)
+    return result or get_stale_response(cache_key) or []
 
 
 @app.get("/macro/rates")

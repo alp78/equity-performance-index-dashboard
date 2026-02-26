@@ -133,7 +133,14 @@
 <Card fill class="top-movers-root overflow-x-hidden">
 
     <!-- header -->
-    <SectionHeader title="Price Movers" titleTooltip="Top 3 gainers and bottom 3 losers ranked by price return over the selected period. Return is calculated as the percentage change from the earliest to the latest closing price." subtitle={INDEX_CONFIG[currentIndex]?.abbr || currentIndex} subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Price Movers" subtitle={INDEX_CONFIG[currentIndex]?.abbr || currentIndex} subtitleFlag={indexFlag} border size="lg">
+        {#snippet tooltip()}
+            <div class="tt-title">Price Return Ranking</div>
+            <div class="tt-desc">Top gainers and bottom losers ranked by price return over the selected period.</div>
+            <div class="tt-row"><span class="tt-label">Return</span><span class="tt-meaning">Percentage change from earliest to latest closing price in the period</span></div>
+            <div class="tt-row"><span class="tt-label">Top 3</span><span class="tt-meaning">Strongest positive returns (gainers)</span></div>
+            <div class="tt-row"><span class="tt-label">Bot 3</span><span class="tt-meaning">Largest negative returns (losers)</span></div>
+        {/snippet}
         {#snippet action()}
             {#if customRange}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">

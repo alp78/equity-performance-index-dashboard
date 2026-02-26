@@ -181,12 +181,12 @@
     function showTooltip(key, event) {
         if (tooltipTimer) clearTimeout(tooltipTimer);
         const rect = event.currentTarget.getBoundingClientRect();
-        const ttW = 380;
+        const ttW = Math.min(380, window.innerWidth - 32);
         // Position above the row, right-aligned with the panel
         let left = rect.right - ttW;
         if (left < 8) left = 8;
         const bottom = window.innerHeight - rect.top + 6;
-        tooltipStyle = `left:${left}px;bottom:${bottom}px;`;
+        tooltipStyle = `left:${left}px;bottom:${bottom}px;width:${ttW}px;`;
         activeTooltip = key;
     }
     function hideTooltip() {
@@ -347,15 +347,15 @@
 <div bind:this={tooltipEl} class="tt-portal" class:tt-visible={activeTooltip && TOOLTIPS[activeTooltip]}>
     {#if activeTooltip && TOOLTIPS[activeTooltip]}
         {@const tt = TOOLTIPS[activeTooltip]}
-        <div class="tt-card" role="tooltip" style={tooltipStyle}
+        <div class="tech-tt" role="tooltip" style={tooltipStyle}
             onmouseenter={keepTooltip} onmouseleave={hideTooltip}>
             <div class="text-[14px] font-semibold text-text uppercase tracking-wider mb-1">{tt.title}</div>
             <div class="text-[13px] text-text-muted leading-relaxed mb-2.5">{tt.description}</div>
             {#each tt.levels as lvl}
-                <div class="flex items-start gap-2 mb-1.5">
-                    <span class="text-[12px] font-bold uppercase w-20 shrink-0 {lvl.color}">{lvl.label}</span>
-                    <span class="text-[14px] text-text-faint w-16 shrink-0">{lvl.range}</span>
-                    <span class="text-[13px] text-text-muted leading-snug">{lvl.meaning}</span>
+                <div class="tt-row">
+                    <span class="tt-label {lvl.color}">{lvl.label}</span>
+                    <span class="tt-range">{lvl.range}</span>
+                    <span class="tt-meaning">{lvl.meaning}</span>
                 </div>
             {/each}
         </div>
@@ -372,20 +372,48 @@
     .tt-portal {
         display: contents;
     }
-    .tt-card {
+    :global(.tech-tt) {
         position: fixed;
         z-index: 9999;
-        width: min(380px, calc(100vw - 2rem));
+        box-sizing: border-box;
         padding: var(--space-md) var(--space-lg);
         background: var(--surface-overlay);
         border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         backdrop-filter: blur(8px);
         box-shadow: var(--shadow-tooltip);
+        overflow-wrap: break-word;
+        word-break: break-word;
         opacity: 0;
-        animation: tt-fade 0.12s ease-out forwards;
+        animation: tech-tt-fade 0.12s ease-out forwards;
     }
-    @keyframes tt-fade {
+    :global(.tech-tt .tt-row) {
+        display: flex;
+        align-items: start;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    :global(.tech-tt .tt-label) {
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        width: 72px;
+        flex-shrink: 0;
+    }
+    :global(.tech-tt .tt-range) {
+        font-size: 12px;
+        color: var(--text-faint);
+        width: 56px;
+        flex-shrink: 0;
+    }
+    :global(.tech-tt .tt-meaning) {
+        font-size: 13px;
+        color: var(--text-muted);
+        line-height: 1.4;
+        min-width: 0;
+        flex: 1;
+    }
+    @keyframes tech-tt-fade {
         to { opacity: 1; }
     }
 </style>

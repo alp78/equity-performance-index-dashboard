@@ -35,7 +35,7 @@
         try { sessionStorage.setItem('dash_last_stock_index', stockIndex); } catch {}
         marketIndex.set('sectors');
         sectorAnalysisMode.set('single-index');
-        const idxKey = (stockIndex && INDEX_CONFIG[stockIndex]) ? stockIndex : 'stoxx50';
+        const idxKey = (stockIndex && INDEX_CONFIG[stockIndex]) ? stockIndex : Object.keys(INDEX_CONFIG)[0];
         singleSelectedIndex.set([idxKey]);
         try { sessionStorage.setItem('dash_single_open_index', idxKey); } catch {}
         // Ensure sector is checked in both cross-index and single-index
@@ -47,7 +47,7 @@
 
     // Called from SectorPanel "Stock Mode" hover button
     async function handleGoToStockMode(sectorName) {
-        const idxKey = (browser && sessionStorage.getItem('dash_single_open_index')) || 'stoxx50';
+        const idxKey = (browser && sessionStorage.getItem('dash_single_open_index')) || Object.keys(INDEX_CONFIG)[0];
         if (idxKey && INDEX_CONFIG[idxKey]) {
             marketIndex.set(idxKey);
             const newTickers = await loadSummaryData(idxKey);

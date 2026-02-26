@@ -213,6 +213,14 @@
     <!-- header -->
     <div class="px-5 pt-5 pb-3 flex-shrink-0 border-b border-border">
         <SectionHeader title="Sector Heatmap" subtitle="Normalized % Change">
+            {#snippet tooltip()}
+                <div class="tt-title">Cross-Index Sector Grid</div>
+                <div class="tt-desc">Each cell shows a GICS sector's average stock return for one index over the selected period. Intensity is capped at the 80th percentile to prevent outliers from washing out the scale.</div>
+                <div class="tt-row"><span class="tt-label">Cell %</span><span class="tt-meaning">Average return of all stocks in the sector for that index</span></div>
+                <div class="tt-row"><span class="tt-label">Avg</span><span class="tt-meaning">Cross-index average return for the sector</span></div>
+                <div class="tt-row"><span class="tt-label">Color</span><span class="tt-meaning">Green = positive return, red = negative; brightness = magnitude</span></div>
+                <div class="tt-row"><span class="tt-label">Click</span><span class="tt-meaning">Select a sector row to highlight it and update the top-stocks panel</span></div>
+            {/snippet}
             {#snippet action()}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
                 {#if !allSectorSeries}

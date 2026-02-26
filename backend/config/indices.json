@@ -3,6 +3,9 @@
     "bqDataset": "stock_exchange",
     "priority": 2
   },
+  "_extraFxPairs": [
+    { "pair": "USD/CHF", "flagCode": "ch" }
+  ],
   "indices": {
     "stoxx50": {
       "label": "EURO STOXX 50",
@@ -13,7 +16,7 @@
       "flagCode": "eu",
       "currency": "€",
       "currencyCode": "EUR",
-      "region": "west",
+      "region": "europe",
       "color": "#10B981",
       "priority": 1,
       "defaultSymbol": "ASML.AS",
@@ -23,7 +26,9 @@
         "tz": "Europe/Zurich",
         "fxPair": "EUR/USD",
         "marketCode": "EU",
-        "hours": { "open": "09:00", "close": "17:30" }
+        "hours": { "open": "09:00", "close": "17:30" },
+        "exchangeCalendar": "XFRA",
+        "syncAfterUtc": 17
       },
       "tickerSuffixes": [".DE", ".PA", ".AS", ".BR", ".MI", ".MC", ".HE"],
       "newsKeywords": ["Europe", "European", "ECB", "Euro Stoxx", "Eurozone", "EU ", "Frankfurt", "Paris stock", "Amsterdam", "DAX ", "Airbus", "LVMH", "Siemens", "Deutsche Bank", "BNP Paribas", "Allianz", "STOXX"],
@@ -38,7 +43,7 @@
       "flagCode": "us",
       "currency": "$",
       "currencyCode": "USD",
-      "region": "west",
+      "region": "americas",
       "color": "#3B82F6",
       "priority": 1,
       "defaultSymbol": "NVDA",
@@ -48,7 +53,9 @@
         "tz": "America/New_York",
         "fxPair": null,
         "marketCode": "US",
-        "hours": { "open": "09:30", "close": "16:00" }
+        "hours": { "open": "09:30", "close": "16:00" },
+        "exchangeCalendar": "XNYS",
+        "syncAfterUtc": 21
       },
       "tickerSuffixes": [],
       "newsKeywords": ["S&P", "Wall Street", "Nasdaq", "Dow Jones", "NYSE", "Fed ", "Federal Reserve", "Treasury", "US economy", "US stock", "Silicon Valley"],
@@ -63,7 +70,7 @@
       "flagCode": "gb",
       "currency": "£",
       "currencyCode": "GBP",
-      "region": "west",
+      "region": "europe",
       "color": "#EF4444",
       "priority": 2,
       "defaultSymbol": "SHEL.L",
@@ -73,7 +80,9 @@
         "tz": "Europe/London",
         "fxPair": "GBP/USD",
         "marketCode": "UK",
-        "hours": { "open": "08:00", "close": "16:30" }
+        "hours": { "open": "08:00", "close": "16:30" },
+        "exchangeCalendar": "XLON",
+        "syncAfterUtc": 17
       },
       "tickerSuffixes": [".L"],
       "newsKeywords": ["UK ", "Britain", "British", "FTSE", "London Stock", "Bank of England", "BOE "],
@@ -88,7 +97,7 @@
       "flagCode": "jp",
       "currency": "¥",
       "currencyCode": "JPY",
-      "region": "east",
+      "region": "asia-pacific",
       "color": "#A855F7",
       "priority": 2,
       "defaultSymbol": "7203.T",
@@ -98,7 +107,9 @@
         "tz": "Asia/Tokyo",
         "fxPair": "USD/JPY",
         "marketCode": "JP",
-        "hours": { "open": "09:00", "close": "15:00" }
+        "hours": { "open": "09:00", "close": "15:00" },
+        "exchangeCalendar": "XTKS",
+        "syncAfterUtc": 7
       },
       "tickerSuffixes": [".T"],
       "newsKeywords": ["Japan", "Japanese", "Nikkei", "Tokyo", "Bank of Japan", "BOJ"],
@@ -113,7 +124,7 @@
       "flagCode": "cn",
       "currency": "¥",
       "currencyCode": "CNY",
-      "region": "east",
+      "region": "asia-pacific",
       "color": "#06B6D4",
       "priority": 2,
       "defaultSymbol": "600519.SS",
@@ -123,7 +134,9 @@
         "tz": "Asia/Shanghai",
         "fxPair": "USD/CNY",
         "marketCode": "CN",
-        "hours": { "open": "09:30", "close": "15:00" }
+        "hours": { "open": "09:30", "close": "15:00" },
+        "exchangeCalendar": "XSHG",
+        "syncAfterUtc": 8
       },
       "tickerSuffixes": [".SS", ".SZ"],
       "newsKeywords": ["China", "Chinese", "Shanghai", "Beijing", "CSI", "Hang Seng", "PBOC", "Hong Kong"],
@@ -138,7 +151,7 @@
       "flagCode": "in",
       "currency": "₹",
       "currencyCode": "INR",
-      "region": "east",
+      "region": "asia-pacific",
       "color": "#F59E0B",
       "priority": 2,
       "defaultSymbol": "RELIANCE.NS",
@@ -148,11 +161,67 @@
         "tz": "Asia/Kolkata",
         "fxPair": "USD/INR",
         "marketCode": "IN",
-        "hours": { "open": "09:15", "close": "15:30" }
+        "hours": { "open": "09:15", "close": "15:30" },
+        "exchangeCalendar": "XBOM",
+        "syncAfterUtc": 11
       },
       "tickerSuffixes": [".NS", ".BO"],
       "newsKeywords": ["India", "Indian", "Nifty", "Mumbai", "Sensex", "BSE", "NSE", "Rupee"],
       "newsTickers": ["INFY", "WIT", "HDB", "IBN", "TTM"]
+    },
+    "bovespa": {
+      "label": "Ibovespa",
+      "shortLabel": "Bovespa",
+      "abbr": "BOV",
+      "ticker": "^BVSP",
+      "flag": "fi fi-br",
+      "flagCode": "br",
+      "currency": "R$",
+      "currencyCode": "BRL",
+      "region": "americas",
+      "color": "#22D3EE",
+      "priority": 2,
+      "defaultSymbol": "VALE3.SA",
+      "bqTable": "bovespa_prices",
+      "exchange": {
+        "city": "São Paulo",
+        "tz": "America/Sao_Paulo",
+        "fxPair": "USD/BRL",
+        "marketCode": "BR",
+        "hours": { "open": "10:00", "close": "17:00" },
+        "exchangeCalendar": "BVMF",
+        "syncAfterUtc": 22
+      },
+      "tickerSuffixes": [".SA"],
+      "newsKeywords": ["Brazil", "Brazilian", "Bovespa", "Ibovespa", "B3", "Sao Paulo", "Real", "Lula"],
+      "newsTickers": ["VALE", "PBR", "ITUB", "BBD"]
+    },
+    "asx200": {
+      "label": "S&P/ASX 200",
+      "shortLabel": "ASX 200",
+      "abbr": "ASX",
+      "ticker": "^AXJO",
+      "flag": "fi fi-au",
+      "flagCode": "au",
+      "currency": "A$",
+      "currencyCode": "AUD",
+      "region": "asia-pacific",
+      "color": "#EC4899",
+      "priority": 2,
+      "defaultSymbol": "BHP.AX",
+      "bqTable": "asx200_prices",
+      "exchange": {
+        "city": "Sydney",
+        "tz": "Australia/Sydney",
+        "fxPair": "AUD/USD",
+        "marketCode": "AU",
+        "hours": { "open": "10:00", "close": "16:00" },
+        "exchangeCalendar": "XASX",
+        "syncAfterUtc": 7
+      },
+      "tickerSuffixes": [".AX"],
+      "newsKeywords": ["Australia", "Australian", "ASX", "Sydney", "RBA", "Reserve Bank of Australia"],
+      "newsTickers": ["BHP", "CBA", "CSL", "WBC"]
     }
   }
 }

@@ -106,3 +106,33 @@ export const INDEX_META_BY_TICKER = Object.fromEntries(
         key,
     }])
 );
+
+
+// ── FX pair metadata (derived from exchange.fxPair) ─────────────────────
+
+// All index-derived FX pairs (ordered by config order, excludes USD)
+export const INDEX_FX_PAIRS = Object.values(_indices)
+    .map(cfg => cfg.exchange?.fxPair)
+    .filter(Boolean);
+
+// FX flag map: pair → flag CSS class (e.g. "EUR/USD" → "fi-eu")
+export const FX_FLAG_MAP = Object.fromEntries([
+    ...Object.values(_indices)
+        .filter(cfg => cfg.exchange?.fxPair)
+        .map(cfg => [cfg.exchange.fxPair, `fi-${cfg.flagCode}`]),
+    ...(rawConfig._extraFxPairs || [])
+        .map(p => [p.pair, `fi-${p.flagCode}`]),
+]);
+
+// Zero-decimal currencies (ISO 4217) get 2 decimal places, others get 4
+const _ZERO_DECIMAL_CCYS = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'HUF']);
+
+export function fxDecimals(pair) {
+    const ccy = pair.replace('USD/', '').replace('/USD', '');
+    return _ZERO_DECIMAL_CCYS.has(ccy) ? 2 : 4;
+}
+
+export function fmtFx(pair, val) {
+    if (val == null) return '\u2014';
+    return val.toFixed(fxDecimals(pair));
+}

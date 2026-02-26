@@ -30,7 +30,9 @@
         'CN': 'fi-cn', 'IN': 'fi-in', 'DE': 'fi-de', 'FR': 'fi-fr',
         'AU': 'fi-au', 'CA': 'fi-ca', 'CH': 'fi-ch', 'KR': 'fi-kr',
         'BR': 'fi-br', 'MX': 'fi-mx', 'NZ': 'fi-nz', 'SE': 'fi-se',
-        'NO': 'fi-no', 'IT': 'fi-it', 'ES': 'fi-es',
+        'NO': 'fi-no', 'IT': 'fi-it', 'ES': 'fi-es', 'NL': 'fi-nl',
+        'BE': 'fi-be', 'FI': 'fi-fi', 'IE': 'fi-ie', 'AT': 'fi-at',
+        'PT': 'fi-pt', 'GR': 'fi-gr',
     };
 
     function impactColor(impact) {

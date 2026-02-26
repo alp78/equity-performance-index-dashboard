@@ -88,6 +88,11 @@
     let _comparisonVersion = 0;
     let currencyMode = $state('local'); // 'local' or 'usd'
     let fxError = $state(false);
+    let ccyTip = $state(false);
+    let ccyTipTimer;
+    function showCcyTip() { if (ccyTipTimer) clearTimeout(ccyTipTimer); ccyTip = true; }
+    function hideCcyTip() { ccyTipTimer = setTimeout(() => { ccyTip = false; }, 150); }
+    function keepCcyTip() { if (ccyTipTimer) clearTimeout(ccyTipTimer); }
     let highlightKey = $derived($macroHighlightIndex);
     let highlightTicker = $derived(highlightKey ? INDEX_KEY_TO_TICKER[highlightKey] : null);
 
@@ -1402,7 +1407,9 @@
             <div class="flex flex-col items-end gap-1.5 max-lg:w-full max-lg:items-start">
                 <div class="flex items-center gap-2">
                     {#if inOverview}
-                        <Tooltip text="LOCAL: returns in each index's native currency. USD: all returns converted to USD at historical ECB daily rates." position="bottom" wrap>
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div class="relative" role="group"
+                             onmouseenter={showCcyTip} onmouseleave={hideCcyTip}>
                         <div class="flex items-center rounded-full bg-bg-subtle p-0.5">
                             <button
                                 onclick={() => setCurrencyMode('local')}
@@ -1425,7 +1432,15 @@
                                         : 'text-text-muted hover:text-text'}"
                             >USD</button>
                         </div>
-                        </Tooltip>
+                        {#if ccyTip}
+                            <div class="ccy-tt-card" role="tooltip" onmouseenter={keepCcyTip} onmouseleave={hideCcyTip}>
+                                <div class="tt-title">Currency Mode</div>
+                                <div class="tt-desc">Toggle how index returns are denominated across the performance table and correlation matrix.</div>
+                                <div class="tt-row"><span class="tt-label">Local</span><span class="tt-meaning">Returns in each index's native currency (EUR, GBP, JPY, etc.)</span></div>
+                                <div class="tt-row"><span class="tt-label">USD</span><span class="tt-meaning">All returns converted to USD using historical ECB daily exchange rates</span></div>
+                            </div>
+                        {/if}
+                        </div>
                     {/if}
 
                     <div class="flex items-center gap-1 border border-border p-1 rounded-lg max-sm:hidden">
@@ -1734,4 +1749,37 @@
     .macro-scroll::-webkit-scrollbar-track { background: transparent; }
     .macro-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 10px; }
     .macro-scroll::-webkit-scrollbar-thumb:hover { background: var(--border-default); }
+
+    .ccy-tt-card {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        z-index: 9999;
+        width: min(340px, calc(100vw - 2rem));
+        padding: var(--space-md) var(--space-lg);
+        background: var(--surface-overlay);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-lg);
+        backdrop-filter: blur(8px);
+        box-shadow: var(--shadow-tooltip);
+        pointer-events: auto;
+    }
+
+    .ccy-tt-card :global(.tt-title) {
+        font-size: 14px; font-weight: 600; color: var(--text-primary);
+        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
+    }
+    .ccy-tt-card :global(.tt-desc) {
+        font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px;
+    }
+    .ccy-tt-card :global(.tt-row) {
+        display: flex; align-items: start; gap: 8px; margin-bottom: 6px;
+    }
+    .ccy-tt-card :global(.tt-label) {
+        font-size: 12px; font-weight: 700; text-transform: uppercase;
+        color: var(--text-secondary); width: 56px; flex-shrink: 0;
+    }
+    .ccy-tt-card :global(.tt-meaning) {
+        font-size: 13px; color: var(--text-muted); line-height: 1.4;
+    }
 </style>

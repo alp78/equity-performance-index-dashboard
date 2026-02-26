@@ -14,7 +14,6 @@
 
 <script>
     import Card from '$lib/components/ui/Card.svelte';
-    import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
     import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
     import { fmtDate } from '$lib/format.js';
@@ -121,60 +120,61 @@
 
     <!-- header -->
     <div class="px-5 pt-5 pb-3 shrink-0 border-b border-border">
-        <SectionHeader title="Correlation Matrix">
-            {#snippet action()}
-                <div class="flex items-center gap-2">
-                    <span class="text-[11px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
-                    {#if loading}
-                        <div class="w-3 h-3 border border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+        <div class="flex items-center justify-between gap-2">
+            <div class="flex items-baseline gap-2 min-w-0">
+                <!-- title with rich tooltip -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_static_element_interactions -->
+                <div class="relative inline-block" role="button"
+                     onmouseenter={showPearsonTip} onmouseleave={hidePearsonTip}
+                     onfocus={showPearsonTip} onblur={hidePearsonTip}
+                     tabindex="0">
+                    <h3 class="text-[12px] font-semibold uppercase tracking-[0.08em] text-muted cursor-default">Correlation Matrix</h3>
+                    {#if pearsonTip}
+                        <div class="tt-card" role="tooltip" onmouseenter={keepPearsonTip} onmouseleave={hidePearsonTip}>
+                            <div class="text-[14px] font-semibold text-text uppercase tracking-wider mb-1">Pearson Correlation</div>
+                            <div class="text-[13px] text-text-muted leading-relaxed mb-2.5">Measures how closely two indices move together day-to-day. Computed from daily return pairs over the selected period.</div>
+                            <div class="flex items-start gap-2 mb-1.5">
+                                <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.95">+0.7 → +1.0</span>
+                                <span class="text-[13px] text-text-muted leading-snug">Strong positive — indices move in sync</span>
+                            </div>
+                            <div class="flex items-start gap-2 mb-1.5">
+                                <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.65">+0.3 → +0.7</span>
+                                <span class="text-[13px] text-text-muted leading-snug">Moderate — some shared direction</span>
+                            </div>
+                            <div class="flex items-start gap-2 mb-1.5">
+                                <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.35">  0 → +0.3</span>
+                                <span class="text-[13px] text-text-muted leading-snug">Weak positive — slight shared tendency</span>
+                            </div>
+                            <div class="flex items-start gap-2 mb-1.5">
+                                <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.25">−0.3 → 0</span>
+                                <span class="text-[13px] text-text-muted leading-snug">Weak negative — slight divergence</span>
+                            </div>
+                            <div class="flex items-start gap-2">
+                                <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.15">−1.0 → −0.3</span>
+                                <span class="text-[13px] text-text-muted leading-snug">Negative — indices move in opposite directions</span>
+                            </div>
+                        </div>
                     {/if}
                 </div>
-            {/snippet}
-        </SectionHeader>
-        <div class="flex items-center gap-3 mt-1">
-            <div class="relative inline-block" role="button"
-                 onmouseenter={showPearsonTip} onmouseleave={hidePearsonTip}
-                 onfocus={showPearsonTip} onblur={hidePearsonTip}
-                 tabindex="0">
-                <span class="text-[13px] font-medium text-text-faint uppercase tracking-wider cursor-default
-                    border-b border-dashed border-border hover:text-text-muted hover:border-border-subtle transition-colors">Pearson daily returns</span>
-                {#if pearsonTip}
-                    <div class="tt-card" role="tooltip" onmouseenter={keepPearsonTip} onmouseleave={hidePearsonTip}>
-                        <div class="text-[14px] font-semibold text-text uppercase tracking-wider mb-1">Pearson Correlation</div>
-                        <div class="text-[13px] text-text-muted leading-relaxed mb-2.5">Measures how closely two indices move together day-to-day. Computed from daily return pairs over the selected period.</div>
-                        <div class="flex items-start gap-2 mb-1.5">
-                            <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.95">+0.7 → +1.0</span>
-                            <span class="text-[13px] text-text-muted leading-snug">Strong positive — indices move in sync</span>
-                        </div>
-                        <div class="flex items-start gap-2 mb-1.5">
-                            <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.65">+0.3 → +0.7</span>
-                            <span class="text-[13px] text-text-muted leading-snug">Moderate — some shared direction</span>
-                        </div>
-                        <div class="flex items-start gap-2 mb-1.5">
-                            <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.35">  0 → +0.3</span>
-                            <span class="text-[13px] text-text-muted leading-snug">Weak positive — slight shared tendency</span>
-                        </div>
-                        <div class="flex items-start gap-2 mb-1.5">
-                            <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.25">−0.3 → 0</span>
-                            <span class="text-[13px] text-text-muted leading-snug">Weak negative — slight divergence</span>
-                        </div>
-                        <div class="flex items-start gap-2">
-                            <span class="text-[12px] font-bold uppercase w-20 shrink-0" style="color: var(--text-primary); opacity: 0.15">−1.0 → −0.3</span>
-                            <span class="text-[13px] text-text-muted leading-snug">Negative — indices move in opposite directions</span>
-                        </div>
+                <!-- subtitle: inline, no underline, matches IndexPerformanceTable subtitle style -->
+                <span class="text-[11px] font-medium" style="color: var(--text-disabled)">Pearson daily returns</span>
+            </div>
+            <div class="flex items-center gap-3 shrink-0">
+                {#if highlightPair}
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-[11px] font-bold text-text-secondary uppercase tracking-wider">
+                            {INDEX_CONFIG[highlightPair.row]?.abbr || highlightPair.row} × {INDEX_CONFIG[highlightPair.col]?.abbr || highlightPair.col}
+                        </span>
+                        <button class="text-[11px] text-text-faint hover:text-text-secondary transition-colors" aria-label="Clear correlation selection" onclick={() => onCellClick?.(highlightPair)}>
+                            ✕ clear
+                        </button>
                     </div>
                 {/if}
+                <span class="text-[11px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
+                {#if loading}
+                    <div class="w-3 h-3 border border-border border-t-text-muted rounded-full animate-spin" aria-hidden="true"></div>
+                {/if}
             </div>
-            {#if highlightPair}
-                <div class="ml-auto flex items-center gap-1.5">
-                    <span class="text-[13px] font-bold text-text-secondary uppercase tracking-wider">
-                        {INDEX_CONFIG[highlightPair.row]?.abbr || highlightPair.row} × {INDEX_CONFIG[highlightPair.col]?.abbr || highlightPair.col}
-                    </span>
-                    <button class="text-[11px] text-text-faint hover:text-text-secondary transition-colors" aria-label="Clear correlation selection" onclick={() => onCellClick?.(highlightPair)}>
-                        ✕ clear
-                    </button>
-                </div>
-            {/if}
         </div>
     </div>
 

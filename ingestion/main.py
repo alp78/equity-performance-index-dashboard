@@ -16,8 +16,8 @@
    4. NOTIFY         — POST to backend /api/admin/refresh/{index} so the
                        in-memory DuckDB reloads the updated table
 
- Covers 6 stock indices (S&P 500, STOXX 50, FTSE 100, Nikkei 225,
- CSI 300, Nifty 50) plus 6 index-level tickers (^GSPC, ^STOXX50E, etc.).
+ Covers all stock indices defined in config/indices.json plus their
+ index-level benchmark tickers.
 
  Trigger     : Cloud Scheduler → HTTP POST (body: {"index": "all"|key})
  Destination : BigQuery {PROJECT_ID}.{DATASET_ID}.{table_id}
@@ -38,6 +38,7 @@
 import functions_framework
 from google.cloud import bigquery, storage
 from os import getenv
+from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
@@ -58,65 +59,46 @@ BUCKET_NAME = getenv("BUCKET_NAME")
 # ═══════════════════════════════════════════════════════════════════════════
 #  1. CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════
-#  Per-index table mappings, index-level tickers, exchange suffixes, and
-#  retry constants.  sync_after_utc sets the earliest UTC hour at which
-#  the sync assumes that day's market close has occurred.
+#  All index metadata is loaded from config/indices.json (single source of
+#  truth).  Per-index table mappings, index-level tickers, exchange suffixes,
+#  and retry constants are derived automatically — adding a new index
+#  requires only a new entry in that JSON file.
 
-# ─── Stock Index Configs (per-stock prices) ───
+# ─── Load config/indices.json ───
+_CF_PATH = Path("/config/indices.json")
+_LOCAL_PATH = Path(__file__).parent / "config" / "indices.json"
+_DEV_PATH = Path(__file__).parent.parent / "config" / "indices.json"
+_CONFIG_PATH = next((p for p in [_CF_PATH, _LOCAL_PATH, _DEV_PATH] if p.exists()), _DEV_PATH)
+_RAW_CFG = json.load(open(_CONFIG_PATH))
+_INDICES_CFG = _RAW_CFG.get("indices", {})
+
+# ─── Stock Index Configs (per-stock prices) — derived from config ───
 INDICES = {
-    "stoxx50": {
-        "table_id": getenv("STOXX50_TABLE_ID", "stoxx50_prices"),
-        "sync_after_utc": 17,
-        "cal": "XFRA",
-    },
-    "sp500": {
-        "table_id": getenv("SP500_TABLE_ID", "sp500_prices"),
-        "sync_after_utc": 21,
-        "cal": "XNYS",
-    },
-    "ftse100": {
-        "table_id": getenv("FTSE100_TABLE_ID", "ftse100_prices"),
-        "sync_after_utc": 17,
-        "cal": "XLON",
-    },
-    "nikkei225": {
-        "table_id": getenv("NIKKEI225_TABLE_ID", "nikkei225_prices"),
-        "sync_after_utc": 7,
-        "cal": "XTKS",
-    },
-    "csi300": {
-        "table_id": getenv("CSI300_TABLE_ID", "csi300_prices"),
-        "sync_after_utc": 8,
-        "cal": "XSHG",
-    },
-    "nifty50": {
-        "table_id": getenv("NIFTY50_TABLE_ID", "nifty50_prices"),
-        "sync_after_utc": 11,
-        "cal": "XBOM",
-    },
+    key: {
+        "table_id": getenv(f"{key.upper()}_TABLE_ID", cfg["bqTable"]),
+        "sync_after_utc": cfg["exchange"]["syncAfterUtc"],
+        "cal": cfg["exchange"]["exchangeCalendar"],
+    }
+    for key, cfg in _INDICES_CFG.items()
 }
 
-# ─── Index-Level Price Tickers ───
+# ─── Index-Level Price Tickers — derived from config ───
 INDEX_PRICE_TABLE = getenv("INDEX_PRICE_TABLE_ID", "index_prices")
 
 INDEX_TICKERS = {
-    "^GSPC":      {"name": "S&P 500",       "currency": "USD", "exchange": "SNP",  "cal": "XNYS"},
-    "^STOXX50E":  {"name": "EURO STOXX 50", "currency": "EUR", "exchange": "XETR", "cal": "XFRA"},
-    "^FTSE":      {"name": "FTSE 100",      "currency": "GBP", "exchange": "LSE",  "cal": "XLON"},
-    "^N225":      {"name": "Nikkei 225",    "currency": "JPY", "exchange": "TKS",  "cal": "XTKS"},
-    "000300.SS":  {"name": "CSI 300",       "currency": "CNY", "exchange": "SHG",  "cal": "XSHG"},
-    "^NSEI":      {"name": "Nifty 50",      "currency": "INR", "exchange": "NSE",  "cal": "XBOM"},
+    cfg["ticker"]: {
+        "name": cfg["label"],
+        "currency": cfg["currencyCode"],
+        "exchange": cfg["exchange"]["marketCode"],
+        "cal": cfg["exchange"]["exchangeCalendar"],
+    }
+    for cfg in _INDICES_CFG.values()
 }
 
 MAX_RETRIES = 3
 RETRY_DELAY_SEC = 30
 
-EXCHANGE_SUFFIXES = {
-    '.DE', '.PA', '.AS', '.BR', '.MI', '.MC', '.HE', '.VI',
-    '.L',  '.SW', '.ST', '.CO', '.OL',
-    '.T',  '.HK', '.SI', '.AX', '.NZ', '.SA', '.MX',
-    '.TO', '.V',  '.NS', '.BO', '.SS', '.SZ',
-}
+EXCHANGE_SUFFIXES = {s for cfg in _INDICES_CFG.values() for s in cfg.get("tickerSuffixes", [])}
 
 
 def to_yf_ticker(db_ticker):
@@ -493,7 +475,7 @@ def sync_index(bq_client, storage_client, index_key, config, now_utc):
 # ═══════════════════════════════════════════════════════════════════════════
 #  7. INDEX PRICES SYNC
 # ═══════════════════════════════════════════════════════════════════════════
-#  Same gap-detection pipeline for the 6 index-level tickers (^GSPC, etc.).
+#  Same gap-detection pipeline for all index-level tickers from config.
 #  Each ticker uses its own exchange calendar for accurate gap detection.
 #  Falls back to individual downloads if bulk yfinance call fails.
 

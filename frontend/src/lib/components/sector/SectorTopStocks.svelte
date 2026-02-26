@@ -145,6 +145,13 @@
 
     <!-- header -->
     <SectionHeader title="Top Stocks" subtitle="Stock Return %" border>
+        {#snippet tooltip()}
+            <div class="tt-title">Sector Stock Rankings</div>
+            <div class="tt-desc">Best and worst performing stocks within the selected sector, across all loaded indices.</div>
+            <div class="tt-row"><span class="tt-label">Top 5</span><span class="tt-meaning">Strongest positive returns in the sector over the period</span></div>
+            <div class="tt-row"><span class="tt-label">Bot 5</span><span class="tt-meaning">Largest negative returns (losers) in the sector</span></div>
+            <div class="tt-row"><span class="tt-label">Click</span><span class="tt-meaning">Select a stock to view its chart and technicals</span></div>
+        {/snippet}
         {#snippet action()}
             {#if isCustom}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">

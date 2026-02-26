@@ -18,6 +18,7 @@
     import { API_BASE_URL } from '$lib/config.js';
     import { riskHighlight } from '$lib/stores.js';
     import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
+    import { INDEX_FX_PAIRS, FX_FLAG_MAP, fmtFx } from '$lib/index-registry.js';
 
     // Map risk pill keys to FRED series IDs or 'fx' for the FX section
     const RISK_TO_IDS = {
@@ -50,12 +51,12 @@
     let fxTimer;
     let ratesTimer;
 
-    const FX_PAIRS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CNY', 'USD/INR', 'USD/CHF', 'AUD/USD'];
+    // FX pairs derived from config; extras from backend response appended dynamically
+    const _indexPairSet = new Set(INDEX_FX_PAIRS);
 
-    const FX_FLAGS = {
-        'EUR/USD': 'fi-eu', 'GBP/USD': 'fi-gb', 'USD/JPY': 'fi-jp',
-        'USD/CNY': 'fi-cn', 'USD/INR': 'fi-in', 'USD/CHF': 'fi-ch', 'AUD/USD': 'fi-au',
-    };
+    function getFxFlag(pair) {
+        return FX_FLAG_MAP[pair] || `fi-${pair.replace('USD/', '').replace('/USD', '').toLowerCase()}`;
+    }
 
     const GROUP_ORDER = ['bonds', 'commodities', 'rates', 'volatility'];
     const GROUP_LABELS = { bonds: 'BONDS', commodities: 'COMMODITIES', rates: 'RATES', volatility: 'VOLATILITY' };
@@ -67,6 +68,13 @@
             if (groups[inst.group]) groups[inst.group].push(inst);
         }
         return groups;
+    });
+
+    let orderedFxPairs = $derived.by(() => {
+        const backend = Object.keys(fxRates);
+        const fromIndex = INDEX_FX_PAIRS.filter(p => backend.includes(p));
+        const extras = backend.filter(p => !_indexPairSet.has(p));
+        return [...fromIndex, ...extras];
     });
 
     const FX_TTL = 5 * 60 * 1000;
@@ -131,11 +139,7 @@
         return sign + change.toFixed(2);
     }
 
-    function fmtFx(pair, val) {
-        if (val == null) return '—';
-        if (pair.startsWith('USD/')) return val.toFixed(pair === 'USD/JPY' ? 2 : 4);
-        return val.toFixed(4);
-    }
+    // fmtFx imported from $lib/index-registry.js
 </script>
 
 <div class="macro-watchlist-root flex flex-col h-full">
@@ -151,7 +155,7 @@
                 <div class="flex-1 flex items-center gap-2 px-3 py-1.5 bg-surface-2 border-b border-border-subtle min-h-0">
                     <span class="text-[11px] font-bold text-text-secondary uppercase tracking-widest">FX RATES</span>
                 </div>
-                {#each FX_PAIRS as pair}
+                {#each orderedFxPairs as pair}
                     {@const fx = fxRates[pair]}
                     {#if fx}
                         {@const val = typeof fx === 'object' ? fx.value : fx}
@@ -159,7 +163,7 @@
                         <div class="flex-1 flex items-center gap-2 pr-3 border-b border-border-subtle hover:bg-bg-hover transition-all min-h-0 relative
                             {isHighlightedFx() ? 'ml-4 pl-3 bg-bg-selected !border-b-selected-border/50 rounded-l-md' : 'pl-4'}">
                             {#if isHighlightedFx()}<div class="absolute left-0 top-0 bottom-0 w-1 rounded-l-md bg-selected-border"></div>{/if}
-                            <span class="fi {FX_FLAGS[pair]} fis rounded-sm shrink-0" style="font-size: 0.9rem;"></span>
+                            <span class="fi {getFxFlag(pair)} fis rounded-sm shrink-0" style="font-size: 0.9rem;"></span>
                             <div class="flex-1 text-left min-w-0">
                                 <span class="inst-name font-medium text-text-muted">{pair}</span>
                             </div>

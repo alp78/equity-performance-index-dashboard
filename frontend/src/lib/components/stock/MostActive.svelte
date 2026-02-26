@@ -116,7 +116,14 @@
 <Card fill class="most-active-root">
 
     <!-- header -->
-    <SectionHeader title="Volume Surge" titleTooltip="Ranked by volume ratio: average daily volume over the selected period divided by the stock's all-time average daily volume. A ratio of 2.0x means trading volume is double the historical norm." subtitle={indexLabel} subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Volume Surge" subtitle={indexLabel} subtitleFlag={indexFlag} border size="lg">
+        {#snippet tooltip()}
+            <div class="tt-title">Volume Ratio</div>
+            <div class="tt-desc">Stocks ranked by how much their recent trading volume exceeds their historical average.</div>
+            <div class="tt-row"><span class="tt-label">Ratio</span><span class="tt-meaning">Average daily volume over the period divided by the stock's all-time average daily volume</span></div>
+            <div class="tt-row"><span class="tt-label">2.0×</span><span class="tt-meaning">Trading activity is double the historical norm</span></div>
+            <div class="tt-row"><span class="tt-label">Rank</span><span class="tt-meaning">Ordered from highest to lowest volume ratio</span></div>
+        {/snippet}
         {#snippet action()}
             {#if customRange?.start}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">

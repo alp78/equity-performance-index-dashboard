@@ -14,6 +14,9 @@ import { writable } from 'svelte/store';
 import { browser } from '$app/environment';
 import { API_BASE_URL } from '$lib/config.js';
 import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
+import { INDEX_CONFIG } from '$lib/index-registry.js';
+
+const _defaultIndex = Object.keys(INDEX_CONFIG)[0];
 
 
 // ── Data Stores ──────────────────────────────────────────────────────────
@@ -67,7 +70,7 @@ async function fetchWithRetry(url, retries = 2, timeout = 10000) {
 
 const SUMMARY_TTL = 2 * 60 * 1000; // 2 min — stock list refreshes frequently
 
-export async function loadSummaryData(index = 'stoxx50') {
+export async function loadSummaryData(index = _defaultIndex) {
     if (!browser) return;
     const cacheKey = `summary_${index}`;
     // SWR: serve cached instantly, revalidate in background if stale
@@ -141,7 +144,7 @@ export async function loadIndexOverviewData() {
 
 const RANKINGS_TTL = 5 * 60 * 1000; // 5 min — rankings change slowly
 
-export async function loadRankingsData(period = '1y', index = 'stoxx50') {
+export async function loadRankingsData(period = '1y', index = _defaultIndex) {
     if (!browser) return;
     const cacheKey = `rankings_${period}_${index}`;
     const cached = getCached(cacheKey);

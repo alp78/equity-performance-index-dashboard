@@ -48,9 +48,10 @@
     let sectorPanelOpen = $state(new Set());
     let allSectorIndustries = $state({});
     let singleIndexIndustries = $state({});
+    const _defaultIdx = Object.keys(INDEX_CONFIG)[0];
     let singleOpenIndex = $state((() => {
-        if (!browser) return 'stoxx50';
-        try { return sessionStorage.getItem('dash_single_open_index') || 'stoxx50'; } catch { return 'stoxx50'; }
+        if (!browser) return _defaultIdx;
+        try { return sessionStorage.getItem('dash_single_open_index') || _defaultIdx; } catch { return _defaultIdx; }
     })());
     let singleOpenSectors = $state(new Set());
     let singleDropdownOpen = $state(false);

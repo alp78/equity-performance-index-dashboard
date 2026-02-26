@@ -117,3 +117,55 @@ INDEX_CONFIG_PUBLIC = {
     }
     for key, cfg in _INDICES.items()
 }
+
+
+# ── FX pair metadata (derived from exchange.fxPair) ───────────────────────
+
+_EXTRA_FX = _RAW.get("_extraFxPairs", [])
+
+# All non-USD currencies needed for historical FX conversion
+FX_NEEDED_CURRENCIES_STR = ",".join(sorted({
+    cfg["currencyCode"]
+    for cfg in _INDICES.values()
+    if cfg.get("exchange", {}).get("fxPair") and cfg["currencyCode"] != "USD"
+}))
+
+# Inverted pairs: currency is base (EUR/USD, GBP/USD, AUD/USD)
+FX_INVERTED = {
+    cfg["currencyCode"]
+    for cfg in _INDICES.values()
+    if (cfg.get("exchange", {}).get("fxPair") or "").startswith(cfg["currencyCode"])
+} | {
+    p["pair"].split("/")[0]
+    for p in _EXTRA_FX
+    if not p["pair"].startswith("USD/")
+}
+
+# Index currencies for display (preserves config order)
+_index_fx_ccys = [
+    cfg["currencyCode"]
+    for cfg in _INDICES.values()
+    if cfg.get("exchange", {}).get("fxPair") and cfg["currencyCode"] != "USD"
+]
+# Deduplicate preserving order
+_seen = set()
+_index_fx_unique = []
+for c in _index_fx_ccys:
+    if c not in _seen:
+        _seen.add(c)
+        _index_fx_unique.append(c)
+
+_extra_ccys = [
+    p["pair"].replace("USD/", "").replace("/USD", "")
+    for p in _EXTRA_FX
+]
+
+# Combined ordered list: index currencies first, then extras
+FX_DISPLAY_CURRENCIES = _index_fx_unique + [
+    c for c in _extra_ccys if c not in _seen
+]
+
+# Comma-joined string for Frankfurter API
+FX_ALL_SYMBOLS_STR = ",".join(sorted(set(
+    _index_fx_unique + _extra_ccys
+)))

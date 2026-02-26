@@ -24,24 +24,27 @@ import { browser } from '$app/environment';
 import { INDEX_CONFIG, INDEX_TICKER_MAP } from '$lib/index-registry.js';
 
 
-// ── Region Groups (for sidebar dropdown) ─────────────────────────────────
-// Splits indices into West (Americas + Europe) and East (Asia) so the
-// dropdown renders two visually distinct groups.
+// ── Region Groups (for sidebar dropdown & macro panel) ───────────────────
+// Groups indices by world region.  Order matters for display.
 
-export const INDEX_GROUPS = [
-    {
-        label: 'West',
-        indices: Object.entries(INDEX_CONFIG)
-            .filter(([, v]) => v.region === 'west')
-            .map(([key, v]) => ({ key, ...v })),
-    },
-    {
-        label: 'East',
-        indices: Object.entries(INDEX_CONFIG)
-            .filter(([, v]) => v.region === 'east')
-            .map(([key, v]) => ({ key, ...v })),
-    },
+const _REGION_ORDER = [
+    { key: 'americas',      label: 'Americas' },
+    { key: 'europe',        label: 'Europe' },
+    { key: 'asia-pacific',  label: 'Asia Pacific' },
 ];
+
+export const INDEX_GROUPS = _REGION_ORDER
+    .map(r => ({
+        label: r.label,
+        indices: Object.entries(INDEX_CONFIG)
+            .filter(([, v]) => v.region === r.key)
+            .map(([key, v]) => ({ key, ...v })),
+    }))
+    .filter(g => g.indices.length > 0);
+
+// Config-derived defaults (used as fallbacks throughout)
+const _firstIndexKey = Object.keys(INDEX_CONFIG)[0];
+const _defaultSymbol = INDEX_CONFIG[_firstIndexKey]?.defaultSymbol || '';
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -63,9 +66,9 @@ const _storedIndex = browser ? (() => {
 
 const _storedSymbol = browser ? (() => {
     try {
-        return sessionStorage.getItem('dash_symbol') || INDEX_CONFIG[_storedIndex]?.defaultSymbol || 'ASML.AS';
-    } catch { return 'ASML.AS'; }
-})() : 'ASML.AS';
+        return sessionStorage.getItem('dash_symbol') || INDEX_CONFIG[_storedIndex]?.defaultSymbol || _defaultSymbol;
+    } catch { return _defaultSymbol; }
+})() : _defaultSymbol;
 
 export const selectedSymbol = writable(_storedSymbol);
 export const marketIndex = writable(_storedIndex);
@@ -97,9 +100,9 @@ const _storedSectorIndices = browser ? (() => {
 const _storedSingleIndex = browser ? (() => {
     try {
         const v = sessionStorage.getItem('dash_single_index');
-        return v ? JSON.parse(v) : ['stoxx50'];
-    } catch { return ['stoxx50']; }
-})() : ['stoxx50'];
+        return v ? JSON.parse(v) : [_firstIndexKey];
+    } catch { return [_firstIndexKey]; }
+})() : [_firstIndexKey];
 
 const _storedSelectedSector = browser ? (() => {
     try {
@@ -127,7 +130,7 @@ const _storedSectorIndustries = browser ? (() => {
 // The 11 GICS sectors shared across all six indices.
 export const ALL_SECTORS = ['Communication Services', 'Consumer Discretionary', 'Consumer Staples', 'Energy', 'Financials', 'Healthcare', 'Industrials', 'Information Technology', 'Materials', 'Real Estate', 'Utilities'];
 
-// Per-index sector checkbox state: { sp500: [...checked], stoxx50: [...checked] }
+// Per-index sector checkbox state
 const _storedSectorsByIndex = browser ? (() => {
     try {
         const v = sessionStorage.getItem('dash_sectors_by_index');
@@ -135,7 +138,7 @@ const _storedSectorsByIndex = browser ? (() => {
     } catch { return {}; }
 })() : {};
 
-const _currentSingleIndex = _storedSectorIndices[0] || 'stoxx50';
+const _currentSingleIndex = _storedSectorIndices[0] || _firstIndexKey;
 const _initialSectors = _storedSectorsByIndex[_currentSingleIndex] || ALL_SECTORS;
 
 // Per-sector industry selection for cross-index mode: { sectorName: [industryNames] }
