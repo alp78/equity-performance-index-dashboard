@@ -43,9 +43,9 @@
     );
 
     const sizeClasses = {
-        sm: { value: 'text-lg', label: 'text-[11px]', change: 'text-[11px]' },
-        md: { value: 'text-2xl', label: 'text-[12px]', change: 'text-[12px]' },
-        lg: { value: 'text-3xl', label: 'text-[13px]', change: 'text-[13px]' },
+        sm: { value: 'text-lg', label: 'text-[11px]', change: 'text-[length:var(--text-num-xs)]' },
+        md: { value: 'text-2xl', label: 'text-[12px]', change: 'text-[length:var(--text-num-sm)]' },
+        lg: { value: 'text-3xl', label: 'text-[13px]', change: 'text-[length:var(--text-num-md)]' },
     };
 
     let sizes = $derived(sizeClasses[size] || sizeClasses.md);

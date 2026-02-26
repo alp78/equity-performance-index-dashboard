@@ -18,10 +18,11 @@
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { overviewSelectedIndices, INDEX_KEY_TO_TICKER } from '$lib/stores.js';
-    import { MARKET_HOURS, INDEX_META_BY_TICKER as INDEX_META } from '$lib/index-registry.js';
+    import { overviewSelectedIndices } from '$lib/stores.js';
+    import { MARKET_HOURS, INDEX_META_BY_TICKER as INDEX_META, INDEX_KEY_TO_TICKER } from '$lib/index-registry.js';
+    import { fmtDate } from '$lib/format.js';
 
-    let { currentPeriod = '1y', customRange = null, highlightSymbol = null, highlightPair = null, onRowClick = null } = $props();
+    let { currentPeriod = '1y', customRange = null, highlightSymbol = null, highlightPair = null, onRowClick = null, currencyMode = 'local' } = $props();
 
     let highlightSet = $derived((() => {
         if (highlightSymbol) return new Set([highlightSymbol]);
@@ -73,12 +74,6 @@
 
     // --- PERIOD LABEL ---
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB', { month: 'short' })} '${String(dt.getFullYear()).slice(2)}`;
-    }
-
     let isCustom = $derived(!!(customRange && customRange.start));
     let periodTag = $derived(isCustom ? 'C' : (currentPeriod || '1y').toUpperCase());
 
@@ -92,16 +87,18 @@
 
     let _retryTimer;
 
-    async function load(period, range) {
+    async function load(period, range, ccy) {
         if (!browser) return;
+        const currencyParam = ccy === 'usd' ? '&currency=usd' : '';
+        const ccySuffix = ccy === 'usd' ? '_usd' : '';
         let url, cacheKey;
         if (range && range.start && range.end) {
-            cacheKey = `stats_custom_${range.start}_${range.end}`;
-            url = `${API_BASE_URL}/index-prices/stats?start=${range.start}&end=${range.end}&t=${Date.now()}`;
+            cacheKey = `stats_custom_${range.start}_${range.end}${ccySuffix}`;
+            url = `${API_BASE_URL}/index-prices/stats?start=${range.start}&end=${range.end}${currencyParam}&t=${Date.now()}`;
         } else {
             const p = period || '1y';
-            cacheKey = `stats_${p}`;
-            url = `${API_BASE_URL}/index-prices/stats?period=${p}&t=${Date.now()}`;
+            cacheKey = `stats_${p}${ccySuffix}`;
+            url = `${API_BASE_URL}/index-prices/stats?period=${p}${currencyParam}&t=${Date.now()}`;
         }
         if (cache[cacheKey]) { stats = cache[cacheKey]; hasEverLoaded = true; return; }
         loading = true;
@@ -125,13 +122,13 @@
         // Empty result — backend may still be loading, retry in 3s
         if (stats.length === 0) {
             if (_retryTimer) clearTimeout(_retryTimer);
-            _retryTimer = setTimeout(() => load(period, range), 3000);
+            _retryTimer = setTimeout(() => load(period, range, ccy), 3000);
         } else {
             hasEverLoaded = true;
         }
     }
 
-    $effect(() => { load(currentPeriod, customRange); return () => { if (_retryTimer) clearTimeout(_retryTimer); }; });
+    $effect(() => { load(currentPeriod, customRange, currencyMode); return () => { if (_retryTimer) clearTimeout(_retryTimer); }; });
 
     // --- DERIVED TABLE DATA ---
     // sorted by period return desc; rank map drives animated row reordering
@@ -228,7 +225,7 @@
                 </div>
 
                 <div style="width:{COL[1]}%" class="px-1 text-right tabular-nums text-text-secondary font-medium val-text">
-                    <span class="text-text-muted">{meta.ccy || ''}</span>{fmtPrice(row.current_price, '')}
+                    <span class="text-text-muted">{currencyMode === 'usd' ? '$' : (meta.ccy || '')}</span>{fmtPrice(row.current_price, '')}
                 </div>
 
                 <div style="width:{COL[2]}%; {grayColor(row.daily_change_pct, 3)}" class="px-1 text-right tabular-nums val-text font-medium">
@@ -270,7 +267,7 @@
     .grid-header > div { white-space: nowrap; }
     .period-tag { font-size: 10px; font-weight: 400; }
     .idx-name { font-size: clamp(13px, 2cqw, 15px); }
-    .val-text { font-size: clamp(13px, 2cqw, 15px); }
+    .val-text { font-size: clamp(var(--text-num-sm), 2cqw, var(--text-num-lg)); }
 
     /* On narrow viewports, ensure table has minimum width for horizontal scroll */
     @media (max-width: 768px) {

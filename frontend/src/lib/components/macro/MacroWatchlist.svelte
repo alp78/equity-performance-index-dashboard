@@ -16,7 +16,8 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { riskHighlight, getCached, setCached, isCacheFresh } from '$lib/stores.js';
+    import { riskHighlight } from '$lib/stores.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
 
     // Map risk pill keys to FRED series IDs or 'fx' for the FX section
     const RISK_TO_IDS = {
@@ -215,22 +216,22 @@
     /* Base sizes */
     .inst-name { font-size: 12px; }
     .inst-date { font-size: 9px; }
-    .inst-val  { font-size: 12px; }
-    .inst-chg  { font-size: 11px; }
+    .inst-val  { font-size: var(--text-num-sm); }
+    .inst-chg  { font-size: var(--text-num-xs); }
 
     /* Narrow container: tighten text */
     @container (max-width: 280px) {
         .inst-name { font-size: 11px; }
-        .inst-val  { font-size: 11px; }
-        .inst-chg  { font-size: 10px; }
+        .inst-val  { font-size: var(--text-num-xs); }
+        .inst-chg  { font-size: var(--text-num-2xs); }
         .inst-date { font-size: 8px; }
     }
 
     /* Very narrow container */
     @container (max-width: 220px) {
         .inst-name { font-size: 10px; }
-        .inst-val  { font-size: 10px; }
-        .inst-chg  { font-size: 9px; }
+        .inst-val  { font-size: var(--text-num-2xs); }
+        .inst-chg  { font-size: 8px; }
         .inst-date { display: none; }
     }
 </style>

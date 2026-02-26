@@ -4,8 +4,9 @@
 -->
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import { indexOverviewData, INDEX_CONFIG, INDEX_KEY_TO_TICKER, getCached, setCached, isCacheFresh, macroHighlightIndex, macroHighlightPair } from '$lib/stores.js';
-    import { INDEX_COLORS, INDEX_EXCHANGE_INFO } from '$lib/index-registry.js';
+    import { indexOverviewData, macroHighlightIndex, macroHighlightPair } from '$lib/stores.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
+    import { INDEX_COLORS, INDEX_EXCHANGE_INFO, INDEX_CONFIG, INDEX_KEY_TO_TICKER } from '$lib/index-registry.js';
     import { API_BASE_URL } from '$lib/config.js';
 
     let {} = $props();
@@ -86,10 +87,10 @@
                 <span class="text-[15px] font-bold truncate transition-colors"
                       style="color:{isHighlighted ? (INDEX_COLORS[key] || 'var(--text-secondary)') : 'var(--text-secondary)'}">{cfg.shortLabel}</span>
                 {#if asset}
-                    <span class="ml-auto text-[15px] font-semibold tabular-nums">
+                    <span class="ml-auto text-[length:var(--text-num-xl)] font-semibold tabular-nums">
                         <span class="text-text-muted">{cfg.currency}</span><span class="text-text">{(asset.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})}</span>
                     </span>
-                    <span class="text-[14px] font-semibold tabular-nums" style="color: var({(asset.daily_change_pct ?? 0) >= 0 ? '--color-positive' : '--color-negative'})">
+                    <span class="text-[length:var(--text-num-lg)] font-semibold tabular-nums" style="color: var({(asset.daily_change_pct ?? 0) >= 0 ? '--color-positive' : '--color-negative'})">
                         {(asset.daily_change_pct ?? 0) >= 0 ? '+' : ''}{(asset.daily_change_pct ?? 0).toFixed(2)}%
                     </span>
                 {:else}
@@ -109,7 +110,7 @@
                         {/if}
                     </span>
                     {#if fxPct != null}
-                        <span class="text-[12px] font-medium tabular-nums" style="color: var({fxPct >= 0 ? '--color-positive' : '--color-negative'})">
+                        <span class="text-[length:var(--text-num-sm)] font-medium tabular-nums" style="color: var({fxPct >= 0 ? '--color-positive' : '--color-negative'})">
                             {fxPct >= 0 ? '+' : ''}{Math.abs(fxPct).toFixed(2)}%
                         </span>
                     {/if}

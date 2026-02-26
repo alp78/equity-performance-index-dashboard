@@ -14,7 +14,7 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { getCached, setCached, isCacheFresh } from '$lib/stores.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
@@ -205,11 +205,11 @@
     :global(.cal-root)     { container-type: size; }
 
     .date-hdr     { font-size: clamp(10px, 1.4cqh, 12px); letter-spacing: 0.2em; }
-    .time-text    { font-size: clamp(13px, 2cqh, 15px); }
+    .time-text    { font-size: clamp(var(--text-num-md), 2cqh, var(--text-num-xl)); }
     .flag-icon    { font-size: clamp(14px, 1.8cqh, 18px) !important; }
     .event-text   { font-size: clamp(12px, 1.8cqh, 15px); }
     .impact-text  { font-size: clamp(10px, 1.3cqh, 12px); }
-    .val-text     { font-size: clamp(10px, 1.3cqh, 12px); }
+    .val-text     { font-size: clamp(var(--text-num-2xs), 1.3cqh, var(--text-num-sm)); }
 
     @container (max-width: 320px) {
         .cal-event-row { flex-wrap: wrap; }

@@ -27,12 +27,12 @@
         loadSummaryData,
         marketIndex,
         currentCurrency,
-        INDEX_CONFIG,
         INDEX_GROUPS,
         focusSymbolRequest,
         isOverviewMode,
         isSectorMode,
     } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
     import { getSectorColor } from '$lib/theme.js';
 
     // --- PROPS ---
@@ -441,7 +441,7 @@
                             class="opacity-0 group-hover/sector:opacity-100 transition-opacity text-[10px] font-semibold text-text-muted uppercase tracking-wider hover:text-text cursor-pointer whitespace-nowrap">
                             Sector Analysis
                         </button>
-                        <span class="text-[13px] font-medium text-text-faint tabular-nums w-6 text-right">{sector.stockCount}</span>
+                        <span class="text-[length:var(--text-num-md)] font-medium text-text-faint tabular-nums w-6 text-right">{sector.stockCount}</span>
                     </div>
                 </div>
             </div>
@@ -477,14 +477,14 @@
             <div class="font-medium text-text-muted text-[15px] tracking-tight group-hover:text-text transition-colors">{item.symbol}</div>
         </div>
         <div class="w-[26%] text-right pr-2 stock-col-price">
-            <div class="text-[13px] font-semibold text-text-secondary leading-tight">
+            <div class="text-[length:var(--text-num-md)] font-semibold text-text-secondary leading-tight">
                 {ccy}{(item.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
             </div>
-            <div class="text-[13px] font-semibold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
+            <div class="text-[length:var(--text-num-md)] font-semibold flex items-center justify-end gap-1 {(item.daily_change_pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
                 <span class="tabular-nums">{(item.daily_change_pct ?? 0) >= 0 ? '+' : ''}{(item.daily_change_pct ?? 0).toFixed(2)}%</span>
             </div>
         </div>
-        <div class="w-[28%] text-right text-[13px] leading-tight space-y-0.5 stock-col-hl">
+        <div class="w-[28%] text-right text-[length:var(--text-num-md)] leading-tight space-y-0.5 stock-col-hl">
             <div class="flex justify-end gap-1.5 text-text-muted">
                 <span class="font-medium">H</span>
                 <span class="text-text-muted font-medium">{(item.high ?? 0).toFixed(2)}</span>
@@ -496,7 +496,7 @@
         </div>
         <div class="w-[18%] text-right stock-col-vol">
             <div class="text-[11px] font-medium text-text-muted uppercase tracking-tighter">Vol</div>
-            <div class="text-[13px] font-medium text-text-muted">{formatVol(item.volume)}</div>
+            <div class="text-[length:var(--text-num-md)] font-medium text-text-muted">{formatVol(item.volume)}</div>
         </div>
     </button>
 {/snippet}

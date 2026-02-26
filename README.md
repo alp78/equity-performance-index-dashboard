@@ -1,24 +1,13 @@
 # Global Exchange Monitor
 
-Real-time financial dashboard tracking 6 major stock indices across 4 continents. Built on Google Cloud Platform with SvelteKit, FastAPI, BigQuery, and DuckDB.
-
-## Covered Indices
-
-| Index | Region | Stocks |
-|---|---|---|
-| EURO STOXX 50 | Europe | 50 |
-| S&P 500 | US | 503 |
-| FTSE 100 | UK | 100 |
-| Nikkei 225 | Japan | 225 |
-| CSI 300 | China | 300 |
-| Nifty 50 | India | 50 |
+Real-time financial dashboard for tracking and comparing global stock market indices. Built on Google Cloud Platform with SvelteKit, FastAPI, BigQuery, and DuckDB. Index coverage is fully configurable via a single JSON manifest — any equity index with publicly available EOD pricing can be added.
 
 ## Dashboard Modes
 
-- **Index Benchmarks** — Multi-index comparison, cross-index correlation heatmap, news feed, economic calendar
-- **Sector Analysis** — Cross-index or single-index sector rotation, industry breakdown with donut charts, top/bottom stock rankings per sector
-- **Stock Browser** — OHLCV candlestick chart with MA overlays, technical indicators (RSI, MACD, Bollinger, ATR, Beta), top movers, most active by volume
-- **Macro Context** — Risk dashboard, BTC/Gold/EUR-USD live tickers, FX rates, macro watchlist, economic calendar
+- **Index Benchmarks** — Normalized % change comparison across all configured indices, with local currency and USD-adjusted views. Includes a performance stats table, Pearson correlation heatmap, aggregated news feed, and economic calendar.
+- **Sector Analysis** — Cross-index sector comparison (how does "Financials" perform across markets?) or single-index sector breakdown. Industry-level drill-down with donut charts, per-sector top/bottom stock rankings, and sector-weighted return overlays.
+- **Stock Browser** — Individual stock OHLCV candlestick chart with moving-average overlays. Technical indicator panels (RSI, MACD, Bollinger Bands, ATR, Beta). Top movers by return and most-active stocks by volume surge.
+- **Macro Context** — Risk dashboard (VIX, MOVE, credit spreads, yield curve, USD index), live BTC/Gold/EUR-USD tickers via WebSocket, FX cross-rates, central bank interest rates, and economic calendar.
 
 ## Architecture
 
@@ -26,47 +15,72 @@ Real-time financial dashboard tracking 6 major stock indices across 4 continents
 
 ### Data Pipeline
 
-1. **Ingestion** — Cloud Function (`sync_stocks`) runs daily via Cloud Scheduler, fetching EOD prices from Yahoo Finance with exchange-calendar-aware gap detection. Data is archived as NDJSON in GCS and appended to BigQuery.
-2. **Cache Hydration** — On ingestion completion, a webhook triggers the backend to pull fresh data from BigQuery into an in-memory DuckDB instance. Two-phase startup loads priority indices first (STOXX 50, S&P 500), then remaining indices in parallel.
-3. **Serving** — FastAPI on Cloud Run serves 40+ REST endpoints with per-endpoint TTL caching, singleflight to prevent stampedes, and SWR (stale-while-revalidate) headers. A WebSocket feed broadcasts live BTC and macro instrument ticks.
-4. **Presentation** — SvelteKit SPA on Firebase Hosting consumes REST snapshots and WebSocket streams. Svelte 5 runes enable surgical DOM updates for real-time price flickers.
+1. **Ingestion** — A Cloud Function runs daily via Cloud Scheduler, fetching end-of-day prices from Yahoo Finance with exchange-calendar-aware gap detection. Data is archived as NDJSON in Cloud Storage and appended to BigQuery.
+2. **Cache Hydration** — On ingestion completion, a webhook triggers the backend to pull fresh data from BigQuery into an in-memory DuckDB instance. Two-phase startup loads priority indices first, then remaining indices in parallel.
+3. **Serving** — FastAPI on Cloud Run exposes 40+ REST endpoints with per-endpoint TTL caching, singleflight deduplication, and stale-while-revalidate headers. A WebSocket feed broadcasts live crypto and macro instrument ticks.
+4. **Presentation** — SvelteKit SPA on Firebase Hosting consumes REST snapshots and WebSocket streams. Svelte 5 runes enable surgical DOM updates for real-time price movements.
 
 ### Key Technical Decisions
 
-- **DuckDB in-memory** — Sub-millisecond OLAP queries without BigQuery costs on every request. RWLock serializes concurrent reads/writes.
-- **Circuit breakers** — Per-provider (Binance, Finnhub, FRED, Frankfurter) with configurable failure thresholds and recovery timeouts.
-- **Precomputed sector series** — Forward-filled sector/industry time series stored in DuckDB enable instant switching between indices.
-- **Hybrid data model** — Accurate EOD historical data from BigQuery combined with live intraday ticks from Binance and Yahoo Finance.
+- **DuckDB in-memory** — Sub-millisecond OLAP queries without per-request BigQuery costs. An RWLock serializes concurrent reads during write operations.
+- **Circuit breakers** — Per-provider fault isolation (Binance, Finnhub, FRED, Frankfurter) with configurable failure thresholds and automatic recovery.
+- **Precomputed sector series** — Forward-filled sector and industry time series are materialized in DuckDB on startup, enabling instant mode switching and sector selection.
+- **Hybrid data model** — Accurate EOD historical data from BigQuery combined with live intraday ticks from external WebSocket feeds.
+- **USD adjustment** — Historical ECB daily FX rates convert all index prices and returns to a common USD basis for cross-market comparison.
 
 ## Project Structure
 
 ```
-EXCHANGE_GCP_DEV/
-├── backend/                # FastAPI + DuckDB + WebSocket broadcaster
-│   ├── main.py             # API server (endpoints, startup, feeds)
-│   ├── index_config.py     # Index configuration loader
-│   ├── sql/                # 46 SQL template files
-│   └── config/             # indices.json (synced copy)
-├── ingestion/              # Cloud Function — daily EOD sync
-│   └── main.py             # Gap detection, download, BQ load, notify
-├── frontend/               # SvelteKit 5 + Tailwind v4 dashboard
-│   ├── src/lib/stores.js   # Global state + data loaders (SWR cache)
-│   ├── src/lib/styles/     # Design tokens, themes (dark/light), responsive
-│   ├── src/lib/components/ # 30+ panel components + 13 UI primitives
-│   └── src/routes/         # Single-page dashboard orchestrator
+global-exchange-monitor/
+├── backend/                  # FastAPI + DuckDB serving layer
+│   ├── main.py               # API server — endpoints, startup, WebSocket feeds
+│   ├── index_config.py       # Index configuration loader
+│   ├── sql/                  # SQL template files for all queries
+│   └── config/               # indices.json (synced copy from root)
+├── ingestion/                # Cloud Function — daily EOD price sync
+│   └── main.py               # Gap detection, Yahoo Finance download, BigQuery load
+├── frontend/                 # SvelteKit 5 + Tailwind v4 dashboard
+│   ├── src/lib/
+│   │   ├── stores.js         # Svelte stores, persistence, global state
+│   │   ├── data-loaders.js   # Data fetching with SWR caching
+│   │   ├── cache.js          # In-memory + localStorage cache layer
+│   │   ├── format.js         # Shared number/date formatters
+│   │   ├── index-registry.js # Index metadata derived from indices.json
+│   │   ├── theme.js          # Color tokens, sector palette, theme utilities
+│   │   ├── styles/           # Design tokens, dark/light themes, responsive breakpoints
+│   │   └── components/
+│   │       ├── ui/           # Primitive UI components (Card, Badge, Stat, Tooltip, etc.)
+│   │       ├── sidebar/      # Navigation + mode-specific sidebar panels
+│   │       ├── shared/       # Cross-mode components (PriceChart, LiveTicker)
+│   │       ├── stock/        # Stock browsing panels
+│   │       ├── sector/       # Sector analysis panels
+│   │       └── macro/        # Macro/overview panels
+│   └── src/routes/           # Single-page dashboard orchestrator
 ├── config/
-│   └── indices.json        # Single source of truth for all index metadata
-└── docs/                   # Architecture diagram
+│   └── indices.json          # Single source of truth for all index metadata
+└── docs/                     # Architecture diagram
 ```
 
+### Backend API
 
-Required environment variables for the backend:
+The backend serves structured market data through REST endpoints and real-time data via WebSocket:
 
-| Variable | Description |
+| Category | Endpoints |
 |---|---|
-| `PROJECT_ID` | GCP project ID |
-| `FINNHUB_API_KEY` | Finnhub API key (news, company data) |
-| `FRED_API_KEY` | FRED API key (macro indicators) |
+| Stock data | `/summary`, `/data`, `/rankings`, `/most-active`, `/technicals/{symbol}` |
+| Index data | `/index-prices/data`, `/index-prices/stats`, `/index-prices/single/{symbol}` |
+| Sectors | `/sector-comparison/table`, `/sector-comparison/sectors`, `/sector-comparison/industries` |
+| Macro | `/correlation`, `/news`, `/macro/calendar`, `/macro/risk-summary`, `/macro/fx`, `/macro/rates` |
+| Real-time | `WS /ws` — live crypto and macro instrument ticks |
+| System | `/health`, `/api/admin/refresh/{index}` |
+
+### Frontend Design System
+
+- **Fonts**: Geist + Geist Mono (CDN-loaded), Inter fallback
+- **Themes**: Dark (primary) and light, toggled via `data-theme` attribute
+- **Tokens**: CSS custom properties for spacing, radius, shadows, chart palette, numeric font sizes
+- **Responsive**: 7 breakpoints from 375px to 1920px+, container queries for component-level adaptation
+- **Charts**: TradingView lightweight-charts for time series, ECharts for pie/donut visualizations
 
 ## Tech Stack
 
@@ -74,6 +88,5 @@ Required environment variables for the backend:
 |---|---|
 | Frontend | SvelteKit 2, Svelte 5, Tailwind CSS v4, lightweight-charts, ECharts |
 | Backend | FastAPI, DuckDB, pandas, httpx, WebSockets |
-| Data | BigQuery, Cloud Storage (NDJSON archive), Yahoo Finance, Binance |
-| Infra | Cloud Run, Cloud Functions, Cloud Scheduler, Firebase Hosting |
-| Design | Geist + Geist Mono fonts, dark/light themes, 7-breakpoint responsive grid |
+| Data | BigQuery, Cloud Storage, Yahoo Finance, Binance, Finnhub, FRED, Frankfurter |
+| Infrastructure | Cloud Run, Cloud Functions, Cloud Scheduler, Firebase Hosting |

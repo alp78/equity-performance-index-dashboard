@@ -1,28 +1,51 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 .venv/
 venv/
 ENV/
+.pytest_cache/
+
+# Environment / secrets
 .env
 .env.*
-.cf/
 service_account.json
-.pytest_cache/
-.ex/
+
+# Node
 node_modules/
+.npmrc
+
+# SvelteKit
 .svelte-kit/
 build/
-*.log
-*.duckdb
-*.duckdb.wal
-*.ndjson
+
+# Firebase
 .firebase/
+.firebaserc
+firebase.json
 firebase-debug.log
 firestore-debug.log
 ui-debug.log
+
+# Docker
+.dockerignore
+
+# Data files
+*.duckdb
+*.duckdb.wal
+*.ndjson
+*.log
+
+# IDE / tooling
 .vscode/
 .idea/
+.cf/
+.ex/
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Project-specific
 assets/

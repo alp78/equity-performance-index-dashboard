@@ -133,9 +133,11 @@
         cutoff.setDate(cutoff.getDate() - days);
         const cutoffStr = cutoff.toISOString().split('T')[0];
 
-        // comparison mode needs time-based range because series have different time points
+        // comparison mode: data already trimmed by rebaseComparison, just fit to edges
         if (comparisonSeries.length > 0) {
-            timeScale.setVisibleRange({ from: cutoffStr, to: processedData[processedData.length - 1].time });
+            timeScale.fitContent();
+            setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+            return;
         } else {
             const startIdx = processedData.findIndex(d => d.time >= cutoffStr);
             if (startIdx < 0) {
@@ -160,13 +162,16 @@
         let cutoffStr = startDate || null;
         if (!cutoffStr && period && period !== 'max') {
             const days = PERIOD_DAYS[period];
-            if (days && processedData.length > 0) {
-                const lastDate = new Date(processedData[processedData.length - 1].time);
+            if (days && _fullTimeAxis.length > 0) {
+                const lastDate = new Date(_fullTimeAxis[_fullTimeAxis.length - 1]);
                 const cutoff = new Date(lastDate);
                 cutoff.setDate(cutoff.getDate() - days);
                 cutoffStr = cutoff.toISOString().split('T')[0];
             }
         }
+
+        // Temporarily disable edge constraints during data update
+        if (chart) chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
 
         for (const cs of comparisonSeries) {
             const raw = _rawComparisonData[cs.symbol];
@@ -183,10 +188,17 @@
 
             if (!baseClose || baseClose === 0) continue;
 
-            const rebased = raw.map(p => ({
+            // Only include points from the cutoff onwards so zoom-out can't show pre-period data
+            const filtered = cutoffStr ? raw.filter(p => p.time >= cutoffStr) : raw;
+            const rebased = filtered.map(p => ({
                 time: p.time,
                 value: ((p.close - baseClose) / baseClose) * 100,
             }));
+            // If series starts after the cutoff (e.g. market holiday), prepend a 0% point
+            // at the cutoff so the line begins at the origin like all other series
+            if (cutoffStr && rebased.length > 0 && rebased[0].time > cutoffStr) {
+                rebased.unshift({ time: cutoffStr, value: 0 });
+            }
             cs.series.setData(rebased);
 
             // update axis label to final rebased pct
@@ -203,6 +215,14 @@
             });
         }
 
+        // Trim mergedTimeAxis + processedData to cutoff so fixLeftEdge prevents zoom-out past period start
+        if (cutoffStr) {
+            mergedTimeAxis = _fullTimeAxis.filter(t => t >= cutoffStr);
+        } else {
+            mergedTimeAxis = [..._fullTimeAxis];
+        }
+        processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
+
         // re-add zero baseline on first series
         if (comparisonSeries.length > 0) {
             try {
@@ -212,6 +232,9 @@
                 });
             } catch(e) {}
         }
+
+        // Re-enable edge constraints so user can't zoom past period boundaries
+        if (chart) chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
     }
 
     // prevent scrolling past data boundaries (skipped in comparison mode where indices don't map 1:1)
@@ -231,10 +254,12 @@
 
     // union of all unique dates across comparison series, sorted chronologically
     let mergedTimeAxis = [];
+    let _fullTimeAxis = []; // unfiltered copy for rebase cutoff calculations
 
     function buildMergedTimeAxis(cData) {
         if (!cData || !cData.series || cData.series.length === 0) {
             mergedTimeAxis = [];
+            _fullTimeAxis = [];
             return;
         }
         const timeSet = new Set();
@@ -242,6 +267,7 @@
             for (const p of s.points) timeSet.add(p.time);
         }
         mergedTimeAxis = Array.from(timeSet).sort();
+        _fullTimeAxis = [...mergedTimeAxis];
     }
 
     // convert pixel x-coordinate to a date string using the appropriate time axis
@@ -738,9 +764,9 @@
                         <div class="flex items-center gap-2">
                             <div style="width:8px;height:3px;border-radius:2px;background:${e.color};flex-shrink:0"></div>
                             <span class="text-[11px] uppercase font-bold" style="color:${e.color};min-width:55px">${e.name}</span>
-                            <span class="text-[13px] font-semibold tabular-nums ml-auto" style="color:${pctColor}">${sign}${e.pct.toFixed(2)}%</span>
+                            <span class="text-[length:var(--text-num-md)] font-semibold tabular-nums ml-auto" style="color:${pctColor}">${sign}${e.pct.toFixed(2)}%</span>
                         </div>
-                        ${e.rawClose ? `<div class="flex justify-end"><span class="text-[11px] tt-muted tabular-nums">${currencyLabel}${e.rawClose}</span></div>` : ''}
+                        ${e.rawClose ? `<div class="flex justify-end"><span class="text-[length:var(--text-num-xs)] tt-muted tabular-nums">${currencyLabel}${e.rawClose}</span></div>` : ''}
                     `;
                 }
 
@@ -835,7 +861,7 @@
 
                         <div class="flex justify-between items-center gap-4 border-t tt-border pt-1 mt-1">
                             <span class="text-[11px] tt-muted uppercase font-bold">vs Live</span>
-                            <span class="text-[12px] font-semibold ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
+                            <span class="text-[length:var(--text-num-sm)] font-semibold ${colorClass}">${diff >= 0 ? '+' : ''}${diff.toFixed(2)} (${diffPct.toFixed(2)}%)</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4 border-t tt-border pt-1 mt-1">
@@ -1304,11 +1330,12 @@
             }
 
             // check if time axis changed (symbols are the same, so usually only values differ)
+            // compare against _fullTimeAxis (not trimmed mergedTimeAxis) to avoid false positives
             const firstPoints = cData.series[0]?.points;
-            const axisChanged = !firstPoints || mergedTimeAxis.length === 0
-                || firstPoints.length !== mergedTimeAxis.length
-                || firstPoints[0]?.time !== mergedTimeAxis[0]
-                || firstPoints[firstPoints.length - 1]?.time !== mergedTimeAxis[mergedTimeAxis.length - 1];
+            const axisChanged = !firstPoints || _fullTimeAxis.length === 0
+                || firstPoints.length !== _fullTimeAxis.length
+                || firstPoints[0]?.time !== _fullTimeAxis[0]
+                || firstPoints[firstPoints.length - 1]?.time !== _fullTimeAxis[_fullTimeAxis.length - 1];
 
             if (axisChanged) {
                 // time axis changed: full range save/restore needed
@@ -1420,7 +1447,7 @@
     <div bind:this={rangeLineStart} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
     <div bind:this={rangeLineEnd} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
     <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-150" role="tooltip" aria-live="polite"></div>
-    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[13px] font-bold tabular-nums text-text bg-bg-card/80 border border-border px-1.5 py-0.5 rounded-l" aria-hidden="true"></div>
+    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[length:var(--text-num-md)] font-bold tabular-nums text-text bg-bg-card/80 border border-border px-1.5 py-0.5 rounded-l" aria-hidden="true"></div>
 </div>
 
 <style>

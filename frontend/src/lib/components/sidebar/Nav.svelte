@@ -17,8 +17,8 @@
 
     const modes = [
         { key: 'macro', label: 'Global Macro', icon: Globe },
-        { key: 'sectors', label: 'Sector Analysis', icon: PieChart },
         { key: 'stocks', label: 'Stock Browsing', icon: TrendingUp },
+        { key: 'sectors', label: 'Sector Analysis', icon: PieChart },
     ];
 </script>
 

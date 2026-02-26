@@ -21,8 +21,8 @@
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { getWebSocketUrl, API_BASE_URL } from '$lib/config.js';
-    import { marketIndex, currentCurrency, INDEX_CONFIG, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
-    import { MARKET_HOURS, SYMBOL_MARKET_MAP, SYMBOL_SETS, LEADER_TO_SIDEBAR } from '$lib/index-registry.js';
+    import { marketIndex, currentCurrency, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
+    import { MARKET_HOURS, SYMBOL_MARKET_MAP, SYMBOL_SETS, LEADER_TO_SIDEBAR, INDEX_CONFIG } from '$lib/index-registry.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
@@ -228,7 +228,7 @@
                 </div>
 
                 <div class="ticker-price-col flex flex-col items-end">
-                    <span class="text-[14px] font-bold text-text-secondary leading-none mb-1 tabular-nums">
+                    <span class="text-[length:var(--text-num-lg)] font-bold text-text-secondary leading-none mb-1 tabular-nums">
                         {#if hasData}
                             <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
                                 minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
@@ -241,10 +241,10 @@
 
                     <div class="flex items-center gap-1.5 font-bold {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
                         {#if hasData}
-                            <span class="text-[12px] tabular-nums">
+                            <span class="text-[length:var(--text-num-sm)] tabular-nums">
                                 {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
                             </span>
-                            <span class="text-[11px] opacity-70 tabular-nums font-bold">
+                            <span class="text-[length:var(--text-num-xs)] opacity-70 tabular-nums font-bold">
                                 ({(data.diff ?? 0) >= 0 ? '+' : ''}{(data.diff ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
                             </span>
                         {:else}

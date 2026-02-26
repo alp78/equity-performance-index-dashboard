@@ -16,8 +16,8 @@
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { INDEX_CONFIG } from '$lib/stores.js';
-    import { INDEX_COLORS } from '$lib/theme.js';
+    import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
+    import { fmtDate } from '$lib/format.js';
 
     let {
         currentPeriod = '1y',
@@ -25,6 +25,7 @@
         onCellClick = null,
         highlightPair = null,
         highlightIndex = null,
+        currencyMode = 'local',
     } = $props();
 
     function isHighlighted(rowLabel, colLabel) {
@@ -69,10 +70,11 @@
 
     $effect(() => {
         const p = customRange ? 'max' : (currentPeriod || '1y');
-        fetchCorrelation(p, periodKey);
+        const ccy = currencyMode;
+        fetchCorrelation(p, `${periodKey}${ccy === 'usd' ? '_usd' : ''}`, ccy);
     });
 
-    async function fetchCorrelation(period, cacheKey) {
+    async function fetchCorrelation(period, cacheKey, ccy) {
         if (cache[cacheKey]) {
             matrix = cache[cacheKey].matrix;
             labels = cache[cacheKey].labels;
@@ -80,7 +82,8 @@
         }
         loading = true;
         try {
-            const res = await fetch(`${API_BASE_URL}/correlation?period=${period}`);
+            const currencyParam = ccy === 'usd' ? '&currency=usd' : '';
+            const res = await fetch(`${API_BASE_URL}/correlation?period=${period}${currencyParam}`);
             if (res.ok) {
                 const data = await res.json();
                 matrix = data.matrix || [];
@@ -105,12 +108,6 @@
         if (val == null) return 'color:var(--text-disabled)';
         const a = (0.55 + Math.abs(val) * 0.45).toFixed(2);
         return `color:var(--text-primary); opacity:${a}`;
-    }
-
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB', { month: 'short' })} '${String(dt.getFullYear()).slice(2)}`;
     }
 
     let periodLabel = $derived(
@@ -272,6 +269,6 @@
     .row-label    { font-size: clamp(13px, 2.2cqh, 18px); }
     .row-wrap     { min-height: 0; }
     .cell-inner   { min-height: 0; height: 100%; margin-top: 1px; margin-bottom: 1px; }
-    .cell-text    { font-size: clamp(13px, 2cqh, 18px); }
+    .cell-text    { font-size: clamp(var(--text-num-sm), 2cqh, 16px); }
     .legend-text  { font-size: clamp(10px, 1.3cqh, 12px); }
 </style>

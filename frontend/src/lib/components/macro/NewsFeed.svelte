@@ -20,8 +20,8 @@
 <script>
     import { onMount, onDestroy, tick } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { getCached, setCached, isCacheFresh, INDEX_CONFIG } from '$lib/stores.js';
-    import { INDEX_COLORS } from '$lib/theme.js';
+    import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
@@ -147,6 +147,38 @@
             items.push({ type: 'article', data: article });
         }
         return items;
+    });
+
+    // Incremental rendering: start with a small batch, expand as user scrolls
+    const RENDER_BATCH = 30;
+    let renderLimit = $state(RENDER_BATCH);
+    let sentinel = $state(null);
+    let _observer = null;
+
+    // Reset render limit when filters change
+    $effect(() => {
+        // track filter deps
+        selectedDate; selectedIndex;
+        renderLimit = RENDER_BATCH;
+    });
+
+    let visibleItems = $derived(groupedItems.slice(0, renderLimit));
+    let hasMore = $derived(renderLimit < groupedItems.length);
+
+    function loadMore() {
+        if (renderLimit < groupedItems.length) {
+            renderLimit = Math.min(renderLimit + RENDER_BATCH, groupedItems.length);
+        }
+    }
+
+    $effect(() => {
+        if (!sentinel) { _observer?.disconnect(); return; }
+        _observer?.disconnect();
+        _observer = new IntersectionObserver((entries) => {
+            if (entries[0]?.isIntersecting) loadMore();
+        }, { rootMargin: '200px' });
+        _observer.observe(sentinel);
+        return () => _observer?.disconnect();
     });
 
     // Pretty label for the date picker button
@@ -292,6 +324,10 @@
             if (!autoScrolling || !scrollContainer) return;
             if (scrollContainer.scrollHeight <= scrollContainer.clientHeight + 1) return;
             scrollContainer.scrollTop += 1;
+            const nearBottom = scrollContainer.scrollTop >= scrollContainer.scrollHeight - scrollContainer.clientHeight - 200;
+            if (nearBottom && renderLimit < groupedItems.length) {
+                loadMore();
+            }
             if (scrollContainer.scrollTop >= scrollContainer.scrollHeight - scrollContainer.clientHeight - 1) {
                 scrollContainer.scrollTop = 0;
             }
@@ -324,6 +360,7 @@
         if (pollTimer) clearInterval(pollTimer);
         if (resumeTimer) clearTimeout(resumeTimer);
         if (newClearTimer) clearTimeout(newClearTimer);
+        _observer?.disconnect();
     });
 </script>
 
@@ -481,7 +518,7 @@
             onmouseleave={resumeScroll}
             class="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar min-h-0"
         >
-            {#each groupedItems as item}
+            {#each visibleItems as item}
                 {#if item.type === 'separator'}
                     <div class="sticky top-0 z-10 px-4 py-1.5 bg-bg-card/95 border-b border-border-subtle">
                         <span class="text-[10px] font-semibold uppercase tracking-[0.2em] text-text-muted">{item.label}</span>
@@ -518,6 +555,9 @@
                     </a>
                 {/if}
             {/each}
+            {#if hasMore}
+                <div bind:this={sentinel} class="h-1 shrink-0"></div>
+            {/if}
         </div>
     {/if}
 </Card>

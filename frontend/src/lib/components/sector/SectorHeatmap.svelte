@@ -16,10 +16,12 @@
 -->
 
 <script>
-    import { sectorSelectedIndices, selectedSector, INDEX_CONFIG } from '$lib/stores.js';
-    import { INDEX_COLORS, getSectorColor, SECTOR_ABBREV } from '$lib/theme.js';
+    import { sectorSelectedIndices, selectedSector } from '$lib/stores.js';
+    import { getSectorColor, SECTOR_ABBREV } from '$lib/theme.js';
+    import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
+    import { fmtDate } from '$lib/format.js';
 
     let {
         currentPeriod = '1y',
@@ -39,11 +41,6 @@
 
     const PERIOD_DAYS = { '1w': 7, '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '5y': 1825 };
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB',{month:'short'})} '${String(dt.getFullYear()).slice(2)}`;
-    }
     let isCustom    = $derived(!!(customRange && customRange.start));
     let periodLabel = $derived(
         isCustom ? `${fmtDate(customRange.start)} → ${fmtDate(customRange.end)}`
@@ -305,7 +302,7 @@
     .row-wrap     { min-height: 0; }
     .row-sec      { font-size: clamp(10px, 1.3cqh, 14px); }
     .cell-avg     { width: clamp(44px, 7cqw, 64px); }
-    .cell-text    { font-size: clamp(10px, 1.2cqh, 13px); }
+    .cell-text    { font-size: clamp(9px, 1.2cqh, var(--text-num-md)); }
 
     /* Match correlation matrix tile style: full height, vertical gaps only */
     .cell-inner   { min-height: 0; height: 100%; margin-top: 1px; margin-bottom: 1px; }

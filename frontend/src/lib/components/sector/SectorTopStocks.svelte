@@ -17,11 +17,13 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { sectorSelectedIndices, selectedSector, marketIndex, selectedSymbol, summaryData, loadSummaryData, INDEX_CONFIG } from '$lib/stores.js';
+    import { sectorSelectedIndices, selectedSector, marketIndex, selectedSymbol, summaryData, loadSummaryData } from '$lib/stores.js';
     import { requestFocusSymbol } from '$lib/stores.js';
-    import { INDEX_COLORS, getSectorColor } from '$lib/theme.js';
+    import { getSectorColor } from '$lib/theme.js';
+    import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
+    import { fmtDate } from '$lib/format.js';
 
     let { currentPeriod = '1y', customRange = null, industryFilter = null, topStocksCache = null } = $props();
 
@@ -87,11 +89,6 @@
 
     // --- PERIOD LABEL ---
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB',{month:'short'})} '${String(dt.getFullYear()).slice(2)}`;
-    }
     let isCustom = $derived(!!(customRange && customRange.start));
 
     // --- DATA LOADING (fallback for custom ranges) ---
@@ -199,7 +196,7 @@
                             </button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
                                 <div class="h-full bg-up/15 border-l-2 border-up flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width:{width}%">
-                                    <span class="text-[12px] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">
+                                    <span class="text-[length:var(--text-num-sm)] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">
                                         +{item.return_pct.toFixed(1)}%
                                     </span>
                                 </div>
@@ -227,7 +224,7 @@
                             </button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
                                 <div class="h-full bg-down/8 border-r-2 border-down flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width:{width}%">
-                                    <span class="text-[12px] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
+                                    <span class="text-[length:var(--text-num-sm)] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
                                         {item.return_pct.toFixed(1)}%
                                     </span>
                                 </div>

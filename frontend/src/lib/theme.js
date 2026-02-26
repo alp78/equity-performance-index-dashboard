@@ -11,9 +11,6 @@
  * =========================================================================
  */
 
-// Re-export from centralized registry (config/indices.json)
-export { INDEX_COLORS, SECTOR_INDEX_NAMES } from '$lib/index-registry.js';
-
 // ── Sector Chart Palette ─────────────────────────────────────────────────
 // 11 vivid, high-saturation hues for GICS sectors.  Every colour is
 // punchy on dark backgrounds — no grays, no pastels.  Hues are spaced
@@ -42,15 +39,16 @@ export const SECTOR_PALETTE = [
 // ── Sector Color Lookup ─────────────────────────────────────────────────
 // Returns the palette color for a given sector name.
 
-const ALL_SECTORS = [
+// Palette-order: indices match SECTOR_PALETTE positions
+export const SECTOR_PALETTE_ORDER = [
     'Information Technology', 'Financials', 'Healthcare', 'Industrials',
     'Consumer Discretionary', 'Communication Services', 'Consumer Staples',
     'Energy', 'Materials', 'Utilities', 'Real Estate',
 ];
 
 export function getSectorColor(sector) {
-    const i = ALL_SECTORS.indexOf(sector);
-    return SECTOR_PALETTE[(i >= 0 ? i : ALL_SECTORS.length) % SECTOR_PALETTE.length];
+    const i = SECTOR_PALETTE_ORDER.indexOf(sector);
+    return SECTOR_PALETTE[(i >= 0 ? i : SECTOR_PALETTE_ORDER.length) % SECTOR_PALETTE.length];
 }
 
 // ── Sector Name Abbreviations ─────────────────────────────────────────────

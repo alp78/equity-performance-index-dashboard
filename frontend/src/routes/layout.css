@@ -93,4 +93,14 @@
   /* ── Font Families ── */
   --font-sans: "Geist", "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  /* ── Numeric Data Font Sizes ──
+     Central scale for all tabular/financial numbers.
+     Adjust these values to resize numbers across all components at once. */
+  --text-num-xl:  14px;  /* macro prices, primary values    (was 15px) */
+  --text-num-lg:  13px;  /* prices, rates, chart tooltips    (was 14px) */
+  --text-num-md:  12px;  /* returns, technicals, counts      (was 13px) */
+  --text-num-sm:  11px;  /* changes, volumes, percentages    (was 12px) */
+  --text-num-xs:  10px;  /* captions, small numeric labels   (was 11px) */
+  --text-num-2xs:  9px;  /* micro labels                     (was 10px) */
 }

@@ -17,7 +17,6 @@
     import { onMount, tick, untrack } from 'svelte';
     import { browser } from '$app/environment';
     import {
-        INDEX_CONFIG,
         selectedSector,
         sectorAnalysisMode,
         selectedIndustries,
@@ -27,8 +26,10 @@
         sectorSelectedIndices,
         singleSelectedIndex,
         sectorHighlightEnabled,
+        crossIndexHighlight,
     } from '$lib/stores.js';
-    import { getSectorColor, INDEX_COLORS } from '$lib/theme.js';
+    import { getSectorColor } from '$lib/theme.js';
+    import { INDEX_CONFIG, INDEX_COLORS } from '$lib/index-registry.js';
     import { API_BASE_URL } from '$lib/config.js';
 
     // --- PROPS ---
@@ -43,8 +44,6 @@
     let _lastLoadedSector = '';
     let _lastEffectSector = '';
     let _lastEffectMode = '';
-    let _crossSector = $selectedSector || 'Materials';
-    let _singleSector = $selectedSector || 'Materials';
     let _sectorDefaultNeeded = browser ? !sessionStorage.getItem('dash_sector_visited') : true;
     let sectorPanelOpen = $state(new Set());
     let allSectorIndustries = $state({});
@@ -106,12 +105,15 @@
     // --- INDEX TOGGLE (CROSS-INDEX) ---
 
     function toggleSectorIndex(key) {
+        const wasSelected = $sectorSelectedIndices.includes(key);
         sectorSelectedIndices.update(list => {
             if (list.includes(key)) {
                 return list.length > 1 ? list.filter(k => k !== key) : list;
             }
             return [...list, key];
         });
+        // Clear highlight if this index was just unchecked
+        if (wasSelected && $crossIndexHighlight === key) crossIndexHighlight.set(null);
         const newIndicesStr = [...$sectorSelectedIndices].sort().join(',');
         _industriesPreloaded = false;
         preloadAllIndustries(newIndicesStr);
@@ -288,6 +290,10 @@
             return;
         } else {
             selectedSector.set(sec);
+            // Ensure sector is also checked in single-index mode
+            if (!$selectedSectors.includes(sec)) {
+                selectedSectors.update(s => [...s, sec]);
+            }
             sectorPanelOpen = new Set([sec]);
             loadIndustries(sec);
             const perSectorFilter = $crossSelectedIndustries[sec] || [];
@@ -312,8 +318,6 @@
                             try { sessionStorage.setItem('dash_sector_visited', '1'); } catch {}
                             const first = data[0];
                             selectedSector.set(first);
-                            _crossSector = first;
-                            _singleSector = first;
                             _lastEffectSector = '';
                         }
                         preloadAllIndustries(allKeys);
@@ -328,7 +332,6 @@
             }
         }
         if ($selectedSector && $sectorAnalysisMode === 'cross-index') {
-            _crossSector = $selectedSector;
             const sectorChanged = $selectedSector !== _lastEffectSector;
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
@@ -346,7 +349,6 @@
             }
         }
         if ($selectedSector && $sectorAnalysisMode === 'single-index') {
-            _singleSector = $selectedSector;
             const sectorChanged = $selectedSector !== _lastEffectSector;
             if (sectorChanged) {
                 _lastEffectSector = $selectedSector;
@@ -425,12 +427,12 @@
     <div class="p-4 pb-2 space-y-3 shrink-0">
         <!-- mode toggle: cross-index vs single-index -->
         <div class="flex bg-bg-card border border-border rounded-lg p-1 gap-1">
-            <button onclick={() => { _singleSector = $selectedSector; selectedSector.set(_crossSector); sectorAnalysisMode.set('cross-index'); }}
+            <button onclick={() => { sectorAnalysisMode.set('cross-index'); }}
                 class="flex-1 text-center py-1.5 rounded-md text-[13px] font-semibold uppercase tracking-wider transition-all
                 {$sectorAnalysisMode === 'cross-index' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'text-text-muted hover:text-text-secondary'}">
                 Cross-Index
             </button>
-            <button onclick={() => { _crossSector = $selectedSector; selectedSector.set(_singleSector); sectorAnalysisMode.set('single-index'); }}
+            <button onclick={() => { sectorAnalysisMode.set('single-index'); }}
                 class="flex-1 text-center py-1.5 rounded-md text-[13px] font-semibold uppercase tracking-wider transition-all
                 {$sectorAnalysisMode === 'single-index' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' : 'text-text-muted hover:text-text-secondary'}">
                 Single-Index
@@ -443,32 +445,42 @@
                 <div class="flex items-center justify-between mb-1">
                     <span class="text-[12px] font-semibold text-text-muted uppercase tracking-widest">Select Indices</span>
                     {#if sectorStockCount > 0}
-                        <span class="text-[13px] font-medium text-text-faint tabular-nums">{sectorStockCount}</span>
+                        <span class="text-[length:var(--text-num-md)] font-medium text-text-faint tabular-nums">{sectorStockCount}</span>
                     {/if}
                 </div>
                 {#each Object.entries(INDEX_CONFIG) as [key, cfg]}
                     {@const isSelected = $sectorSelectedIndices.includes(key)}
+                    {@const isHighlighted = $crossIndexHighlight === key}
                     {@const idxCount = indexStockCounts[key] || 0}
-                    <button
-                        onclick={() => toggleSectorIndex(key)}
-                        class="w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all
-                        {isSelected ? '' : 'bg-transparent hover:bg-bg-hover'}"
+                    <div
+                        class="w-full flex items-center gap-0 rounded-lg transition-all
+                        {isSelected ? 'cursor-pointer' : ''} {isHighlighted ? '' : 'hover:bg-bg-hover'}"
+                        style={isHighlighted ? `background:${INDEX_COLORS[key] || 'transparent'}18` : ''}
+                        onclick={() => { if (isSelected) crossIndexHighlight.set(isHighlighted ? null : key); }}
+                        role="button" tabindex="0"
+                        onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && isSelected) { e.preventDefault(); crossIndexHighlight.set(isHighlighted ? null : key); } }}
                     >
-                        <div class="w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 transition-all
-                            {isSelected ? 'border-text-faint bg-bg-active' : 'border-border bg-transparent'}">
-                            {#if isSelected}
-                                <svg class="w-2.5 h-2.5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
-                                </svg>
-                            {/if}
-                        </div>
-                        <span class="{INDEX_CONFIG[key]?.flag || ''} fis rounded-sm" style="font-size: 1.1rem;"></span>
-                        <span class="text-[15px] font-medium transition-colors"
-                              style="color:{isSelected ? (INDEX_COLORS[key] || 'var(--text-secondary)') : 'var(--text-muted)'}">{cfg.shortLabel}</span>
+                        <button
+                            onclick={(e) => { e.stopPropagation(); toggleSectorIndex(key); }}
+                            class="pl-3 pr-1 py-2 shrink-0 flex items-center justify-center"
+                            aria-label="{isSelected ? 'Remove' : 'Add'} {cfg.shortLabel}"
+                        >
+                            <div class="w-3.5 h-3.5 rounded-sm border flex items-center justify-center transition-all
+                                {isSelected ? 'border-text-faint bg-bg-active' : 'border-border bg-transparent'}">
+                                {#if isSelected}
+                                    <svg class="w-2.5 h-2.5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+                                    </svg>
+                                {/if}
+                            </div>
+                        </button>
+                        <span class="{INDEX_CONFIG[key]?.flag || ''} fis rounded-sm ml-2" style="font-size: 1.1rem;"></span>
+                        <span class="text-[15px] font-medium transition-colors ml-2"
+                              style="color:{isHighlighted ? (INDEX_COLORS[key] || 'var(--text-secondary)') : isSelected ? 'var(--text-secondary)' : 'var(--text-muted)'}">{cfg.shortLabel}</span>
                         {#if isSelected && idxCount > 0}
-                            <span class="ml-auto text-[13px] font-medium text-text-faint tabular-nums">{idxCount}</span>
+                            <span class="ml-auto pr-3 text-[length:var(--text-num-md)] font-medium text-text-faint tabular-nums">{idxCount}</span>
                         {/if}
-                    </button>
+                    </div>
                 {/each}
             </div>
         {/if}
@@ -497,7 +509,7 @@
                     </div>
                     <div class="flex items-center gap-2">
                         {#if isCurrent}
-                            <span class="text-[13px] font-medium text-text-faint tabular-nums">{sectorStockCount}</span>
+                            <span class="text-[length:var(--text-num-md)] font-medium text-text-faint tabular-nums">{sectorStockCount}</span>
                         {/if}
                     </div>
                 </button>
@@ -543,7 +555,7 @@
                                     {/if}
                                 </div>
                                 <span class="text-[12px] font-medium uppercase tracking-wide truncate {isChecked ? 'text-text-muted' : 'text-text-faint'}">{ind.industry}</span>
-                                <span class="ml-auto text-[12px] text-text-faint tabular-nums font-medium shrink-0">{ind.total}</span>
+                                <span class="ml-auto text-[length:var(--text-num-sm)] text-text-faint tabular-nums font-medium shrink-0">{ind.total}</span>
                             </button>
                         {/each}
                     {:else}
@@ -621,8 +633,29 @@
                 })()}
                 {@const secIndustries = singleIndexIndustries[`${sec}_${singleKey}`] || []}
                 <div data-sector-single={sec}
-                     onclick={() => { if ($selectedSector === sec) { sectorHighlightEnabled.update(v => !v); return; } if (!$selectedSectors.includes(sec)) { selectedSectors.update(s => [...s, sec]); } sectorHighlightEnabled.set(true); selectedSector.set(sec); }}
-                     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if ($selectedSector === sec) { sectorHighlightEnabled.update(v => !v); return; } if (!$selectedSectors.includes(sec)) { selectedSectors.update(s => [...s, sec]); } sectorHighlightEnabled.set(true); selectedSector.set(sec); } }}
+                     onclick={() => {
+                         if (!$selectedSectors.includes(sec)) {
+                             // Unchecked sector: just toggle expand/collapse + load industries
+                             const next = new Set(singleOpenSectors);
+                             if (next.has(sec)) { next.delete(sec); } else {
+                                 next.add(sec);
+                                 const idxKey = singleOpenIndex;
+                                 const ck = `${sec}_${idxKey}`;
+                                 if (!allSectorIndustries[ck]) {
+                                     fetch(`${API_BASE_URL}/sector-comparison/industries?sector=${encodeURIComponent(sec)}&indices=${idxKey}`)
+                                         .then(r => r.ok ? r.json() : [])
+                                         .then(data => { allSectorIndustries[ck] = data; singleIndexIndustries = { ...singleIndexIndustries, [ck]: data }; });
+                                 } else {
+                                     singleIndexIndustries = { ...singleIndexIndustries, [ck]: allSectorIndustries[ck] };
+                                 }
+                             }
+                             singleOpenSectors = next;
+                             return;
+                         }
+                         if ($selectedSector === sec) { sectorHighlightEnabled.update(v => !v); return; }
+                         sectorHighlightEnabled.set(true); selectedSector.set(sec);
+                     }}
+                     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.preventDefault(); }}
                      role="button" tabindex="0"
                      aria-label="Select sector {sec}"
                      class="flex items-center border-b border-border transition-all border-l-[3px] relative cursor-pointer
@@ -691,7 +724,7 @@
                                 Browse Stocks
                             </button>
                             {#if secStockCount > 0}
-                                <span class="text-[13px] font-medium text-text-faint tabular-nums w-6 text-right">{secStockCount}</span>
+                                <span class="text-[length:var(--text-num-md)] font-medium text-text-faint tabular-nums w-6 text-right">{secStockCount}</span>
                             {/if}
                         </div>
                     </div>
@@ -731,7 +764,7 @@
                                     {/if}
                                 </div>
                                 <span class="text-[12px] font-medium uppercase tracking-wide truncate {isIndChecked ? 'text-text-muted' : 'text-text-faint'}">{ind.industry}</span>
-                                <span class="ml-auto text-[12px] text-text-faint tabular-nums font-medium shrink-0">{ind.total}</span>
+                                <span class="ml-auto text-[length:var(--text-num-sm)] text-text-faint tabular-nums font-medium shrink-0">{ind.total}</span>
                             </button>
                         {/each}
                     {:else}

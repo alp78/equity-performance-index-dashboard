@@ -11,14 +11,15 @@
         isOverviewMode,
         isSectorMode,
         isMacroContextMode,
-        INDEX_CONFIG,
         selectedSymbol,
         loadSummaryData,
         sectorAnalysisMode,
         singleSelectedIndex,
         selectedSector,
+        selectedSectors,
         requestFocusSymbol,
     } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
 
     import StockBrowser from './sidebar/StockBrowser.svelte';
     import SectorPanel from './sidebar/SectorPanel.svelte';
@@ -37,6 +38,10 @@
         const idxKey = (stockIndex && INDEX_CONFIG[stockIndex]) ? stockIndex : 'stoxx50';
         singleSelectedIndex.set([idxKey]);
         try { sessionStorage.setItem('dash_single_open_index', idxKey); } catch {}
+        // Ensure sector is checked in both cross-index and single-index
+        if (!$selectedSectors.includes(sectorName)) {
+            selectedSectors.update(s => [...s, sectorName]);
+        }
         selectedSector.set(sectorName);
     }
 

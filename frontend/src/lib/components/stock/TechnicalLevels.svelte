@@ -18,7 +18,9 @@
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { selectedSymbol, marketIndex, INDEX_CONFIG, isOverviewMode, isSectorMode, isMacroContextMode, getCached, setCached, isCacheFresh, summaryData } from '$lib/stores.js';
+    import { selectedSymbol, marketIndex, isOverviewMode, isSectorMode, isMacroContextMode, summaryData } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
     import { getSectorColor } from '$lib/theme.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
@@ -260,7 +262,7 @@
                                 style="left: calc({Math.min(Math.max(data.rsi.value, 0), 100)}% - 3px); background: {data.rsi.status === 'overbought' ? 'var(--color-down)' : data.rsi.status === 'oversold' ? 'var(--color-warn)' : 'var(--color-up)'};"></div>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.rsi?.value ?? '—'}</span>
+                    <span class="text-[length:var(--text-num-md)] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.rsi?.value ?? '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.rsi?.status]} {STATUS_COLORS[data.rsi?.status]} shrink-0">{STATUS_LABELS[data.rsi?.status] || '—'}</span>
                 </div>
             </button>
@@ -274,9 +276,9 @@
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">MACD</span>
                     <div class="tech-mid flex-1 flex items-center gap-1.5 min-w-0 overflow-hidden">
                         <span class="text-[12px] text-text-faint">{data.macd?.status === 'bullish' ? '▲' : '▼'}</span>
-                        <span class="text-[13px] text-text-faint truncate">sig {fmtVal(data.macd?.signal)}</span>
+                        <span class="text-[length:var(--text-num-md)] text-text-faint truncate">sig {fmtVal(data.macd?.signal)}</span>
                     </div>
-                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{fmtVal(data.macd?.value)}</span>
+                    <span class="text-[length:var(--text-num-md)] font-bold tabular-nums text-text-secondary text-right shrink-0">{fmtVal(data.macd?.value)}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.macd?.status]} {STATUS_COLORS[data.macd?.status]} shrink-0">{STATUS_LABELS[data.macd?.status] || '—'}</span>
                 </div>
             </button>
@@ -297,7 +299,7 @@
                                 style="left: calc({pct}% - 3px); background: {data.bollinger.status === 'upper_band' ? 'var(--color-warn)' : data.bollinger.status === 'lower_band' ? 'var(--color-warn)' : 'var(--color-up)'};"></div>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.bollinger?.percent_b != null ? data.bollinger.percent_b.toFixed(2) : '—'}</span>
+                    <span class="text-[length:var(--text-num-md)] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.bollinger?.percent_b != null ? data.bollinger.percent_b.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.bollinger?.status]} {STATUS_COLORS[data.bollinger?.status]} shrink-0">{STATUS_LABELS[data.bollinger?.status] || '—'}</span>
                 </div>
             </button>
@@ -311,10 +313,10 @@
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">ATR</span>
                     <div class="tech-mid flex-1 flex items-baseline gap-1.5 min-w-0 overflow-hidden">
                         {#if data.atr?.percent != null}
-                            <span class="text-[12px] text-text-faint truncate">({data.atr.percent}%)</span>
+                            <span class="text-[length:var(--text-num-sm)] text-text-faint truncate">({data.atr.percent}%)</span>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.atr?.value != null ? data.atr.value.toFixed(2) : '—'}</span>
+                    <span class="text-[length:var(--text-num-md)] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.atr?.value != null ? data.atr.value.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.atr?.status]} {STATUS_COLORS[data.atr?.status]} shrink-0">{STATUS_LABELS[data.atr?.status] || '—'}</span>
                 </div>
             </button>
@@ -329,7 +331,7 @@
                     <div class="tech-mid flex-1 flex items-baseline gap-1.5 min-w-0 overflow-hidden">
                         <span class="text-[12px] text-text-faint truncate">vs S&P</span>
                     </div>
-                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.beta?.value != null ? data.beta.value.toFixed(2) : '—'}</span>
+                    <span class="text-[length:var(--text-num-md)] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.beta?.value != null ? data.beta.value.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.beta?.status]} {STATUS_COLORS[data.beta?.status]} shrink-0">{STATUS_LABELS[data.beta?.status] || '—'}</span>
                 </div>
             </button>

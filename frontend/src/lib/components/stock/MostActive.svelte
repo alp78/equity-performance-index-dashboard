@@ -17,7 +17,8 @@
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { marketIndex, INDEX_CONFIG, currentCurrency, selectedSymbol, requestFocusSymbol } from '$lib/stores.js';
+    import { marketIndex, currentCurrency, selectedSymbol, requestFocusSymbol } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -114,7 +115,7 @@
 <Card fill class="most-active-root">
 
     <!-- header -->
-    <SectionHeader title="Most Active" subtitle={indexLabel} subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Most Active" subtitle="{indexLabel} · volume surge + return" subtitleFlag={indexFlag} border size="lg">
         {#snippet action()}
             {#if customRange?.start}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">
@@ -146,21 +147,24 @@
                             <span class="text-[11px] text-text-faint truncate">{stock.name || ''}</span>
                         </div>
                         <div class="flex items-baseline gap-2 shrink-0">
-                            <span class="text-[14px] font-medium text-text-secondary tabular-nums">
+                            <span class="text-[length:var(--text-num-lg)] font-medium text-text-secondary tabular-nums">
                                 <span class="text-text-muted">{currency}</span>{fmtPrice(stock.last_price)}
                             </span>
-                            <span class="text-[12px] font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
+                            <span class="text-[length:var(--text-num-sm)] font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
                                 {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
                             </span>
                         </div>
                     </div>
-                    <!-- row 2: avg daily volume bar -->
+                    <!-- row 2: avg daily volume bar + volume ratio -->
                     <div class="flex items-center gap-2">
                         <span class="text-[10px] font-medium text-text-faint uppercase tracking-wider w-7 shrink-0">Vol</span>
                         <div class="flex-1 h-2 rounded-sm bg-border-subtle overflow-hidden">
                             <div class="h-full rounded-sm bg-accent/15 transition-all duration-500" style="width: {volWidth}%"></div>
                         </div>
-                        <span class="text-[11px] font-medium text-text-muted tabular-nums w-10 text-right shrink-0">{fmtVol(stock.avg_volume)}</span>
+                        <span class="text-[length:var(--text-num-xs)] font-medium text-text-muted tabular-nums shrink-0">{fmtVol(stock.avg_volume)}</span>
+                        {#if stock.volume_ratio != null}
+                            <span class="text-[9px] font-bold tabular-nums shrink-0 {stock.volume_ratio >= 1.5 ? 'text-up' : stock.volume_ratio >= 1.0 ? 'text-text-secondary' : 'text-text-faint'}">{stock.volume_ratio.toFixed(1)}x</span>
+                        {/if}
                     </div>
                 </div>
             {/each}

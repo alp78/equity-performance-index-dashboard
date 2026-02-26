@@ -1595,7 +1595,7 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y", currency:
 
 
 @app.get("/index-prices/stats")
-async def get_index_prices_stats(period: str = "1y", start: str = "", end: str = ""):
+async def get_index_prices_stats(period: str = "1y", start: str = "", end: str = "", currency: str = "local"):
     """Compute per-index stats: daily change, period return, YTD, 52w range, volatility."""
     if start and not _valid_date(start):
         return {"error": "Invalid start date format"}
@@ -1604,8 +1604,11 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
     if not INDEX_PRICES_LOADED:
         return []
 
+    is_usd = currency.lower() == "usd"
     use_custom = bool(start and end)
     cache_key = f"index_stats_{start}_{end}" if use_custom else f"index_stats_{period}"
+    if is_usd:
+        cache_key += "_usd"
     cached = get_cached_response(cache_key)
     if cached:
         return cached
@@ -1624,63 +1627,179 @@ async def get_index_prices_stats(period: str = "1y", start: str = "", end: str =
             period_where = f"trade_date >= (SELECT MAX(trade_date) - INTERVAL '{days} days' FROM index_prices)"
             vol_where = period_where
 
-        stats_sql = f"""
-        WITH base AS (
+        if is_usd:
+            # USD mode: fetch raw time-series, apply FX conversion, compute stats in Python
+            import pandas as pd
+
+            raw_sql = """
             SELECT symbol, name, currency, COALESCE(exchange, '') AS exchange,
-                trade_date, close, high, low,
-                LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_close,
-                MAX(trade_date) OVER (PARTITION BY symbol) as sym_max_date
+                   CAST(trade_date AS DATE)::VARCHAR as trade_date,
+                   CAST(close AS FLOAT) as close,
+                   CAST(high AS FLOAT) as high,
+                   CAST(low AS FLOAT) as low
             FROM index_prices
             WHERE close IS NOT NULL AND close > 0
-        ),
-        agg AS (
-            SELECT symbol,
-                ARG_MAX(close, trade_date) as current_price,
-                MAX(trade_date) as latest_date,
-                ARG_MAX(name, trade_date) as name,
-                ARG_MAX(currency, trade_date) as currency,
-                ARG_MAX(exchange, trade_date) as exchange,
-                ARG_MAX(prev_close, trade_date) as prev_close,
-                ARG_MIN(close, trade_date) FILTER (WHERE {period_where}) as period_close,
-                ARG_MIN(close, trade_date) FILTER (WHERE trade_date >= DATE_TRUNC('year', CURRENT_DATE)) as ytd_close,
-                MIN(low) FILTER (WHERE trade_date >= sym_max_date - INTERVAL '365 days') as low_52w,
-                MAX(high) FILTER (WHERE trade_date >= sym_max_date - INTERVAL '365 days') as high_52w,
-                (STDDEV((close / NULLIF(prev_close, 0) - 1))
-                    FILTER (WHERE prev_close IS NOT NULL AND {vol_where})) * SQRT(252) as volatility
-            FROM base
-            GROUP BY symbol
-        )
-        SELECT symbol, current_price, latest_date, name, currency, exchange,
-            ROUND(CASE WHEN prev_close > 0
-                 THEN ((current_price - prev_close) / prev_close * 100)::NUMERIC
-                 ELSE 0 END, 2) AS daily_change_pct,
-            ROUND(CASE WHEN period_close > 0
-                 THEN ((current_price - period_close) / period_close * 100)::NUMERIC
-                 ELSE 0 END, 2) AS period_return_pct,
-            ROUND(CASE WHEN ytd_close > 0
-                 THEN ((current_price - ytd_close) / ytd_close * 100)::NUMERIC
-                 ELSE 0 END, 2) AS ytd_return_pct,
-            ROUND(COALESCE(high_52w, current_price)::NUMERIC, 2) AS high_52w,
-            ROUND(COALESCE(low_52w, current_price)::NUMERIC, 2) AS low_52w,
-            ROUND(COALESCE(volatility * 100, 0)::NUMERIC, 2) AS volatility_pct
-        FROM agg
-        """
+            ORDER BY symbol, trade_date
+            """
 
-        def _q():
-            with db_rwlock.read():
-                rows = local_db.execute(stats_sql).fetchall()
-                cols = ["symbol", "current_price", "latest_date", "name", "currency", "exchange",
-                        "daily_change_pct", "period_return_pct", "ytd_return_pct",
-                        "high_52w", "low_52w", "volatility_pct"]
-                return [
-                    {c: (float(row[i]) if isinstance(row[i], (int, float)) else row[i])
-                     for i, c in enumerate(cols)}
-                    for row in rows
-                ]
+            def _q_raw():
+                with db_rwlock.read():
+                    return local_db.execute(raw_sql).df()
 
-        results = await db_read(_q)
-        set_cached_response(cache_key, results)
-        return results
+            df = await db_read(_q_raw)
+            if df.empty:
+                return []
+
+            # Compute period cutoff date in Python
+            max_date = df["trade_date"].max()
+            if use_custom:
+                period_cutoff = start
+                vol_start, vol_end = start, end
+            elif period.lower() == "max":
+                period_cutoff = df["trade_date"].min()
+                vol_start, vol_end = period_cutoff, max_date
+            else:
+                days = INTERVALS.get(period.lower(), 365)
+                period_cutoff = (pd.Timestamp(max_date) - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+                vol_start, vol_end = period_cutoff, max_date
+
+            # Fetch FX rates for the full date range
+            all_dates = sorted(df["trade_date"].unique())
+            fx_rates = await _fetch_fx_history(all_dates[0], all_dates[-1])
+
+            if fx_rates:
+                fx_dates = sorted(fx_rates.keys())
+                fx_records = [{"date": d, **fx_rates[d]} for d in fx_dates]
+                fx_df = pd.DataFrame(fx_records).set_index("date")
+                fx_df = fx_df.reindex(all_dates).ffill().bfill()
+
+                for sym in df["symbol"].unique():
+                    ccy = INDEX_TICKER_TO_CURRENCY.get(sym, "USD")
+                    if ccy == "USD" or ccy not in fx_df.columns:
+                        continue
+                    mask = df["symbol"] == sym
+                    sym_dates = df.loc[mask, "trade_date"].values
+                    rates = fx_df.loc[sym_dates, ccy].values.astype(float)
+                    valid = ~pd.isna(rates) & (rates != 0)
+                    idx = df.index[mask]
+                    for col in ["close", "high", "low"]:
+                        df.loc[idx[valid], col] = df.loc[idx[valid], col].values / rates[valid]
+
+            # Compute stats per symbol from USD-adjusted data
+            results = []
+            today = pd.Timestamp.now().normalize()
+            ytd_start = today.replace(month=1, day=1).strftime("%Y-%m-%d")
+            w52_start = (today - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+
+            for sym, grp in df.groupby("symbol"):
+                grp = grp.sort_values("trade_date")
+                if len(grp) < 2:
+                    continue
+                meta_row = grp.iloc[-1]
+                cur_price = float(grp["close"].iloc[-1])
+                prev_price = float(grp["close"].iloc[-2])
+                daily_chg = round(((cur_price - prev_price) / prev_price * 100) if prev_price else 0, 2)
+
+                # Period return
+                period_grp = grp[grp["trade_date"] >= period_cutoff]
+                period_close = float(period_grp["close"].iloc[0]) if len(period_grp) > 0 else None
+                period_ret = round(((cur_price - period_close) / period_close * 100) if period_close else 0, 2)
+
+                # YTD return
+                ytd_grp = grp[grp["trade_date"] >= ytd_start]
+                ytd_close = float(ytd_grp["close"].iloc[0]) if len(ytd_grp) > 0 else None
+                ytd_ret = round(((cur_price - ytd_close) / ytd_close * 100) if ytd_close else 0, 2)
+
+                # 52w range (from USD-adjusted high/low)
+                w52_grp = grp[grp["trade_date"] >= w52_start]
+                high_52 = round(float(w52_grp["high"].max()), 2) if len(w52_grp) > 0 else cur_price
+                low_52 = round(float(w52_grp["low"].min()), 2) if len(w52_grp) > 0 else cur_price
+
+                # Volatility
+                vol_grp = grp[(grp["trade_date"] >= vol_start) & (grp["trade_date"] <= vol_end)]
+                if len(vol_grp) >= 2:
+                    rets = vol_grp["close"].pct_change().dropna()
+                    vol = round(float(rets.std() * (252 ** 0.5) * 100), 2) if len(rets) > 0 else 0
+                else:
+                    vol = 0
+
+                results.append({
+                    "symbol": sym,
+                    "current_price": round(cur_price, 2),
+                    "latest_date": str(meta_row["trade_date"]),
+                    "name": meta_row["name"],
+                    "currency": "USD",
+                    "exchange": meta_row["exchange"],
+                    "daily_change_pct": daily_chg,
+                    "period_return_pct": period_ret,
+                    "ytd_return_pct": ytd_ret,
+                    "high_52w": high_52,
+                    "low_52w": low_52,
+                    "volatility_pct": vol,
+                })
+
+            set_cached_response(cache_key, results)
+            return results
+
+        else:
+            # Local currency mode: single SQL query
+            stats_sql = f"""
+            WITH base AS (
+                SELECT symbol, name, currency, COALESCE(exchange, '') AS exchange,
+                    trade_date, close, high, low,
+                    LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) as prev_close,
+                    MAX(trade_date) OVER (PARTITION BY symbol) as sym_max_date
+                FROM index_prices
+                WHERE close IS NOT NULL AND close > 0
+            ),
+            agg AS (
+                SELECT symbol,
+                    ARG_MAX(close, trade_date) as current_price,
+                    MAX(trade_date) as latest_date,
+                    ARG_MAX(name, trade_date) as name,
+                    ARG_MAX(currency, trade_date) as currency,
+                    ARG_MAX(exchange, trade_date) as exchange,
+                    ARG_MAX(prev_close, trade_date) as prev_close,
+                    ARG_MIN(close, trade_date) FILTER (WHERE {period_where}) as period_close,
+                    ARG_MIN(close, trade_date) FILTER (WHERE trade_date >= DATE_TRUNC('year', CURRENT_DATE)) as ytd_close,
+                    MIN(low) FILTER (WHERE trade_date >= sym_max_date - INTERVAL '365 days') as low_52w,
+                    MAX(high) FILTER (WHERE trade_date >= sym_max_date - INTERVAL '365 days') as high_52w,
+                    (STDDEV((close / NULLIF(prev_close, 0) - 1))
+                        FILTER (WHERE prev_close IS NOT NULL AND {vol_where})) * SQRT(252) as volatility
+                FROM base
+                GROUP BY symbol
+            )
+            SELECT symbol, current_price, latest_date, name, currency, exchange,
+                ROUND(CASE WHEN prev_close > 0
+                     THEN ((current_price - prev_close) / prev_close * 100)::NUMERIC
+                     ELSE 0 END, 2) AS daily_change_pct,
+                ROUND(CASE WHEN period_close > 0
+                     THEN ((current_price - period_close) / period_close * 100)::NUMERIC
+                     ELSE 0 END, 2) AS period_return_pct,
+                ROUND(CASE WHEN ytd_close > 0
+                     THEN ((current_price - ytd_close) / ytd_close * 100)::NUMERIC
+                     ELSE 0 END, 2) AS ytd_return_pct,
+                ROUND(COALESCE(high_52w, current_price)::NUMERIC, 2) AS high_52w,
+                ROUND(COALESCE(low_52w, current_price)::NUMERIC, 2) AS low_52w,
+                ROUND(COALESCE(volatility * 100, 0)::NUMERIC, 2) AS volatility_pct
+            FROM agg
+            """
+
+            def _q():
+                with db_rwlock.read():
+                    rows = local_db.execute(stats_sql).fetchall()
+                    cols = ["symbol", "current_price", "latest_date", "name", "currency", "exchange",
+                            "daily_change_pct", "period_return_pct", "ytd_return_pct",
+                            "high_52w", "low_52w", "volatility_pct"]
+                    return [
+                        {c: (float(row[i]) if isinstance(row[i], (int, float)) else row[i])
+                         for i, c in enumerate(cols)}
+                        for row in rows
+                    ]
+
+            results = await db_read(_q)
+            set_cached_response(cache_key, results)
+            return results
 
     except Exception as e:
         logger.exception("Index stats error")
@@ -2903,7 +3022,14 @@ async def get_most_active(period: str = "1y", index: str = "sp500",
                         f"- INTERVAL {days} DAY"
                     )
                 return local_db.execute(f"""
-                    WITH vol AS (
+                    WITH baseline AS (
+                        SELECT symbol, AVG(volume) as baseline_avg_vol
+                        FROM {table}
+                        WHERE market_index = '{index}' AND close > 0 AND volume > 0
+                        GROUP BY symbol
+                        HAVING COUNT(*) >= 20
+                    ),
+                    period_stats AS (
                         SELECT p.symbol,
                                AVG(p.volume)  as avg_volume,
                                SUM(CAST(p.volume AS DOUBLE) * p.close) as turnover,
@@ -2915,17 +3041,25 @@ async def get_most_active(period: str = "1y", index: str = "sp500",
                           AND p.close > 0
                           {date_filter}
                         GROUP BY p.symbol
+                        HAVING COUNT(*) >= 3
                     )
-                    SELECT v.symbol, l.name, l.sector,
+                    SELECT ps.symbol, l.name, l.sector,
                            CAST(l.close AS FLOAT) as last_price,
                            CAST(((l.close - l.prev_price) / NULLIF(l.prev_price, 0)) * 100 AS FLOAT) as daily_change_pct,
-                           CAST(v.avg_volume AS BIGINT) as avg_volume,
-                           CAST(v.turnover AS DOUBLE) as turnover,
-                           v.trading_days,
-                           ROUND(CAST(v.period_return AS FLOAT), 2) as period_return
-                    FROM vol v
-                    JOIN latest_{index} l ON l.symbol = v.symbol AND l.market_index = '{index}'
-                    ORDER BY v.avg_volume DESC
+                           CAST(ps.avg_volume AS BIGINT) as avg_volume,
+                           CAST(ps.turnover AS DOUBLE) as turnover,
+                           ps.trading_days,
+                           ROUND(CAST(ps.period_return AS FLOAT), 2) as period_return,
+                           ROUND(CAST(ps.avg_volume / NULLIF(b.baseline_avg_vol, 0) AS FLOAT), 2) as volume_ratio,
+                           ROUND(CAST(
+                               LN(1 + ps.avg_volume / NULLIF(b.baseline_avg_vol, 0))
+                               * (1 + ABS(ps.period_return) / 10.0)
+                           AS FLOAT), 4) as activity_score
+                    FROM period_stats ps
+                    JOIN latest_{index} l ON l.symbol = ps.symbol AND l.market_index = '{index}'
+                    JOIN baseline b ON b.symbol = ps.symbol
+                    WHERE b.baseline_avg_vol > 0
+                    ORDER BY activity_score DESC
                     LIMIT 3
                 """).df()
         df = await db_read(_q)
@@ -3249,12 +3383,13 @@ async def _fetch_fred_series(series_id, observations_limit=5):
 # ─── Correlation matrix: Pearson correlation between index daily returns ───
 
 @app.get("/correlation")
-async def get_correlation(period: str = "1y"):
+async def get_correlation(period: str = "1y", currency: str = "local"):
     """Compute Pearson correlation matrix between the 6 indices."""
     if not INDEX_PRICES_LOADED:
         return {"matrix": [], "labels": []}
 
-    cache_key = f"correlation_{period}"
+    is_usd = currency.lower() == "usd"
+    cache_key = f"correlation_{period}" + ("_usd" if is_usd else "")
     cached = get_cached_response(cache_key)
     if cached:
         return cached
@@ -3265,18 +3400,69 @@ async def get_correlation(period: str = "1y"):
             days = INTERVALS.get(period.lower(), 365)
             date_clause = f"AND trade_date >= CURRENT_DATE - INTERVAL '{days} days'"
 
-        query = sql("correlation_returns.sql").replace("{date_clause}", date_clause)
+        if is_usd:
+            import pandas as pd
 
-        def _q():
-            with db_rwlock.read():
-                return local_db.execute(query).df()
-        df = await db_read(_q)
+            # Fetch raw closes (no returns yet — need to convert to USD first)
+            prices_sql = f"""
+            SELECT symbol,
+                   CAST(trade_date AS DATE)::VARCHAR as time,
+                   CAST(close AS FLOAT) as close
+            FROM index_prices
+            WHERE close IS NOT NULL AND close > 0
+            {date_clause}
+            ORDER BY symbol, time
+            """
 
-        if df.empty:
-            return {"matrix": [], "labels": []}
+            def _q_prices():
+                with db_rwlock.read():
+                    return local_db.execute(prices_sql).df()
 
-        pivot = df.pivot(index="time", columns="symbol", values="ret").dropna()
-        corr = pivot.corr()
+            df = await db_read(_q_prices)
+            if df.empty:
+                return {"matrix": [], "labels": []}
+
+            # Apply FX conversion
+            all_dates = sorted(df["time"].unique())
+            fx_rates = await _fetch_fx_history(all_dates[0], all_dates[-1])
+
+            if fx_rates:
+                fx_dates = sorted(fx_rates.keys())
+                fx_records = [{"date": d, **fx_rates[d]} for d in fx_dates]
+                fx_df = pd.DataFrame(fx_records).set_index("date")
+                fx_df = fx_df.reindex(all_dates).ffill().bfill()
+
+                for sym in df["symbol"].unique():
+                    ccy = INDEX_TICKER_TO_CURRENCY.get(sym, "USD")
+                    if ccy == "USD" or ccy not in fx_df.columns:
+                        continue
+                    mask = df["symbol"] == sym
+                    sym_dates = df.loc[mask, "time"].values
+                    rates = fx_df.loc[sym_dates, ccy].values.astype(float)
+                    valid = ~pd.isna(rates) & (rates != 0)
+                    idx = df.index[mask]
+                    df.loc[idx[valid], "close"] = df.loc[idx[valid], "close"].values / rates[valid]
+
+            # Compute daily returns from USD-adjusted closes
+            df = df.sort_values(["symbol", "time"])
+            df["ret"] = df.groupby("symbol")["close"].pct_change()
+            df = df.dropna(subset=["ret"])
+
+            pivot = df.pivot(index="time", columns="symbol", values="ret").dropna()
+            corr = pivot.corr()
+        else:
+            query = sql("correlation_returns.sql").replace("{date_clause}", date_clause)
+
+            def _q():
+                with db_rwlock.read():
+                    return local_db.execute(query).df()
+            df = await db_read(_q)
+
+            if df.empty:
+                return {"matrix": [], "labels": []}
+
+            pivot = df.pivot(index="time", columns="symbol", values="ret").dropna()
+            corr = pivot.corr()
 
         ordered_tickers = [
             INDEX_KEY_TO_TICKER[k]

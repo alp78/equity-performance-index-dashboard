@@ -16,10 +16,12 @@
     import { browser } from '$app/environment';
     import { onMount, onDestroy } from 'svelte';
     import { API_BASE_URL } from '$lib/config.js';
-    import { singleSelectedIndex, selectedSector, selectedIndustries, singleModeIndustries, INDEX_CONFIG } from '$lib/stores.js';
+    import { singleSelectedIndex, selectedSector, selectedIndustries, singleModeIndustries } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
     import { getSectorColor, getSectorShades } from '$lib/theme.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
+    import { fmtDate } from '$lib/format.js';
 
     let { currentPeriod = '1y', customRange = null } = $props();
 
@@ -44,11 +46,6 @@
 
     // --- PERIOD LABEL ---
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB',{month:'short'})} '${String(dt.getFullYear()).slice(2)}`;
-    }
     let isCustom    = $derived(!!(customRange?.start));
     let periodLabel = $derived(
         isCustom ? `${fmtDate(customRange.start)} → ${fmtDate(customRange.end)}`

@@ -29,31 +29,33 @@
   ═══════════════════════════════════════════════════════════════════════════
 -->
 <script>
-    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, INDEX_CONFIG, summaryData, isOverviewMode, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER, loadIndexOverviewData, isSectorMode, isMacroContextMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, crossSelectedIndustries, singleModeIndustries, selectedSectors, sectorsByIndex, getCached, setCached, isCacheFresh, macroHighlightIndex, macroHighlightPair, ALL_SECTORS, sectorHighlightEnabled } from '$lib/stores.js';
+    import { selectedSymbol, loadSummaryData, marketIndex, currentCurrency, summaryData, isOverviewMode, loadIndexOverviewData, isSectorMode, isMacroContextMode, sectorSelectedIndices, singleSelectedIndex, selectedSector, sectorAnalysisMode, selectedIndustries, crossSelectedIndustries, singleModeIndustries, selectedSectors, sectorsByIndex, macroHighlightIndex, macroHighlightPair, ALL_SECTORS, sectorHighlightEnabled, crossIndexHighlight } from '$lib/stores.js';
+    import { getCached, setCached, isCacheFresh } from '$lib/cache.js';
     import { API_BASE_URL } from '$lib/config.js';
     import Sidebar from '$lib/components/Sidebar.svelte';
-    import PriceChart from '$lib/components/PriceChart.svelte';
-    import TopMovers from '$lib/components/TopMovers.svelte';
-    import IndexPerformanceTable from '$lib/components/IndexPerformanceTable.svelte';
-    import NewsFeed from '$lib/components/NewsFeed.svelte';
-    import SectorHeatmap from '$lib/components/SectorHeatmap.svelte';
-    import SectorTopStocks from '$lib/components/SectorTopStocks.svelte';
-    import SectorRankings from '$lib/components/SectorRankings.svelte';
-    import IndustryBreakdown from '$lib/components/IndustryBreakdown.svelte';
-    import MostActive from '$lib/components/MostActive.svelte';
-    import CorrelationHeatmap from '$lib/components/CorrelationHeatmap.svelte';
-    import EconomicCalendar from '$lib/components/EconomicCalendar.svelte';
-    import MacroWatchlist from '$lib/components/MacroWatchlist.svelte';
-    import RiskDashboard from '$lib/components/RiskDashboard.svelte';
-    import TechnicalLevels from '$lib/components/TechnicalLevels.svelte';
-    import StockMetrics from '$lib/components/StockMetrics.svelte';
+    import PriceChart from '$lib/components/shared/PriceChart.svelte';
+    import TopMovers from '$lib/components/stock/TopMovers.svelte';
+    import MostActive from '$lib/components/stock/MostActive.svelte';
+    import StockMetrics from '$lib/components/stock/StockMetrics.svelte';
+    import TechnicalLevels from '$lib/components/stock/TechnicalLevels.svelte';
+    import SectorHeatmap from '$lib/components/sector/SectorHeatmap.svelte';
+    import SectorTopStocks from '$lib/components/sector/SectorTopStocks.svelte';
+    import SectorRankings from '$lib/components/sector/SectorRankings.svelte';
+    import IndustryBreakdown from '$lib/components/sector/IndustryBreakdown.svelte';
+    import IndexPerformanceTable from '$lib/components/macro/IndexPerformanceTable.svelte';
+    import CorrelationHeatmap from '$lib/components/macro/CorrelationHeatmap.svelte';
+    import EconomicCalendar from '$lib/components/macro/EconomicCalendar.svelte';
+    import MacroWatchlist from '$lib/components/macro/MacroWatchlist.svelte';
+    import RiskDashboard from '$lib/components/macro/RiskDashboard.svelte';
+    import NewsFeed from '$lib/components/macro/NewsFeed.svelte';
     import Card from '$lib/components/ui/Card.svelte';
     import ThemeToggle from '$lib/components/ui/ThemeToggle.svelte';
-    import { Newspaper, Globe, PieChart, TrendingUp, Info } from 'lucide-svelte';
+    import { Newspaper, Globe, PieChart, TrendingUp } from 'lucide-svelte';
     import Tooltip from '$lib/components/ui/Tooltip.svelte';
     import { onMount, untrack } from 'svelte';
-    import { INDEX_COLORS, SECTOR_PALETTE, SECTOR_INDEX_NAMES, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
-    import { MARKET_HOURS, SYMBOL_MARKET_MAP } from '$lib/index-registry.js';
+    import { SECTOR_PALETTE, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
+    import { MARKET_HOURS, SYMBOL_MARKET_MAP, INDEX_CONFIG, INDEX_TICKER_MAP, INDEX_KEY_TO_TICKER, INDEX_COLORS, SECTOR_INDEX_NAMES } from '$lib/index-registry.js';
+    import { fmtDate } from '$lib/format.js';
 
     // ─── Fetch Utilities ───
 
@@ -848,15 +850,6 @@
 
     // ─── Period / Range Helpers ───
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        const day = dt.getDate();
-        const mon = dt.toLocaleDateString('en-GB', { month: 'short' });
-        const yr = String(dt.getFullYear()).slice(2);
-        return `${day} ${mon} '${yr}`;
-    }
-
     function handleResetPeriod() {
         if (customRange) { customRange = null; selectMode = false; }
         const p = sessionStorage.getItem('chart_period') || '5y';
@@ -1350,9 +1343,6 @@
                                 <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">{hCfg?.shortLabel || highlightKey}</h1>
                                 <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted inline-flex items-center gap-1.5">
                                     {currencyMode === 'usd' ? 'USD-adjusted' : 'Normalized'} % change
-                                    <Tooltip text="Price return only (excludes dividends). {currencyMode === 'usd' ? 'Prices converted to USD at historical ECB daily rates. ' : 'Returns in local currency. '}Indices have different sector compositions." position="bottom">
-                                        <Info size={13} class="text-text-disabled hover:text-text-muted cursor-help transition-colors" />
-                                    </Tooltip>
                                 </span>
                             </div>
                         </div>
@@ -1361,9 +1351,6 @@
                             <h1 class="text-xl max-lg:text-lg max-sm:text-base font-semibold text-text uppercase tracking-tight leading-none">Index Benchmarks</h1>
                             <span class="text-[13px] font-medium uppercase tracking-[0.15em] pl-0.5 text-text-muted inline-flex items-center gap-1.5">
                                 <span class="text-text-secondary">{Object.keys(INDEX_CONFIG).length} indices</span> · {currencyMode === 'usd' ? 'USD-adjusted' : 'Local currency'} % change
-                                <Tooltip text="Price return only (excludes dividends). {currencyMode === 'usd' ? 'Prices converted to USD at historical ECB daily rates. ' : 'Returns in local currency. '}Indices have different sector compositions." position="bottom">
-                                    <Info size={13} class="text-text-disabled hover:text-text-muted cursor-help transition-colors" />
-                                </Tooltip>
                             </span>
                         </div>
                     {/if}
@@ -1414,6 +1401,33 @@
             {#if !inContext}
             <div class="flex flex-col items-end gap-1.5 max-lg:w-full max-lg:items-start">
                 <div class="flex items-center gap-2">
+                    {#if inOverview}
+                        <Tooltip text="LOCAL: returns in each index's native currency. USD: all returns converted to USD at historical ECB daily rates." position="bottom">
+                        <div class="flex items-center rounded-full bg-bg-subtle p-0.5">
+                            <button
+                                onclick={() => setCurrencyMode('local')}
+                                aria-label="Show local currency returns"
+                                aria-pressed={currencyMode === 'local'}
+                                class="px-2.5 py-1 text-[10px] font-bold tracking-wide rounded-full transition-all whitespace-nowrap
+                                {currencyMode === 'local'
+                                    ? 'bg-text-secondary text-bg shadow-sm'
+                                    : 'text-text-muted hover:text-text'}"
+                            >LOCAL</button>
+                            <button
+                                onclick={() => setCurrencyMode('usd')}
+                                aria-label="Show USD-adjusted returns"
+                                aria-pressed={currencyMode === 'usd'}
+                                class="px-2.5 py-1 text-[10px] font-bold tracking-wide rounded-full transition-all whitespace-nowrap
+                                {currencyMode === 'usd'
+                                    ? 'bg-text-secondary text-bg shadow-sm'
+                                    : fxError
+                                        ? 'text-text-disabled cursor-not-allowed'
+                                        : 'text-text-muted hover:text-text'}"
+                            >USD</button>
+                        </div>
+                        </Tooltip>
+                    {/if}
+
                     <div class="flex items-center gap-1 border border-border p-1 rounded-lg max-sm:hidden">
                         <button
                             onclick={toggleCustomMode}
@@ -1428,36 +1442,11 @@
                             {selectMode ? 'SELECTING...' : 'CUSTOM'}
                         </button>
                         {#if customRange}
-                            <span class="text-[11px] font-medium text-text-secondary tabular-nums whitespace-nowrap pr-1">
+                            <span class="text-[length:var(--text-num-xs)] font-medium text-text-secondary tabular-nums whitespace-nowrap pr-1">
                                 {fmtDate(customRange.start)} → {fmtDate(customRange.end)}
                             </span>
                         {/if}
                     </div>
-
-                    {#if inOverview}
-                        <div class="flex border border-border p-1 rounded-lg">
-                            <button
-                                onclick={() => setCurrencyMode('local')}
-                                aria-label="Show local currency returns"
-                                aria-pressed={currencyMode === 'local'}
-                                class="px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap
-                                {currencyMode === 'local'
-                                    ? 'bg-accent text-white'
-                                    : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
-                            >LOCAL</button>
-                            <button
-                                onclick={() => setCurrencyMode('usd')}
-                                aria-label="Show USD-adjusted returns"
-                                aria-pressed={currencyMode === 'usd'}
-                                class="px-3 py-1.5 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap
-                                {currencyMode === 'usd'
-                                    ? 'bg-accent text-white'
-                                    : fxError
-                                        ? 'text-text-disabled cursor-not-allowed'
-                                        : 'text-text-muted hover:bg-bg-hover hover:text-text'}"
-                            >USD</button>
-                        </div>
-                    {/if}
 
                     <div class="flex border border-border p-1 rounded-lg">
                         {#each ['1W', '1MO', '3MO', '6MO', '1Y', '5Y', 'MAX'] as p}
@@ -1512,13 +1501,13 @@
                 </Card>
                 <div class="flex-1 min-h-0 grid grid-cols-2 gap-4 max-xl:grid-cols-1 max-xl:flex-none max-xl:auto-rows-[minmax(280px,1fr)]">
                     <div class="min-h-0 max-xl:min-h-[280px] card-enter">
-                        <IndexPerformanceTable {currentPeriod} {customRange} highlightSymbol={highlightTicker} highlightPair={$macroHighlightPair} onRowClick={(key) => {
+                        <IndexPerformanceTable {currentPeriod} {customRange} {currencyMode} highlightSymbol={highlightTicker} highlightPair={$macroHighlightPair} onRowClick={(key) => {
                             macroHighlightPair.set(null);
                             macroHighlightIndex.set(highlightKey === key ? null : key);
                         }} />
                     </div>
                     <div class="min-h-0 max-xl:min-h-[280px] card-enter">
-                        <CorrelationHeatmap {currentPeriod} {customRange} highlightPair={$macroHighlightPair} highlightIndex={highlightKey} onCellClick={(cell) => {
+                        <CorrelationHeatmap {currentPeriod} {customRange} {currencyMode} highlightPair={$macroHighlightPair} highlightIndex={highlightKey} onCellClick={(cell) => {
                             if ($macroHighlightPair && $macroHighlightPair.row === cell.row && $macroHighlightPair.col === cell.col) {
                                 macroHighlightPair.set(null);
                             } else {
@@ -1552,7 +1541,7 @@
                                 compareNames={sectorCompareNames}
                                 hideVolume={true}
                                 hideLegend={$sectorAnalysisMode === 'single-index'}
-                                highlightSymbol={$sectorAnalysisMode === 'single-index' && $sectorHighlightEnabled ? $selectedSector : null}
+                                highlightSymbol={$sectorAnalysisMode === 'single-index' && $sectorHighlightEnabled ? $selectedSector : $sectorAnalysisMode === 'cross-index' ? $crossIndexHighlight : null}
                                 onResetPeriod={handleResetPeriod}
                                 onRangeSelect={handleRangeSelect}
                             />
@@ -1668,13 +1657,13 @@
                                     {/if}
                                 </div>
                                 {#if hasData}
-                                    <span class="text-[13px] font-mono font-bold text-text-secondary tabular-nums">
+                                    <span class="text-[length:var(--text-num-md)] font-mono font-bold text-text-secondary tabular-nums">
                                         <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
                                             minimumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
                                             maximumFractionDigits: sym.includes('EUR/USD') ? 4 : 2,
                                         })}
                                     </span>
-                                    <span class="text-[12px] font-mono font-bold tabular-nums {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
+                                    <span class="text-[length:var(--text-num-sm)] font-mono font-bold tabular-nums {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
                                         {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(2)}%
                                     </span>
                                 {:else}

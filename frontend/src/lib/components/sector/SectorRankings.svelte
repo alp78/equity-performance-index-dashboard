@@ -15,24 +15,14 @@
 <script>
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
-    import { singleSelectedIndex, selectedSector, selectedSectors, sectorHighlightEnabled, INDEX_CONFIG } from '$lib/stores.js';
-    import { SECTOR_PALETTE, SECTOR_ABBREV } from '$lib/theme.js';
+    import { singleSelectedIndex, selectedSector, selectedSectors, sectorHighlightEnabled } from '$lib/stores.js';
+    import { INDEX_CONFIG } from '$lib/index-registry.js';
+    import { SECTOR_PALETTE, SECTOR_ABBREV, getSectorColor } from '$lib/theme.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
+    import { fmtDate } from '$lib/format.js';
 
     let { currentPeriod = '1y', customRange = null, industryReturnOverride = null } = $props();
-
-    // --- SECTOR PALETTE ---
-
-    const ALL_SECTORS = [
-        'Information Technology', 'Financials', 'Healthcare', 'Industrials',
-        'Consumer Discretionary', 'Communication Services', 'Consumer Staples',
-        'Energy', 'Materials', 'Utilities', 'Real Estate',
-    ];
-    function sectorColor(sec) {
-        const i = ALL_SECTORS.indexOf(sec);
-        return SECTOR_PALETTE[(i >= 0 ? i : ALL_SECTORS.length) % SECTOR_PALETTE.length];
-    }
 
     // --- STATE ---
 
@@ -47,11 +37,6 @@
 
     // --- PERIOD LABEL ---
 
-    function fmtDate(d) {
-        if (!d) return '';
-        const dt = new Date(d + 'T00:00:00');
-        return `${dt.getDate()} ${dt.toLocaleDateString('en-GB',{month:'short'})} '${String(dt.getFullYear()).slice(2)}`;
-    }
     let isCustom    = $derived(!!(customRange?.start));
     let periodLabel = $derived(
         isCustom ? `${fmtDate(customRange.start)} → ${fmtDate(customRange.end)}`
@@ -91,7 +76,7 @@
                 rows = mapped;
                 // reset to top sector if current selection missing from this index
                 const sectorNames = new Set(mapped.map(r => r.sector));
-                if (mapped.length > 0 && !sectorNames.has($selectedSector)) {
+                if ($selectedSector && mapped.length > 0 && !sectorNames.has($selectedSector)) {
                     selectedSector.set(mapped[0].sector);
                 }
             }
@@ -117,9 +102,9 @@
         }).sort((a, b) => (b.return_pct ?? 0) - (a.return_pct ?? 0));
     })());
 
-    // fall back to first row if active sector was filtered out
+    // fall back to first row if active sector was filtered out (but not if deliberately unset)
     $effect(() => {
-        if (filteredRows.length > 0 && !filteredRows.some(r => r.sector === $selectedSector)) {
+        if ($selectedSector && filteredRows.length > 0 && !filteredRows.some(r => r.sector === $selectedSector)) {
             selectedSector.set(filteredRows[0].sector);
         }
     });
@@ -153,7 +138,7 @@
         {/if}
         {#each filteredRows as row (row.sector)}
             {@const isActive = row.sector === activeSec}
-            {@const color = sectorColor(row.sector)}
+            {@const color = getSectorColor(row.sector)}
             {@const pos = (row.return_pct ?? 0) >= 0}
             <button
                 class="row-item w-full flex items-center gap-3 rounded-lg px-2 transition-all duration-150 relative
@@ -187,28 +172,28 @@
 <style>
     :global(.rankings-root) { container-type: size; }
     .row-item    { min-height: 22px; max-height: 46px; flex: 1; }
-    .sector-name { font-size: 14px; }
-    .return-val  { font-size: 14px; font-weight: 600; min-width: 58px; text-align: right; }
-    .stock-ct    { font-size: 13px; min-width: 24px; text-align: right; }
+    .sector-name { font-size: 12px; }
+    .return-val  { font-size: var(--text-num-lg); font-weight: 600; min-width: 58px; text-align: right; }
+    .stock-ct    { font-size: var(--text-num-md); min-width: 24px; text-align: right; }
 
     /* Container query: narrow width — shrink text, tighten layout */
     @container (max-width: 320px) {
         .sector-name { font-size: 12px; width: 35% !important; }
-        .return-val  { font-size: 12px; min-width: 48px; }
-        .stock-ct    { font-size: 11px; min-width: 20px; }
+        .return-val  { font-size: var(--text-num-sm); min-width: 48px; }
+        .stock-ct    { font-size: var(--text-num-xs); min-width: 20px; }
     }
 
     /* Very narrow container */
     @container (max-width: 240px) {
         .sector-name { font-size: 11px; width: 30% !important; }
-        .return-val  { font-size: 11px; min-width: 42px; }
+        .return-val  { font-size: var(--text-num-xs); min-width: 42px; }
         .stock-ct    { display: none; }
     }
 
     /* Viewport fallback for browsers without container query support */
     @media (max-width: 640px) {
         .sector-name { font-size: 12px; }
-        .return-val  { font-size: 12px; min-width: 48px; }
-        .stock-ct    { font-size: 11px; min-width: 20px; }
+        .return-val  { font-size: var(--text-num-sm); min-width: 48px; }
+        .stock-ct    { font-size: var(--text-num-xs); min-width: 20px; }
     }
 </style>
