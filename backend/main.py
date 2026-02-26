@@ -85,8 +85,6 @@ from index_config import (
     KEYWORD_INDEX_MAP as _CFG_KEYWORD_INDEX_MAP,
     PHASE1_INDICES,
     CORRELATION_ORDER,
-    ALL_LEADER_SYMBOLS,
-    LEADER_DISPLAY_MAP,
     INDEX_CONFIG_PUBLIC,
     INDEX_TICKER_TO_CURRENCY,
     PROJECT_ID,
@@ -258,6 +256,7 @@ STOCK_RETURNS_STATUS: dict = {}
 PREWARM_STATUS: dict = {}
 INDEX_PRICES_ROW_COUNT: int = 0
 LATEST_MARKET_DATA: dict = {}
+_DYNAMIC_LEADERS: dict = {}  # {index_key: [{symbol, name, volume_ratio, activity_score}]}
 _last_eu_vol: float | None = None
 STARTUP_TIME: float = 0.0
 STARTUP_DONE_TIME: float = 0.0
@@ -787,6 +786,7 @@ async def refresh_single_index(index_key):
         await loop.run_in_executor(None, lambda: _precompute_industry_series(index_key))
         await loop.run_in_executor(None, lambda: _precompute_stock_returns(index_key))
         await loop.run_in_executor(None, lambda: _prewarm_sector_caches(index_key))
+        await loop.run_in_executor(None, lambda: _recompute_leaders_for_index(index_key))
     invalidate_index_cache(index_key)
 
 
@@ -850,10 +850,74 @@ def _top_items_df(union, item_col, use_custom, period, start, end):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  9. REAL-TIME MARKET FEEDS
+#  9. DYNAMIC LEADERS & REAL-TIME MARKET FEEDS
+#     Dynamic leader computation from DuckDB (most-active by composite score).
 #     Binance BTC/USDT (10 s poll) and yfinance macro instruments (30 s poll).
 #     Results are stored in LATEST_MARKET_DATA and broadcast via WebSocket.
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _compute_leaders_for_index(index_key):
+    """Compute top 3 most-active stocks for one index (1-month window)."""
+    table = f"prices_{index_key}"
+    try:
+        with db_rwlock.read():
+            df = local_db.execute(f"""
+                WITH baseline AS (
+                    SELECT symbol, AVG(volume) as baseline_avg_vol
+                    FROM {table}
+                    WHERE market_index = '{index_key}' AND close > 0 AND volume > 0
+                    GROUP BY symbol
+                    HAVING COUNT(*) >= 20
+                ),
+                period_stats AS (
+                    SELECT p.symbol,
+                           AVG(p.volume)  as avg_volume,
+                           ((ARG_MAX(p.close, p.trade_date) - ARG_MIN(p.close, p.trade_date))
+                            / NULLIF(ARG_MIN(p.close, p.trade_date), 0)) * 100 as period_return
+                    FROM {table} p
+                    WHERE p.market_index = '{index_key}'
+                      AND p.close > 0
+                      AND p.trade_date >= (SELECT MAX(trade_date) FROM {table}
+                                           WHERE market_index = '{index_key}') - INTERVAL 30 DAY
+                    GROUP BY p.symbol
+                    HAVING COUNT(*) >= 3
+                )
+                SELECT ps.symbol, l.name,
+                       ROUND(CAST(ps.avg_volume / NULLIF(b.baseline_avg_vol, 0) AS FLOAT), 2) as volume_ratio,
+                       ROUND(CAST(
+                           LN(1 + ps.avg_volume / NULLIF(b.baseline_avg_vol, 0))
+                           * (1 + ABS(ps.period_return) / 10.0)
+                       AS FLOAT), 4) as activity_score
+                FROM period_stats ps
+                JOIN latest_{index_key} l ON l.symbol = ps.symbol AND l.market_index = '{index_key}'
+                JOIN baseline b ON b.symbol = ps.symbol
+                WHERE b.baseline_avg_vol > 0
+                ORDER BY activity_score DESC
+                LIMIT 3
+            """).df()
+
+        if df.empty:
+            return []
+        return df.to_dict("records")
+    except Exception as e:
+        logger.error(f"Compute leaders error for {index_key}: {e}")
+        return []
+
+
+def _recompute_leaders_for_index(index_key):
+    """Compute and store dynamic leaders for one index."""
+    leaders = _compute_leaders_for_index(index_key)
+    if leaders:
+        _DYNAMIC_LEADERS[index_key] = leaders
+        logger.info(f"Leaders [{index_key}]: {[s['symbol'] for s in leaders]}")
+
+
+def _compute_all_dynamic_leaders():
+    """Compute dynamic leaders for all loaded indices."""
+    for index_key in MARKET_INDICES:
+        if INDEX_LOAD_STATUS.get(index_key, {}).get("loaded"):
+            _recompute_leaders_for_index(index_key)
 
 async def fetch_crypto_data():
     """Fetch BTC/USDT price from Binance and broadcast via WebSocket."""
@@ -891,10 +955,11 @@ async def fetch_crypto_data():
 
 
 async def fetch_stock_data():
-    """Fetch live prices for global macro instruments and index leader stocks via yfinance."""
-    DISPLAY_MAP = {**DISPLAY_SYMBOL_MAP, **LEADER_DISPLAY_MAP}
+    """Fetch live prices for global macro instruments and dynamic leader stocks via yfinance."""
+    DISPLAY_MAP = {**DISPLAY_SYMBOL_MAP}
     _MACRO_INSTRUMENTS = ["GC=F", "EURUSD=X", "^MOVE", "KRBN"]
-    ALL_SYMBOLS = _MACRO_INSTRUMENTS + ALL_LEADER_SYMBOLS
+    leader_symbols = [s["symbol"] for leaders in _DYNAMIC_LEADERS.values() for s in leaders]
+    ALL_SYMBOLS = _MACRO_INSTRUMENTS + leader_symbols
     loop = asyncio.get_event_loop()
 
     try:
@@ -1096,6 +1161,7 @@ _CACHE_CONTROL_MAP = {
     "/macro/fx":       "public, max-age=60, stale-while-revalidate=300",
     "/macro/calendar": "public, max-age=300, stale-while-revalidate=900",
     "/news":           "public, max-age=60, stale-while-revalidate=300",
+    "/leaders":        "public, max-age=300, stale-while-revalidate=600",
     "/health":         "no-cache",
     "/metrics/cache":  "no-cache",
 }
@@ -2990,7 +3056,7 @@ async def get_custom_rankings(start: str, end: str, index: str = "sp500"):
 @app.get("/most-active")
 async def get_most_active(period: str = "1y", index: str = "sp500",
                           start: str = None, end: str = None):
-    """Top 3 stocks by average daily volume for the selected period."""
+    """Top 3 stocks by volume surge (period avg / all-time avg volume ratio)."""
     if start and not _valid_date(start):
         return {"error": "Invalid start date format"}
     if end and not _valid_date(end):
@@ -3047,19 +3113,15 @@ async def get_most_active(period: str = "1y", index: str = "sp500",
                            CAST(l.close AS FLOAT) as last_price,
                            CAST(((l.close - l.prev_price) / NULLIF(l.prev_price, 0)) * 100 AS FLOAT) as daily_change_pct,
                            CAST(ps.avg_volume AS BIGINT) as avg_volume,
-                           CAST(ps.turnover AS DOUBLE) as turnover,
+                           CAST(b.baseline_avg_vol AS BIGINT) as baseline_volume,
                            ps.trading_days,
                            ROUND(CAST(ps.period_return AS FLOAT), 2) as period_return,
-                           ROUND(CAST(ps.avg_volume / NULLIF(b.baseline_avg_vol, 0) AS FLOAT), 2) as volume_ratio,
-                           ROUND(CAST(
-                               LN(1 + ps.avg_volume / NULLIF(b.baseline_avg_vol, 0))
-                               * (1 + ABS(ps.period_return) / 10.0)
-                           AS FLOAT), 4) as activity_score
+                           ROUND(CAST(ps.avg_volume / NULLIF(b.baseline_avg_vol, 0) AS FLOAT), 2) as volume_ratio
                     FROM period_stats ps
                     JOIN latest_{index} l ON l.symbol = ps.symbol AND l.market_index = '{index}'
                     JOIN baseline b ON b.symbol = ps.symbol
                     WHERE b.baseline_avg_vol > 0
-                    ORDER BY activity_score DESC
+                    ORDER BY volume_ratio DESC
                     LIMIT 3
                 """).df()
         df = await db_read(_q)
@@ -3069,6 +3131,12 @@ async def get_most_active(period: str = "1y", index: str = "sp500",
     except Exception as e:
         logger.error(f"Most-active error ({index}): {e}")
         return []
+
+
+@app.get("/leaders")
+async def get_leaders():
+    """Return top 3 most-active stocks per index (dynamically computed)."""
+    return _DYNAMIC_LEADERS
 
 
 @app.get("/metadata/{symbol:path}")

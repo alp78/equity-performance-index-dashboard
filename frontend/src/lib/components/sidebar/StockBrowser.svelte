@@ -8,7 +8,7 @@
    - Full-text search across symbols and names
    - Collapsible sector > industry > stock hierarchy
    - Session-persisted open sectors and per-index symbol history
-   - Fresh-session auto-select picks the most active stock by volume
+   - Fresh-session auto-select picks the #1 most active stock (via /leaders API)
    - "Sector Analysis" hover button on each sector header
 
    Props:
@@ -34,6 +34,7 @@
     } from '$lib/stores.js';
     import { INDEX_CONFIG } from '$lib/index-registry.js';
     import { getSectorColor } from '$lib/theme.js';
+    import { API_BASE_URL } from '$lib/config.js';
 
     // --- PROPS ---
 
@@ -185,7 +186,19 @@
     // first visit auto-selects the most active stock by volume
     let visitedIndices = new Set();
 
-    // pick the most actively traded stock (highest volume) from loaded data
+    // Fetch the #1 most-active stock from /leaders endpoint
+    let _leadersCache = null;
+    async function topActiveSymbol(indexKey) {
+        try {
+            if (!_leadersCache) {
+                const res = await fetch(`${API_BASE_URL}/leaders`);
+                if (res.ok) _leadersCache = await res.json();
+            }
+            return _leadersCache?.[indexKey]?.[0]?.symbol || null;
+        } catch { return null; }
+    }
+
+    // Fallback: pick the highest-volume stock from loaded data
     function topVolumeSymbol(assets) {
         if (!assets || !assets.length) return null;
         return [...assets]
@@ -201,10 +214,10 @@
         debouncedQuery = '';
         dropdownOpen = false;
         const newTickers = await loadSummaryData(key);
-        // first visit to this index -> auto-select most active stock by volume
+        // first visit to this index -> auto-select #1 most active stock
         let newSymbol;
         if (!visitedIndices.has(key) && newTickers && newTickers.length > 0) {
-            newSymbol = topVolumeSymbol(newTickers) || INDEX_CONFIG[key]?.defaultSymbol || '';
+            newSymbol = await topActiveSymbol(key) || topVolumeSymbol(newTickers) || INDEX_CONFIG[key]?.defaultSymbol || '';
             visitedIndices.add(key);
         } else {
             newSymbol = lastSymbolPerIndex[key] || INDEX_CONFIG[key]?.defaultSymbol || '';
@@ -280,9 +293,9 @@
             if (idx && INDEX_CONFIG[idx]) {
                 const data = await loadSummaryData(idx);
                 if (data && data.length > 0) {
-                    // fresh session + first index load -> auto-select most active stock by volume
+                    // fresh session + first index load -> auto-select #1 most active stock
                     if (_freshSession && !visitedIndices.has(idx)) {
-                        const top = topVolumeSymbol(data);
+                        const top = await topActiveSymbol(idx) || topVolumeSymbol(data);
                         if (top) {
                             selectedSymbol.set(top);
                             lastSymbolPerIndex[idx] = top;

@@ -91,24 +91,6 @@ PHASE1_INDICES = [
 CORRELATION_ORDER = list(_INDICES.keys())
 
 
-# ── Leader stocks for real-time market data feeder ───────────────────────
-
-ALL_LEADER_SYMBOLS = []
-LEADER_DISPLAY_MAP = {}
-LEADER_SYMBOL_SETS = {}
-
-for key, cfg in _INDICES.items():
-    leaders = cfg.get("leaders", [])
-    display_map = cfg.get("leaderDisplayMap", {})
-    ALL_LEADER_SYMBOLS.extend(leaders)
-    LEADER_DISPLAY_MAP.update(display_map)
-    LEADER_SYMBOL_SETS[key] = {
-        "title": "MARKET LEADERS",
-        "subtitle": cfg.get("label", key),
-        "symbols": [display_map.get(s, s) for s in leaders],
-    }
-
-
 # ── Exchange metadata (for frontend components served via /api/config) ───
 
 INDEX_EXCHANGE_INFO = {
@@ -132,8 +114,6 @@ INDEX_CONFIG_PUBLIC = {
         "color": cfg["color"],
         "defaultSymbol": cfg["defaultSymbol"],
         "exchange": cfg.get("exchange", {}),
-        "leaders": cfg.get("leaders", []),
-        "leaderDisplayMap": cfg.get("leaderDisplayMap", {}),
     }
     for key, cfg in _INDICES.items()
 }

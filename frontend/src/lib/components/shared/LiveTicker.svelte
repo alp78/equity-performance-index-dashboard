@@ -22,7 +22,7 @@
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
     import { getWebSocketUrl, API_BASE_URL } from '$lib/config.js';
     import { marketIndex, currentCurrency, selectedSymbol, summaryData, requestFocusSymbol } from '$lib/stores.js';
-    import { MARKET_HOURS, SYMBOL_MARKET_MAP, SYMBOL_SETS, LEADER_TO_SIDEBAR, INDEX_CONFIG } from '$lib/index-registry.js';
+    import { MARKET_HOURS, SYMBOL_MARKET_MAP, INDEX_EXCHANGE_INFO, INDEX_CONFIG } from '$lib/index-registry.js';
 
     let { title = "INDICATORS", subtitle = "", symbols = [], dynamicByIndex = false } = $props();
 
@@ -32,6 +32,9 @@
     let destroyed = false;
     let currentIndex = $derived($marketIndex);
     let indexCurrency = $derived($currentCurrency);
+
+    // Dynamic leaders fetched from /leaders API
+    let dynamicLeaders = $state({});
 
     const SYMBOL_CURRENCY = {
         'BINANCE:BTCUSDT': '$',
@@ -45,21 +48,27 @@
 
     function selectLeaderSymbol(symbol) {
         if (!dynamicByIndex) return;
-        const sidebarSymbol = LEADER_TO_SIDEBAR[symbol] || symbol;
-        selectedSymbol.set(sidebarSymbol);
-        requestFocusSymbol(sidebarSymbol);
+        selectedSymbol.set(symbol);
+        requestFocusSymbol(symbol);
     }
 
     function getLeaderName(symbol) {
-        const sidebarSym = LEADER_TO_SIDEBAR[symbol] || symbol;
-        return nameMap[sidebarSym] || nameMap[symbol] || '';
+        if (dynamicByIndex && dynamicLeaders[currentIndex]) {
+            const leader = dynamicLeaders[currentIndex].find(l => l.symbol === symbol);
+            if (leader?.name) return leader.name;
+        }
+        return nameMap[symbol] || '';
     }
 
     // --- RESOLVED PROPS ---
 
-    let resolvedSymbols = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.symbols || symbols) : symbols);
-    let resolvedTitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.title || title) : title);
-    let resolvedSubtitle = $derived(dynamicByIndex ? (SYMBOL_SETS[currentIndex]?.subtitle || '') : subtitle);
+    let resolvedSymbols = $derived(
+        dynamicByIndex
+            ? (dynamicLeaders[currentIndex]?.map(l => l.symbol) || [])
+            : symbols
+    );
+    let resolvedTitle = $derived(dynamicByIndex ? 'TOP ACTIVE' : title);
+    let resolvedSubtitle = $derived(dynamicByIndex ? (INDEX_CONFIG[currentIndex]?.label || '') : subtitle);
     let hasRealSubtitle = $derived(resolvedSubtitle && resolvedSubtitle.trim().length > 0);
 
     // strip exchange prefix (e.g. "BINANCE:BTCUSDT" -> "BTCUSDT")
@@ -72,8 +81,17 @@
 
     // --- MARKET STATUS ---
 
+    function getMarketKey(symbol) {
+        // Static map (macro instruments: BTC, XAU, EUR/USD)
+        const staticKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
+        if (staticKey) return staticKey;
+        // Dynamic leaders: derive market code from index exchange info
+        if (dynamicByIndex) return INDEX_EXCHANGE_INFO[currentIndex]?.marketCode || '';
+        return '';
+    }
+
     function isMarketOpen(symbol) {
-        const marketKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
+        const marketKey = getMarketKey(symbol);
         const market = MARKET_HOURS[marketKey];
         if (!market) return false;
         if (!market.tz) return true;
@@ -101,7 +119,7 @@
     function getStatus(symbol, data) {
         if (!data || data.price === 0) return { label: '', color: '', dot: 'opacity-0', pulse: false };
 
-        const marketKey = SYMBOL_MARKET_MAP[symbol] || SYMBOL_MARKET_MAP[clean(symbol)];
+        const marketKey = getMarketKey(symbol);
 
         if (marketKey === 'CRYPTO') {
             const fresh = lastUpdateTime[symbol] && (Date.now() - lastUpdateTime[symbol] < 30000);
@@ -122,12 +140,24 @@
 
     onMount(() => {
         const wsUrl = getWebSocketUrl();
-        // subscribe to all symbols across every index set
         const allSyms = new Set([...symbols]);
-        if (dynamicByIndex) {
-            Object.values(SYMBOL_SETS).forEach(set => set.symbols.forEach(s => allSyms.add(s)));
-        }
         allSyms.forEach(s => { quotes[s] = { price: 0, pct: 0, diff: 0, live: false }; });
+
+        // Fetch dynamic leaders (non-blocking — updates allSyms when ready)
+        if (dynamicByIndex) {
+            fetch(`${API_BASE_URL}/leaders`)
+                .then(r => r.ok ? r.json() : {})
+                .then(data => {
+                    dynamicLeaders = data;
+                    for (const leaders of Object.values(data)) {
+                        for (const l of leaders) {
+                            allSyms.add(l.symbol);
+                            if (!quotes[l.symbol]) quotes[l.symbol] = { price: 0, pct: 0, diff: 0, live: false };
+                        }
+                    }
+                })
+                .catch(() => {});
+        }
 
         let wsReconnectAttempts = 0;
 

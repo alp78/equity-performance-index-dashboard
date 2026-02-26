@@ -26,12 +26,6 @@
         "hours": { "open": "09:00", "close": "17:30" }
       },
       "tickerSuffixes": [".DE", ".PA", ".AS", ".BR", ".MI", ".MC", ".HE"],
-      "leaders": ["ASML.AS", "SAP.DE", "MC.PA"],
-      "leaderDisplayMap": {
-        "ASML.AS": "ASML",
-        "SAP.DE": "SAP",
-        "MC.PA": "LVMH"
-      },
       "newsKeywords": ["Europe", "European", "ECB", "Euro Stoxx", "Eurozone", "EU ", "Frankfurt", "Paris stock", "Amsterdam", "DAX ", "Airbus", "LVMH", "Siemens", "Deutsche Bank", "BNP Paribas", "Allianz", "STOXX"],
       "newsTickers": ["SAP", "ASML", "TTE", "SIEGY", "SNY", "DEO", "NVS"]
     },
@@ -57,8 +51,6 @@
         "hours": { "open": "09:30", "close": "16:00" }
       },
       "tickerSuffixes": [],
-      "leaders": ["NVDA", "AAPL", "MSFT", "AMZN"],
-      "leaderDisplayMap": {},
       "newsKeywords": ["S&P", "Wall Street", "Nasdaq", "Dow Jones", "NYSE", "Fed ", "Federal Reserve", "Treasury", "US economy", "US stock", "Silicon Valley"],
       "newsTickers": ["AAPL", "MSFT", "NVDA", "GOOGL", "TSLA", "META", "AMZN", "JPM"]
     },
@@ -84,8 +76,6 @@
         "hours": { "open": "08:00", "close": "16:30" }
       },
       "tickerSuffixes": [".L"],
-      "leaders": ["SHEL.L", "AZN.L", "HSBA.L"],
-      "leaderDisplayMap": {},
       "newsKeywords": ["UK ", "Britain", "British", "FTSE", "London Stock", "Bank of England", "BOE "],
       "newsTickers": ["AZN", "SHEL", "BP", "HSBC", "GSK", "RIO", "UL"]
     },
@@ -111,8 +101,6 @@
         "hours": { "open": "09:00", "close": "15:00" }
       },
       "tickerSuffixes": [".T"],
-      "leaders": ["7203.T", "6758.T", "9984.T"],
-      "leaderDisplayMap": {},
       "newsKeywords": ["Japan", "Japanese", "Nikkei", "Tokyo", "Bank of Japan", "BOJ"],
       "newsTickers": ["TM", "SONY", "MUFG", "HMC"]
     },
@@ -138,8 +126,6 @@
         "hours": { "open": "09:30", "close": "15:00" }
       },
       "tickerSuffixes": [".SS", ".SZ"],
-      "leaders": ["600519.SS", "000858.SZ", "601318.SS"],
-      "leaderDisplayMap": {},
       "newsKeywords": ["China", "Chinese", "Shanghai", "Beijing", "CSI", "Hang Seng", "PBOC", "Hong Kong"],
       "newsTickers": ["BABA", "PDD", "JD", "BIDU", "NIO"]
     },
@@ -165,8 +151,6 @@
         "hours": { "open": "09:15", "close": "15:30" }
       },
       "tickerSuffixes": [".NS", ".BO"],
-      "leaders": ["RELIANCE.NS", "TCS.NS", "INFY.NS"],
-      "leaderDisplayMap": {},
       "newsKeywords": ["India", "Indian", "Nifty", "Mumbai", "Sensex", "BSE", "NSE", "Rupee"],
       "newsTickers": ["INFY", "WIT", "HDB", "IBN", "TTM"]
     }

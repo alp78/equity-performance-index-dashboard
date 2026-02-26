@@ -1,10 +1,11 @@
 <!--
   ═══════════════════════════════════════════════════════════════════════════
-   MarketLeaders — "Most Active" Bottom Panel
+   UnusualVolume — "Unusual Volume" Bottom Panel
   ═══════════════════════════════════════════════════════════════════════════
-   Displays the top 3 stocks ranked by average daily volume for the
-   selected period.  Fetches from /most-active endpoint.  Responds to
-   period switches and custom date ranges just like TopMovers.
+   Displays the top 3 stocks ranked by volume ratio (period average volume
+   / all-time baseline volume).  Surfaces unusual activity that may signal
+   institutional interest, news-driven moves, or breakout setups.
+   Complements TopMovers (price story) with a volume story.
 
    Data source : GET /most-active?period={p}&index={idx}
                  GET /most-active?start=...&end=...&index={idx}
@@ -96,7 +97,7 @@
         load(currentPeriod, idx, customRange);
     });
 
-    let maxVol = $derived(topStocks.length ? topStocks[0].avg_volume : 1);
+    let maxRatio = $derived(topStocks.length ? Math.max(...topStocks.map(s => s.volume_ratio || 1)) : 1);
 
     function fmtVol(v) {
         if (!v) return '—';
@@ -115,7 +116,7 @@
 <Card fill class="most-active-root">
 
     <!-- header -->
-    <SectionHeader title="Most Active" subtitle="{indexLabel} · volume surge + return" subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Volume Surge" titleTooltip="Ranked by volume ratio: average daily volume over the selected period divided by the stock's all-time average daily volume. A ratio of 2.0x means trading volume is double the historical norm." subtitle={indexLabel} subtitleFlag={indexFlag} border size="lg">
         {#snippet action()}
             {#if customRange?.start}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">
@@ -133,10 +134,13 @@
     <div class="flex-1 flex flex-col justify-around min-h-0 overflow-y-auto">
         {#if topStocks.length}
             {#each topStocks as stock}
+                {@const ratio = stock.volume_ratio ?? 1}
+                {@const barWidth = Math.max(Math.min((ratio / maxRatio) * 100, 100), 8)}
                 {@const pct = stock.period_return ?? stock.daily_change_pct ?? 0}
-                {@const volWidth = Math.max((stock.avg_volume / maxVol) * 100, 8)}
+                {@const ratioColor = ratio >= 2.0 ? 'text-up' : ratio >= 1.3 ? 'text-warn' : 'text-text-secondary'}
+                {@const barColor = ratio >= 2.0 ? 'bg-up/15' : ratio >= 1.3 ? 'bg-warn/15' : 'bg-accent/15'}
                 <div class="flex flex-col gap-1 py-1.5">
-                    <!-- row 1: symbol + price -->
+                    <!-- row 1: symbol + volume ratio badge + return -->
                     <div class="stock-row flex items-center justify-between gap-2">
                         <div class="flex items-baseline gap-2 min-w-0 flex-1">
                             <button
@@ -146,25 +150,22 @@
                             >{stock.symbol}</button>
                             <span class="text-[11px] text-text-faint truncate">{stock.name || ''}</span>
                         </div>
-                        <div class="flex items-baseline gap-2 shrink-0">
-                            <span class="text-[length:var(--text-num-lg)] font-medium text-text-secondary tabular-nums">
-                                <span class="text-text-muted">{currency}</span>{fmtPrice(stock.last_price)}
+                        <div class="flex items-center gap-2.5 shrink-0">
+                            <span class="text-[length:var(--text-num-lg)] font-bold tabular-nums {ratioColor}">
+                                {ratio.toFixed(1)}x
                             </span>
-                            <span class="text-[length:var(--text-num-sm)] font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
-                                {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
+                            <span class="text-[length:var(--text-num-sm)] font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'} opacity-70">
+                                {pct >= 0 ? '+' : ''}{pct.toFixed(1)}%
                             </span>
                         </div>
                     </div>
-                    <!-- row 2: avg daily volume bar + volume ratio -->
+                    <!-- row 2: volume bar (period avg vs baseline) -->
                     <div class="flex items-center gap-2">
-                        <span class="text-[10px] font-medium text-text-faint uppercase tracking-wider w-7 shrink-0">Vol</span>
+                        <span class="text-[9px] font-medium text-text-faint uppercase tracking-wider shrink-0 w-7">{fmtVol(stock.avg_volume)}</span>
                         <div class="flex-1 h-2 rounded-sm bg-border-subtle overflow-hidden">
-                            <div class="h-full rounded-sm bg-accent/15 transition-all duration-500" style="width: {volWidth}%"></div>
+                            <div class="h-full rounded-sm {barColor} transition-all duration-500" style="width: {barWidth}%"></div>
                         </div>
-                        <span class="text-[length:var(--text-num-xs)] font-medium text-text-muted tabular-nums shrink-0">{fmtVol(stock.avg_volume)}</span>
-                        {#if stock.volume_ratio != null}
-                            <span class="text-[9px] font-bold tabular-nums shrink-0 {stock.volume_ratio >= 1.5 ? 'text-up' : stock.volume_ratio >= 1.0 ? 'text-text-secondary' : 'text-text-faint'}">{stock.volume_ratio.toFixed(1)}x</span>
-                        {/if}
+                        <span class="text-[9px] font-medium text-text-faint tabular-nums shrink-0">avg {fmtVol(stock.baseline_volume)}</span>
                     </div>
                 </div>
             {/each}

@@ -1,6 +1,6 @@
 <!--
   ═══════════════════════════════════════════════════════════════════════════
-   RankingPanel — Top / Bottom 3 Stock Movers
+   PriceMovers — Top / Bottom 3 Stock Movers
   ═══════════════════════════════════════════════════════════════════════════
    Horizontal bar chart showing the 3 best and 3 worst performing stocks
    by price return over the selected period.  Retries up to 8 times with
@@ -133,7 +133,7 @@
 <Card fill class="top-movers-root overflow-x-hidden">
 
     <!-- header -->
-    <SectionHeader title="Top Movers" subtitle={INDEX_CONFIG[currentIndex]?.abbr || currentIndex} subtitleFlag={indexFlag} border size="lg">
+    <SectionHeader title="Price Movers" titleTooltip="Top 3 gainers and bottom 3 losers ranked by price return over the selected period. Return is calculated as the percentage change from the earliest to the latest closing price." subtitle={INDEX_CONFIG[currentIndex]?.abbr || currentIndex} subtitleFlag={indexFlag} border size="lg">
         {#snippet action()}
             {#if customRange}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">

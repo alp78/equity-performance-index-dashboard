@@ -10,6 +10,7 @@
         text = '',
         position = 'top',
         delay = 200,
+        wrap = false,
         class: className = '',
         children,
     } = $props();
@@ -37,7 +38,7 @@
 >
     {@render children()}
     {#if visible && text}
-        <div class="tooltip-content tooltip-{position}" role="tooltip">
+        <div class="tooltip-content tooltip-{position}" class:tooltip-wrap={wrap} role="tooltip">
             {text}
         </div>
     {/if}
@@ -89,5 +90,11 @@
         left: calc(100% + 6px);
         top: 50%;
         transform: translateY(-50%);
+    }
+
+    .tooltip-wrap {
+        white-space: normal;
+        max-width: 260px;
+        text-wrap: pretty;
     }
 </style>

@@ -6,8 +6,11 @@
     </SectionHeader>
 -->
 <script>
+    import Tooltip from '$lib/components/ui/Tooltip.svelte';
+
     let {
         title = '',
+        titleTooltip = '',
         subtitle = '',
         subtitleColor = '',
         subtitleFlag = '',
@@ -30,9 +33,17 @@
 
 <div class="section-header {border ? 'section-header-border' : ''} {className}">
     <div class="section-header-text">
-        <h3 class="{sizes.title} font-semibold uppercase tracking-[0.08em] {titleClass || 'text-muted'}" aria-level={level}>
-            {title}
-        </h3>
+        {#if titleTooltip}
+            <Tooltip text={titleTooltip} position="bottom" wrap>
+                <h3 class="{sizes.title} font-semibold uppercase tracking-[0.08em] {titleClass || 'text-muted'}" aria-level={level}>
+                    {title}
+                </h3>
+            </Tooltip>
+        {:else}
+            <h3 class="{sizes.title} font-semibold uppercase tracking-[0.08em] {titleClass || 'text-muted'}" aria-level={level}>
+                {title}
+            </h3>
+        {/if}
         {#if subtitle}
             <span class="{sizes.subtitle} font-medium" style="color: {subtitleColor || 'var(--text-disabled)'}">
                 {#if subtitleFlag}<span class="{subtitleFlag} fis rounded-sm" style="font-size: 0.85em; vertical-align: baseline; margin-right: 0.3em;"></span>{/if}{subtitle}

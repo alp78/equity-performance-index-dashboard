@@ -1402,7 +1402,7 @@
             <div class="flex flex-col items-end gap-1.5 max-lg:w-full max-lg:items-start">
                 <div class="flex items-center gap-2">
                     {#if inOverview}
-                        <Tooltip text="LOCAL: returns in each index's native currency. USD: all returns converted to USD at historical ECB daily rates." position="bottom">
+                        <Tooltip text="LOCAL: returns in each index's native currency. USD: all returns converted to USD at historical ECB daily rates." position="bottom" wrap>
                         <div class="flex items-center rounded-full bg-bg-subtle p-0.5">
                             <button
                                 onclick={() => setCurrencyMode('local')}
