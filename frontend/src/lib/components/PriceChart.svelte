@@ -41,6 +41,7 @@
         hideVolume = false,
         highlightSymbol = null,
         hideLegend = false,
+        currencyLabel = '',
     } = $props();
 
     // --- DOM REFS ---
@@ -71,6 +72,7 @@
     let activePriceLine = null;
     let lastClosePrice = 0;
     let currentVisibleRange = null;
+    let _rawComparisonData = null; // store raw points for period rebasing
 
     let isDragging = false;
     let dragStartX = 0;
@@ -144,6 +146,72 @@
             timeScale.setVisibleLogicalRange({ from: startIdx, to: processedData.length - 1 + 3 });
         }
         setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+    }
+
+    /**
+     * Rebase comparison series so the first visible point = 0%.
+     * Uses raw close prices: new_pct = ((close - period_base) / period_base) * 100
+     * @param {string} period - period key like '1y', '3mo', 'max'
+     * @param {string} [startDate] - explicit start date (for custom range)
+     */
+    function rebaseComparison(period, startDate) {
+        if (!_rawComparisonData || comparisonSeries.length === 0) return;
+
+        let cutoffStr = startDate || null;
+        if (!cutoffStr && period && period !== 'max') {
+            const days = PERIOD_DAYS[period];
+            if (days && processedData.length > 0) {
+                const lastDate = new Date(processedData[processedData.length - 1].time);
+                const cutoff = new Date(lastDate);
+                cutoff.setDate(cutoff.getDate() - days);
+                cutoffStr = cutoff.toISOString().split('T')[0];
+            }
+        }
+
+        for (const cs of comparisonSeries) {
+            const raw = _rawComparisonData[cs.symbol];
+            if (!raw || raw.length === 0) continue;
+
+            // find period base close: first point at or after cutoff
+            let baseClose;
+            if (cutoffStr) {
+                const startPt = raw.find(p => p.time >= cutoffStr);
+                baseClose = startPt ? startPt.close : raw[0].close;
+            } else {
+                baseClose = raw[0].close;
+            }
+
+            if (!baseClose || baseClose === 0) continue;
+
+            const rebased = raw.map(p => ({
+                time: p.time,
+                value: ((p.close - baseClose) / baseClose) * 100,
+            }));
+            cs.series.setData(rebased);
+
+            // update axis label to final rebased pct
+            // remove old price lines and add new one
+            try {
+                const lines = cs.series.priceLines?.() || [];
+                lines.forEach(l => { try { cs.series.removePriceLine(l); } catch(e) {} });
+            } catch(e) {}
+            const lastPct = rebased[rebased.length - 1]?.value ?? 0;
+            cs.series.createPriceLine({
+                price: lastPct, color: dimColor(cs.color), lineWidth: 0,
+                lineStyle: LineStyle.Solid, axisLabelVisible: true,
+                title: '', lineVisible: false,
+            });
+        }
+
+        // re-add zero baseline on first series
+        if (comparisonSeries.length > 0) {
+            try {
+                comparisonSeries[0].series.createPriceLine({
+                    price: 0, color: 'rgba(255,255,255,0.08)', lineWidth: 0.5,
+                    lineStyle: LineStyle.Dashed, axisLabelVisible: false,
+                });
+            } catch(e) {}
+        }
     }
 
     // prevent scrolling past data boundaries (skipped in comparison mode where indices don't map 1:1)
@@ -672,7 +740,7 @@
                             <span class="text-[11px] uppercase font-bold" style="color:${e.color};min-width:55px">${e.name}</span>
                             <span class="text-[13px] font-semibold tabular-nums ml-auto" style="color:${pctColor}">${sign}${e.pct.toFixed(2)}%</span>
                         </div>
-                        ${e.rawClose ? `<div class="flex justify-end"><span class="text-[11px] tt-muted font-mono tabular-nums">${e.rawClose}</span></div>` : ''}
+                        ${e.rawClose ? `<div class="flex justify-end"><span class="text-[11px] tt-muted tabular-nums">${currencyLabel}${e.rawClose}</span></div>` : ''}
                     `;
                 }
 
@@ -742,7 +810,7 @@
                 tooltip.style.top = `${top}px`;
 
                 tooltip.innerHTML = `
-                    <div class="flex flex-col p-3 tt-bg border tt-border rounded-lg shadow-lg shadow-black/40 min-w-[170px] gap-1.5 pointer-events-none" style="font-family:var(--font-mono);font-variant-numeric:tabular-nums;">
+                    <div class="flex flex-col p-3 tt-bg border tt-border rounded-lg shadow-lg shadow-black/40 min-w-[170px] gap-1.5 pointer-events-none" style="font-variant-numeric:tabular-nums;">
                         <span class="text-[11px] tt-muted uppercase font-semibold tracking-widest border-b tt-border pb-1 mb-1">${formatDate(param.time)}</span>
 
                         <div class="flex justify-between items-center gap-4">
@@ -771,18 +839,18 @@
                         </div>
 
                         <div class="flex justify-between items-center gap-4 border-t tt-border pt-1 mt-1">
-                            <span class="text-[11px] tt-accent uppercase font-bold">MA 30</span>
-                            <span class="text-xs tt-accent font-bold">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-[11px] uppercase font-bold" style="color:#3B82F6">MA 30</span>
+                            <span class="text-xs font-bold" style="color:#3B82F6">${m30Data ? c + m30Data.value.toFixed(2) : '—'}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4">
-                            <span class="text-[11px] tt-purple uppercase font-bold">MA 90</span>
-                            <span class="text-xs tt-purple font-bold">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
+                            <span class="text-[11px] uppercase font-bold" style="color:#A855F7">MA 90</span>
+                            <span class="text-xs font-bold" style="color:#A855F7">${m90Data ? c + m90Data.value.toFixed(2) : '—'}</span>
                         </div>
 
                         <div class="flex justify-between items-center gap-4 pt-1 border-t tt-border">
-                            <span class="text-[11px] tt-accent uppercase font-bold">Vol</span>
-                            <span class="text-xs tt-accent font-bold">${vData ? formatVolume(vData.value) : '—'}</span>
+                            <span class="text-[11px] uppercase font-bold" style="color:#64748B">Vol</span>
+                            <span class="text-xs font-bold" style="color:#64748B">${vData ? formatVolume(vData.value) : '—'}</span>
                         </div>
                     </div>`;
             }
@@ -803,6 +871,7 @@
             if (customRange && customRange.start && customRange.end) {
                 isProgrammaticRangeChange = true;
                 if (comparisonSeries.length > 0) {
+                    rebaseComparison(null, customRange.start);
                     chart.timeScale().setVisibleRange({ from: customRange.start, to: customRange.end });
                 } else {
                     const startIdx = processedData.findIndex(d => d.time >= customRange.start);
@@ -884,7 +953,7 @@
             for (const d of processedData) { if (d.volume > maxVol) maxVol = d.volume; }
             volumeSeries.setData(processedData.map(d => ({
                 time: d.time, value: d.volume || 0,
-                color: d.volume > (maxVol * 0.8) ? '#3B82F6' : 'rgba(59, 130, 246, 0.15)',
+                color: d.volume > (maxVol * 0.8) ? '#64748B' : 'rgba(100, 116, 139, 0.15)',
             })));
 
             // update live price dashed line
@@ -921,6 +990,9 @@
     $effect(() => {
         const period = currentPeriod;
         if (processedData.length > 0 && period) {
+            if (comparisonSeries.length > 0) {
+                rebaseComparison(period);
+            }
             applyPeriodRange(period);
             setTimeout(() => updatePriceLineVisibility(), 100);
         }
@@ -958,7 +1030,7 @@
         volumeSeries.setData(volData.map(([time, vol]) => ({
             time,
             value: vol,
-            color: vol > (maxVol * 0.8) ? '#3B82F6' : 'rgba(59, 130, 246, 0.15)',
+            color: vol > (maxVol * 0.8) ? '#64748B' : 'rgba(100, 116, 139, 0.15)',
         })));
     }
 
@@ -984,6 +1056,12 @@
             try { chart.removeSeries(cs.series); } catch(e) {}
         });
         comparisonSeries.splice(0);
+
+        // store raw close data for period rebasing
+        _rawComparisonData = {};
+        for (const s of cData.series) {
+            _rawComparisonData[s.symbol] = s.points.map(p => ({ time: p.time, close: p.close ?? (100 + (p.pct || 0)), pct: p.pct }));
+        }
 
         // create a % return line for each index
         cData.series.forEach((s) => {
@@ -1027,12 +1105,14 @@
 
         setComparisonVolume(cData);
 
-        if (currentPeriod) {
-            applyPeriodRange(currentPeriod);
-        } else if (customRange && customRange.start && customRange.end) {
+        if (customRange && customRange.start && customRange.end) {
+            rebaseComparison(null, customRange.start);
+            applyPeriodRange('max');
             chart.timeScale().setVisibleRange({ from: customRange.start, to: customRange.end });
         } else {
-            applyPeriodRange('1y');
+            const effectivePeriod = currentPeriod || '1y';
+            rebaseComparison(effectivePeriod);
+            applyPeriodRange(effectivePeriod);
         }
 
         legendSeries = comparisonSeries.map(cs => ({
@@ -1068,6 +1148,12 @@
     // incremental update: atomic rebuild of all series to keep visible range stable
     function updateComparisonSeries(cData) {
         if (!chart) return;
+
+        // update raw data for rebasing
+        _rawComparisonData = {};
+        for (const s of cData.series) {
+            _rawComparisonData[s.symbol] = s.points.map(p => ({ time: p.time, close: p.close ?? (100 + (p.pct || 0)), pct: p.pct }));
+        }
 
         // save visible time range before modifications
         let savedFrom = null, savedTo = null;
@@ -1130,6 +1216,13 @@
             name: COMPARE_NAMES[cs.symbol] || cs.symbol
         }));
 
+        // rebase to current period
+        if (customRange && customRange.start && customRange.end) {
+            rebaseComparison(null, customRange.start);
+        } else {
+            rebaseComparison(currentPeriod || '1y');
+        }
+
         // restore visible range via bar-index mapping (time strings snap unpredictably when bars change)
         if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
             isProgrammaticRangeChange = true;
@@ -1179,6 +1272,16 @@
             _lastCompareDataVersion = dataVersion;
             _lastCompareSymbols = newSymbols;
 
+            // update raw data for rebasing (sector switch with same index symbols)
+            _rawComparisonData = {};
+            for (const s of cData.series) {
+                _rawComparisonData[s.symbol] = s.points.map(p => ({
+                    time: p.time,
+                    close: p.close ?? (100 + (p.pct || 0)),
+                    pct: p.pct,
+                }));
+            }
+
             // check if time axis changed (symbols are the same, so usually only values differ)
             const firstPoints = cData.series[0]?.points;
             const axisChanged = !firstPoints || mergedTimeAxis.length === 0
@@ -1188,12 +1291,6 @@
 
             if (axisChanged) {
                 // time axis changed: full range save/restore needed
-                let savedFrom = null, savedTo = null;
-                try {
-                    const vr = chart.timeScale().getVisibleRange();
-                    if (vr) { savedFrom = vr.from; savedTo = vr.to; }
-                } catch(e) {}
-
                 chart.timeScale().applyOptions({ fixLeftEdge: false, fixRightEdge: false });
 
                 comparisonSeries.forEach(cs => {
@@ -1203,24 +1300,9 @@
                 buildMergedTimeAxis(cData);
                 processedData = mergedTimeAxis.map(t => ({ time: t, close: 0 }));
 
-                if (savedFrom && savedTo && mergedTimeAxis.length > 0) {
-                    isProgrammaticRangeChange = true;
-                    let fromIdx = 0;
-                    for (let i = 0; i < mergedTimeAxis.length; i++) {
-                        if (mergedTimeAxis[i] >= savedFrom) { fromIdx = i; break; }
-                    }
-                    let toIdx = mergedTimeAxis.length - 1;
-                    for (let i = mergedTimeAxis.length - 1; i >= 0; i--) {
-                        if (mergedTimeAxis[i] <= savedTo) { toIdx = i; break; }
-                    }
-                    chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
-                }
                 chart.timeScale().applyOptions({ fixLeftEdge: true, fixRightEdge: true });
-                if (savedFrom && savedTo) {
-                    setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
-                }
             } else {
-                // same time axis: fast value-only update, skip range save/restore
+                // same time axis: fast value-only update
                 for (const cs of comparisonSeries) {
                     const s = cData.series.find(s => s.symbol === cs.symbol);
                     if (!s) continue;
@@ -1232,6 +1314,18 @@
                     cs.series.setData(mapped);
                 }
             }
+
+            // rebase to current period and apply range (same as renderComparisonFull)
+            if (customRange && customRange.start && customRange.end) {
+                rebaseComparison(null, customRange.start);
+                applyPeriodRange('max');
+                chart.timeScale().setVisibleRange({ from: customRange.start, to: customRange.end });
+            } else {
+                const effectivePeriod = currentPeriod || '1y';
+                rebaseComparison(effectivePeriod);
+                applyPeriodRange(effectivePeriod);
+            }
+
             applyHighlight(highlightSymbol);
             return;
         }
@@ -1289,9 +1383,9 @@
         <div class="absolute top-4 left-6 max-sm:top-2 max-sm:left-2 z-[110] flex gap-5 max-sm:gap-2 pointer-events-none p-2 max-sm:p-1.5 bg-surface-0/80 rounded-lg flex-wrap">
             <div class="flex items-center gap-1.5"><div class="w-2 h-3 bg-up/60 rounded-[1px]" aria-hidden="true"></div><div class="w-2 h-3 bg-down/60 rounded-[1px]" aria-hidden="true"></div><span class="text-[11px] text-text-muted uppercase font-semibold tracking-widest ml-1">OHLC</span></div>
             <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dashed border-text" aria-hidden="true"></div><span class="text-[11px] text-text font-semibold tracking-widest">Live</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed border-accent" aria-hidden="true"></div><span class="text-[11px] text-accent uppercase font-semibold tracking-widest">MA 30</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed" style="border-color: var(--chart-4)" aria-hidden="true"></div><span class="text-[11px] uppercase font-semibold tracking-widest" style="color: var(--chart-4)">MA 90</span></div>
-            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted border-accent/50" aria-hidden="true"></div><span class="text-[11px] text-accent/60 uppercase font-semibold tracking-widest">Volume</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed" style="border-color:#3B82F6" aria-hidden="true"></div><span class="text-[11px] uppercase font-semibold tracking-widest" style="color:#3B82F6">MA 30</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t border-dashed" style="border-color:#A855F7" aria-hidden="true"></div><span class="text-[11px] uppercase font-semibold tracking-widest" style="color:#A855F7">MA 90</span></div>
+            <div class="flex items-center gap-2"><div class="w-4 h-0 border-t-2 border-dotted" style="border-color:#64748B" aria-hidden="true"></div><span class="text-[11px] uppercase font-semibold tracking-widest" style="color:#64748B">Volume</span></div>
         </div>
     {/if}
 
@@ -1305,7 +1399,7 @@
     <div bind:this={rangeLineStart} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
     <div bind:this={rangeLineEnd} class="absolute top-0 bottom-0 z-[106] pointer-events-none hidden" style="width: 0; border-left: 2px dashed rgba(249, 115, 22, 0.6);" aria-hidden="true"></div>
     <div bind:this={tooltip} class="absolute hidden z-[120] pointer-events-none transition-all duration-150" role="tooltip" aria-live="polite"></div>
-    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[13px] font-mono font-bold tabular-nums text-text bg-bg-card/80 border border-border px-1.5 py-0.5 rounded-l" aria-hidden="true"></div>
+    <div bind:this={stickyLabel} class="absolute right-0 z-[115] pointer-events-none hidden text-[13px] font-bold tabular-nums text-text bg-bg-card/80 border border-border px-1.5 py-0.5 rounded-l" aria-hidden="true"></div>
 </div>
 
 <style>
@@ -1318,6 +1412,5 @@
     :global(.tt-text) { color: var(--text-primary) !important; }
     :global(.tt-positive) { color: var(--color-positive) !important; }
     :global(.tt-negative) { color: var(--color-negative) !important; }
-    :global(.tt-accent) { color: var(--accent-primary) !important; }
-    :global(.tt-purple) { color: var(--chart-4) !important; }
+
 </style>

@@ -29,6 +29,7 @@
 
 <div
     class="tooltip-wrapper {className}"
+    role="presentation"
     onmouseenter={show}
     onmouseleave={hide}
     onfocusin={show}

@@ -148,7 +148,7 @@
                             <!-- impact dot -->
                             <div class="w-2.5 h-2.5 rounded-full shrink-0 {impactColor(ev.impact)}"></div>
                             <!-- time -->
-                            <span class="time-text font-mono text-text-faint w-[42px] shrink-0 tabular-nums">{timeStr(ev.date)}</span>
+                            <span class="time-text text-text-faint w-[42px] shrink-0 tabular-nums">{timeStr(ev.date)}</span>
                             <!-- country flag -->
                             {#if COUNTRY_FLAGS[ev.country]}
                                 <span class="fi {COUNTRY_FLAGS[ev.country]} fis rounded-sm shrink-0 flag-icon"></span>
@@ -162,12 +162,12 @@
                             <!-- values: est / prev / actual -->
                             <div class="cal-values flex items-baseline gap-2 shrink-0">
                                 {#if ev.actual != null}
-                                    <span class="val-text font-mono font-bold tabular-nums text-text">{ev.actual}{ev.unit || ''}</span>
+                                    <span class="val-text font-bold tabular-nums text-text">{ev.actual}{ev.unit || ''}</span>
                                 {:else if ev.estimate != null}
-                                    <span class="val-text font-mono tabular-nums text-text-faint">est {ev.estimate}{ev.unit || ''}</span>
+                                    <span class="val-text tabular-nums text-text-faint">est {ev.estimate}{ev.unit || ''}</span>
                                 {/if}
                                 {#if ev.prev != null}
-                                    <span class="val-text font-mono tabular-nums text-text-faint">prev {ev.prev}{ev.unit || ''}</span>
+                                    <span class="val-text tabular-nums text-text-faint">prev {ev.prev}{ev.unit || ''}</span>
                                 {/if}
                             </div>
                             <!-- expand chevron -->

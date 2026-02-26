@@ -163,9 +163,9 @@
                                 <span class="inst-name font-medium text-text-muted">{pair}</span>
                             </div>
                             <div class="flex items-baseline gap-1.5 shrink-0">
-                                <span class="inst-val font-mono font-semibold text-text-secondary tabular-nums">{fmtFx(pair, val)}</span>
+                                <span class="inst-val font-semibold text-text-secondary tabular-nums">{fmtFx(pair, val)}</span>
                                 {#if pct != null}
-                                    <span class="inst-chg font-mono font-semibold tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
+                                    <span class="inst-chg font-semibold tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
                                         {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
                                     </span>
                                 {/if}
@@ -191,11 +191,11 @@
                                 {/if}
                             </div>
                             <div class="flex items-baseline gap-1.5 shrink-0">
-                                <span class="inst-val font-mono font-semibold text-text-secondary tabular-nums">
+                                <span class="inst-val font-semibold text-text-secondary tabular-nums">
                                     {fmtVal(inst.value, inst.unit)}
                                 </span>
                                 {#if inst.change != null}
-                                    <span class="inst-chg font-mono font-semibold tabular-nums {inst.change >= 0 ? 'text-up' : 'text-down'}">
+                                    <span class="inst-chg font-semibold tabular-nums {inst.change >= 0 ? 'text-up' : 'text-down'}">
                                         {fmtChange(inst.change, inst.unit)}
                                     </span>
                                 {/if}

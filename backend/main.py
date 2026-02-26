@@ -88,6 +88,7 @@ from index_config import (
     ALL_LEADER_SYMBOLS,
     LEADER_DISPLAY_MAP,
     INDEX_CONFIG_PUBLIC,
+    INDEX_TICKER_TO_CURRENCY,
     PROJECT_ID,
 )
 
@@ -1411,8 +1412,105 @@ async def get_index_prices_summary():
         return []
 
 
+# ─── Historical FX rates for USD-adjusted index comparison ────────────────
+
+_FX_HISTORY_CACHE = {}   # (start, end) -> (rates_dict, timestamp)
+_FX_HISTORY_TTL = 24 * 3600
+_FX_HISTORY_LOCK = threading.Lock()
+_FX_NEEDED_CURRENCIES = "EUR,GBP,JPY,CNY,INR"
+
+
+async def _fetch_fx_history(start_date: str, end_date: str) -> dict:
+    """Fetch daily FX rates from Frankfurter (base=USD) for a date range.
+
+    Returns {"2024-01-02": {"EUR": 0.92, ...}, ...} or {} on failure.
+    Rates mean: 1 USD = X units of foreign currency.
+    """
+    cache_key = (start_date, end_date)
+    with _FX_HISTORY_LOCK:
+        if cache_key in _FX_HISTORY_CACHE:
+            data, ts = _FX_HISTORY_CACHE[cache_key]
+            if time.time() - ts < _FX_HISTORY_TTL:
+                return data
+
+    if _cb_frankfurter.is_open:
+        logger.warning("Frankfurter circuit breaker open, skipping FX history fetch")
+        return {}
+
+    try:
+        resp = await _http_frankfurter.get(
+            f"/v1/{start_date}..{end_date}",
+            params={"base": "USD", "symbols": _FX_NEEDED_CURRENCIES},
+        )
+        if resp.status_code != 200:
+            logger.error(f"Frankfurter history error: {resp.status_code}")
+            _cb_frankfurter.record_failure()
+            return {}
+
+        data = resp.json()
+        _cb_frankfurter.record_success()
+        rates = data.get("rates", {})
+
+        with _FX_HISTORY_LOCK:
+            _FX_HISTORY_CACHE[cache_key] = (rates, time.time())
+            if len(_FX_HISTORY_CACHE) > 10:
+                oldest = min(_FX_HISTORY_CACHE, key=lambda k: _FX_HISTORY_CACHE[k][1])
+                del _FX_HISTORY_CACHE[oldest]
+
+        return rates
+    except Exception as e:
+        logger.error(f"Frankfurter history fetch error: {e}")
+        _cb_frankfurter.record_failure()
+        return {}
+
+
+def _apply_usd_adjustment(df, fx_rates: dict):
+    """Convert local-currency closes to USD and recompute pct.
+
+    fx_rates: {"2024-01-02": {"EUR": 0.92, ...}, ...}
+    Frankfurter base=USD -> 1 USD = X foreign units -> usd_price = local / rate.
+    S&P 500 (USD) passes through unchanged.
+    """
+    import pandas as pd
+
+    df = df.copy()
+
+    fx_dates = sorted(fx_rates.keys())
+    if not fx_dates:
+        return df
+
+    fx_records = [{"date": d, **fx_rates[d]} for d in fx_dates]
+    fx_df = pd.DataFrame(fx_records).set_index("date")
+
+    all_dates = sorted(df["time"].str[:10].unique())
+    fx_df = fx_df.reindex(all_dates).ffill().bfill()
+
+    for sym in df["symbol"].unique():
+        ccy = INDEX_TICKER_TO_CURRENCY.get(sym, "USD")
+        if ccy == "USD" or ccy not in fx_df.columns:
+            continue
+
+        mask = df["symbol"] == sym
+        sym_dates = df.loc[mask, "time"].str[:10].values
+        rates = fx_df.loc[sym_dates, ccy].values.astype(float)
+
+        valid = ~pd.isna(rates) & (rates != 0)
+        idx = df.index[mask]
+        df.loc[idx[valid], "close"] = df.loc[idx[valid], "close"].values / rates[valid]
+
+    # Recompute pct from USD-adjusted closes
+    for sym in df["symbol"].unique():
+        mask = df["symbol"] == sym
+        sym_closes = df.loc[mask].sort_values("time")["close"]
+        base = sym_closes.iloc[0]
+        if base and base != 0:
+            df.loc[mask, "pct"] = ((df.loc[mask, "close"] - base) / base) * 100
+
+    return df
+
+
 @app.get("/index-prices/data")
-async def get_index_prices_data(symbols: str = "", period: str = "1y"):
+async def get_index_prices_data(symbols: str = "", period: str = "1y", currency: str = "local"):
     """Multi-symbol index price comparison with unified timeline and forward-fill."""
     if not INDEX_PRICES_LOADED:
         return {"series": []}
@@ -1421,7 +1519,8 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
     if not symbol_list:
         return {"series": []}
 
-    cache_key = f"index_prices_data_{','.join(sorted(symbol_list))}_{period}"
+    is_usd = currency.lower() == "usd"
+    cache_key = f"index_prices_data{'_usd' if is_usd else ''}_{','.join(sorted(symbol_list))}_{period}"
     cached = get_cached_response(cache_key)
     if cached:
         return cached
@@ -1445,9 +1544,21 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
         df = await db_read(_q)
 
         if df.empty:
-            result = {"series": []}
+            result = {"series": [], "currencyMode": "usd" if is_usd else "local"}
             set_cached_response(cache_key, result)
             return result
+
+        # USD adjustment: convert local closes to USD via historical ECB rates
+        fx_error = False
+        if is_usd:
+            all_dates = sorted(df["time"].astype(str).str[:10].unique())
+            start_date = all_dates[0]
+            end_date = all_dates[-1]
+            fx_rates = await _fetch_fx_history(start_date, end_date)
+            if not fx_rates:
+                fx_error = True
+            else:
+                df = _apply_usd_adjustment(df, fx_rates)
 
         series = []
         for sym in symbol_list:
@@ -1469,7 +1580,12 @@ async def get_index_prices_data(symbols: str = "", period: str = "1y"):
                 "points": points,
             })
 
-        result = {"series": series}
+        result = {
+            "series": series,
+            "currencyMode": "usd" if is_usd and not fx_error else "local",
+        }
+        if fx_error:
+            result["fxError"] = True
         set_cached_response(cache_key, result)
         return result
 

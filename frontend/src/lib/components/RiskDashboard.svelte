@@ -145,7 +145,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {VIX_BG[data.vix.level]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">VIX</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {VIX_COLORS[data.vix.level]}">{data.vix.value != null ? data.vix.value.toFixed(1) : '—'}</span>
+                <span class="text-[13px] font-bold tabular-nums {VIX_COLORS[data.vix.level]}">{data.vix.value != null ? data.vix.value.toFixed(1) : '—'}</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {VIX_COLORS[data.vix.level]}">{data.vix.level}</span>
             </div>
             {#if activeTooltip === 'vix'}
@@ -156,7 +156,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-16 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>
@@ -175,7 +175,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {EUVOL_BG[data.eu_vol.level]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">EU Vol</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {EUVOL_COLORS[data.eu_vol.level]}">{data.eu_vol.value != null ? data.eu_vol.value.toFixed(1) + '%' : '—'}</span>
+                <span class="text-[13px] font-bold tabular-nums {EUVOL_COLORS[data.eu_vol.level]}">{data.eu_vol.value != null ? data.eu_vol.value.toFixed(1) + '%' : '—'}</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {EUVOL_COLORS[data.eu_vol.level]}">{data.eu_vol.level}</span>
             </div>
             {#if activeTooltip === 'eu_vol'}
@@ -186,7 +186,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-16 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>
@@ -206,7 +206,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {MOVE_BG[data.move.level]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">MOVE</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {MOVE_COLORS[data.move.level]}">{data.move.value.toFixed(1)}</span>
+                <span class="text-[13px] font-bold tabular-nums {MOVE_COLORS[data.move.level]}">{data.move.value.toFixed(1)}</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {MOVE_COLORS[data.move.level]}">{data.move.level}</span>
             </div>
             {#if activeTooltip === 'move'}
@@ -217,7 +217,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-16 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>
@@ -236,7 +236,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {CURVE_BG[data.yield_curve.status]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Curve</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {CURVE_COLORS[data.yield_curve.status]}">{data.yield_curve.value != null ? (data.yield_curve.value >= 0 ? '+' : '') + data.yield_curve.value.toFixed(2) + '%' : '—'}</span>
+                <span class="text-[13px] font-bold tabular-nums {CURVE_COLORS[data.yield_curve.status]}">{data.yield_curve.value != null ? (data.yield_curve.value >= 0 ? '+' : '') + data.yield_curve.value.toFixed(2) + '%' : '—'}</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {CURVE_COLORS[data.yield_curve.status]}">{data.yield_curve.status}</span>
             </div>
             {#if activeTooltip === 'curve'}
@@ -247,7 +247,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-20 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>
@@ -265,7 +265,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {CREDIT_BG[data.credit.status]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">Credit</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {CREDIT_COLORS[data.credit.status]}">{data.credit.value != null ? data.credit.value.toFixed(2) + '%' : '—'}</span>
+                <span class="text-[13px] font-bold tabular-nums {CREDIT_COLORS[data.credit.status]}">{data.credit.value != null ? data.credit.value.toFixed(2) + '%' : '—'}</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {CREDIT_COLORS[data.credit.status]}">{data.credit.status}</span>
             </div>
             {#if activeTooltip === 'credit'}
@@ -276,7 +276,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-20 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>
@@ -294,7 +294,7 @@
         >
             <div class="flex items-center gap-1.5 pill rounded-lg border border-border {USD_BG[data.usd.status]} cursor-default">
                 <span class="text-[11px] font-semibold text-text-muted uppercase tracking-wider">USD</span>
-                <span class="text-[13px] font-mono font-bold tabular-nums {USD_COLORS[data.usd.status]}">{data.usd.avg_change >= 0 ? '+' : ''}{data.usd.avg_change.toFixed(2)}%</span>
+                <span class="text-[13px] font-bold tabular-nums {USD_COLORS[data.usd.status]}">{data.usd.avg_change >= 0 ? '+' : ''}{data.usd.avg_change.toFixed(2)}%</span>
                 <span class="text-[10px] font-bold uppercase tracking-wide {USD_COLORS[data.usd.status]}">{data.usd.status}</span>
             </div>
             {#if activeTooltip === 'usd'}
@@ -305,7 +305,7 @@
                         <div class="flex items-start gap-2 mb-1.5">
                             <div class="flex flex-col w-24 shrink-0">
                                 <span class="text-[12px] font-bold uppercase {lvl.color}">{lvl.label}</span>
-                                <span class="text-[11px] font-mono text-text-faint">{lvl.range}</span>
+                                <span class="text-[11px] text-text-faint">{lvl.range}</span>
                             </div>
                             <span class="text-[12px] text-text-muted leading-snug">{lvl.meaning}</span>
                         </div>

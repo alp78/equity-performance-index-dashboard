@@ -48,6 +48,9 @@ MARKET_INDICES = {
 INDEX_KEY_TO_TICKER = {key: cfg["ticker"] for key, cfg in _INDICES.items()}
 INDEX_TICKER_TO_KEY = {v: k for k, v in INDEX_KEY_TO_TICKER.items()}
 
+# ── Ticker → currency code (for FX adjustment) ──────────────────────────
+INDEX_TICKER_TO_CURRENCY = {cfg["ticker"]: cfg["currencyCode"] for key, cfg in _INDICES.items()}
+
 
 # ── Ticker suffix → index key (for lazy-loading by symbol) ───────────────
 

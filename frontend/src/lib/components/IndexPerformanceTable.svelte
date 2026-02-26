@@ -227,27 +227,27 @@
                     <span class="font-semibold idx-name truncate uppercase tracking-wider" style="color:{meta.color || '#A1A1AA'}">{meta.short || meta.name || row.name}</span>
                 </div>
 
-                <div style="width:{COL[1]}%" class="px-1 text-right font-mono tabular-nums text-text-secondary font-medium val-text">
+                <div style="width:{COL[1]}%" class="px-1 text-right tabular-nums text-text-secondary font-medium val-text">
                     <span class="text-text-muted">{meta.ccy || ''}</span>{fmtPrice(row.current_price, '')}
                 </div>
 
-                <div style="width:{COL[2]}%; {grayColor(row.daily_change_pct, 3)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
+                <div style="width:{COL[2]}%; {grayColor(row.daily_change_pct, 3)}" class="px-1 text-right tabular-nums val-text font-medium">
                     {row.daily_change_pct >= 0 ? '+' : ''}{fmt(row.daily_change_pct)}%
                 </div>
 
-                <div style="width:{COL[3]}%; {grayColor(row.ytd_return_pct, 25)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
+                <div style="width:{COL[3]}%; {grayColor(row.ytd_return_pct, 25)}" class="px-1 text-right tabular-nums val-text font-medium">
                     {row.ytd_return_pct >= 0 ? '+' : ''}{fmt(row.ytd_return_pct)}%
                 </div>
 
-                <div style="width:{COL[4]}%; {grayColor(deltaHi != null ? -deltaHi : null, 20)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
+                <div style="width:{COL[4]}%; {grayColor(deltaHi != null ? -deltaHi : null, 20)}" class="px-1 text-right tabular-nums val-text font-medium">
                     {deltaHi != null ? (deltaHi === 0 ? '0.0' : (deltaHi > 0 ? '+' : '') + deltaHi.toFixed(1)) + '%' : '—'}
                 </div>
 
-                <div style="width:{COL[5]}%; {grayColor(row.period_return_pct, 25)}" class="px-1 text-right font-mono tabular-nums val-text font-medium">
+                <div style="width:{COL[5]}%; {grayColor(row.period_return_pct, 25)}" class="px-1 text-right tabular-nums val-text font-medium">
                     {row.period_return_pct >= 0 ? '+' : ''}{fmt(row.period_return_pct)}%
                 </div>
 
-                <div style="width:{COL[6]}%" class="px-1 text-right font-mono tabular-nums text-text-muted font-medium val-text">
+                <div style="width:{COL[6]}%" class="px-1 text-right tabular-nums text-text-muted font-medium val-text">
                     {fmt(row.volatility_pct, 1)}%
                 </div>
             </div>
@@ -266,11 +266,11 @@
     :global(.perf-root) { container-type: inline-size; }
     .rows-container { overflow: hidden; min-height: 180px; }
 
-    .grid-header { font-size: 12px; padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid transparent; }
+    .grid-header { font-size: clamp(11px, 1.8cqw, 13px); padding-top: 5px; padding-bottom: 5px; border-bottom: 1px solid transparent; }
     .grid-header > div { white-space: nowrap; }
     .period-tag { font-size: 10px; font-weight: 400; }
-    .idx-name { font-size: 14px; }
-    .val-text { font-size: 14px; }
+    .idx-name { font-size: clamp(13px, 2cqw, 15px); }
+    .val-text { font-size: clamp(13px, 2cqw, 15px); }
 
     /* On narrow viewports, ensure table has minimum width for horizontal scroll */
     @media (max-width: 768px) {

@@ -158,9 +158,9 @@
                     const d = params.data;
                     return `<div style="font-size:18px;font-weight:700;margin-bottom:6px">${params.name}</div>`
                         + `<div style="color:var(--text-muted);font-size:15px;line-height:1.7">`
-                        + `Turnover: <span style="color:var(--text-primary);font-weight:600">${fmtTurnover(d.value)}</span><br/>`
-                        + `Share: <span style="color:var(--text-primary);font-weight:600">${params.percent}%</span><br/>`
-                        + `Stocks: <span style="color:var(--text-primary);font-weight:600">${d.stockCount}</span>`
+                        + `Turnover: <span style="color:var(--text-primary);font-weight:600;font-variant-numeric:tabular-nums">${fmtTurnover(d.value)}</span><br/>`
+                        + `Share: <span style="color:var(--text-primary);font-weight:600;font-variant-numeric:tabular-nums">${params.percent}%</span><br/>`
+                        + `Stocks: <span style="color:var(--text-primary);font-weight:600;font-variant-numeric:tabular-nums">${d.stockCount}</span>`
                         + `</div>`;
                 },
             },

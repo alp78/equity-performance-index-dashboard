@@ -228,7 +228,7 @@
                 </div>
 
                 <div class="ticker-price-col flex flex-col items-end">
-                    <span class="text-[14px] font-mono font-bold text-text-secondary leading-none mb-1 tabular-nums">
+                    <span class="text-[14px] font-bold text-text-secondary leading-none mb-1 tabular-nums">
                         {#if hasData}
                             <span class="text-text-muted">{ccy}</span>{data.price.toLocaleString(undefined, {
                                 minimumFractionDigits: clean(symbol).includes('EUR/USD') ? 6 : 2,
@@ -241,10 +241,10 @@
 
                     <div class="flex items-center gap-1.5 font-bold {(data.pct ?? 0) >= 0 ? 'text-up' : 'text-down'}">
                         {#if hasData}
-                            <span class="text-[12px] font-mono tabular-nums">
+                            <span class="text-[12px] tabular-nums">
                                 {(data.pct ?? 0) >= 0 ? '+' : ''}{(data.pct ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 4 : 2)}%
                             </span>
-                            <span class="text-[11px] opacity-70 font-mono tabular-nums font-bold">
+                            <span class="text-[11px] opacity-70 tabular-nums font-bold">
                                 ({(data.diff ?? 0) >= 0 ? '+' : ''}{(data.diff ?? 0).toFixed(clean(symbol).includes('EUR/USD') ? 6 : 2)})
                             </span>
                         {:else}

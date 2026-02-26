@@ -217,7 +217,7 @@
     }
 </script>
 
-<Card fill padding={false} class="overflow-visible">
+<Card fill padding={false} class="overflow-hidden">
 
     <!-- header -->
     <div class="px-4 pt-4 pb-2">
@@ -242,15 +242,15 @@
             <span class="text-[11px] font-semibold uppercase tracking-widest text-text-muted mt-2">Loading</span>
         </div>
     {:else if data}
-        <div class="flex-1 flex flex-col justify-around min-h-0 gap-1 px-2 pb-2">
+        <div class="tech-rows flex-1 flex flex-col justify-around min-h-0 gap-1 px-2 pb-2">
             <!-- RSI -->
-            <button class="w-full text-left"
+            <button class="w-full min-w-0 text-left"
                 onmouseenter={(e) => showTooltip('rsi', e)}
                 onmouseleave={hideTooltip}
             >
-                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default">
+                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default min-w-0">
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">RSI</span>
-                    <div class="flex-1 h-1.5 bg-border-subtle rounded-full overflow-hidden relative">
+                    <div class="tech-mid flex-1 h-1.5 bg-border-subtle rounded-full overflow-hidden relative min-w-0">
                         <div class="absolute left-[30%] w-px h-full bg-border"></div>
                         <div class="absolute left-[70%] w-px h-full bg-border"></div>
                         {#if data.rsi?.value != null}
@@ -260,35 +260,35 @@
                                 style="left: calc({Math.min(Math.max(data.rsi.value, 0), 100)}% - 3px); background: {data.rsi.status === 'overbought' ? 'var(--color-down)' : data.rsi.status === 'oversold' ? 'var(--color-warn)' : 'var(--color-up)'};"></div>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-mono font-bold tabular-nums text-text-secondary w-10 text-right shrink-0">{data.rsi?.value ?? '—'}</span>
+                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.rsi?.value ?? '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.rsi?.status]} {STATUS_COLORS[data.rsi?.status]} shrink-0">{STATUS_LABELS[data.rsi?.status] || '—'}</span>
                 </div>
             </button>
 
             <!-- MACD -->
-            <button class="w-full text-left"
+            <button class="w-full min-w-0 text-left"
                 onmouseenter={(e) => showTooltip('macd', e)}
                 onmouseleave={hideTooltip}
             >
-                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default">
+                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default min-w-0">
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">MACD</span>
-                    <div class="flex-1 flex items-center gap-1.5">
+                    <div class="tech-mid flex-1 flex items-center gap-1.5 min-w-0 overflow-hidden">
                         <span class="text-[12px] text-text-faint">{data.macd?.status === 'bullish' ? '▲' : '▼'}</span>
-                        <span class="text-[13px] font-mono text-text-faint">sig {fmtVal(data.macd?.signal)}</span>
+                        <span class="text-[13px] text-text-faint truncate">sig {fmtVal(data.macd?.signal)}</span>
                     </div>
-                    <span class="text-[13px] font-mono font-bold tabular-nums text-text-secondary w-14 text-right shrink-0">{fmtVal(data.macd?.value)}</span>
+                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{fmtVal(data.macd?.value)}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.macd?.status]} {STATUS_COLORS[data.macd?.status]} shrink-0">{STATUS_LABELS[data.macd?.status] || '—'}</span>
                 </div>
             </button>
 
             <!-- Bollinger %B -->
-            <button class="w-full text-left"
+            <button class="w-full min-w-0 text-left"
                 onmouseenter={(e) => showTooltip('bollinger', e)}
                 onmouseleave={hideTooltip}
             >
-                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default">
+                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default min-w-0">
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">BB %B</span>
-                    <div class="flex-1 h-1.5 bg-border-subtle rounded-full overflow-hidden relative">
+                    <div class="tech-mid flex-1 h-1.5 bg-border-subtle rounded-full overflow-hidden relative min-w-0">
                         <div class="absolute left-[20%] w-px h-full bg-border"></div>
                         <div class="absolute left-[80%] w-px h-full bg-border"></div>
                         {#if data.bollinger?.percent_b != null}
@@ -297,39 +297,39 @@
                                 style="left: calc({pct}% - 3px); background: {data.bollinger.status === 'upper_band' ? 'var(--color-warn)' : data.bollinger.status === 'lower_band' ? 'var(--color-warn)' : 'var(--color-up)'};"></div>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-mono font-bold tabular-nums text-text-secondary w-10 text-right shrink-0">{data.bollinger?.percent_b != null ? data.bollinger.percent_b.toFixed(2) : '—'}</span>
+                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.bollinger?.percent_b != null ? data.bollinger.percent_b.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.bollinger?.status]} {STATUS_COLORS[data.bollinger?.status]} shrink-0">{STATUS_LABELS[data.bollinger?.status] || '—'}</span>
                 </div>
             </button>
 
             <!-- ATR -->
-            <button class="w-full text-left"
+            <button class="w-full min-w-0 text-left"
                 onmouseenter={(e) => showTooltip('atr', e)}
                 onmouseleave={hideTooltip}
             >
-                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default">
+                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default min-w-0">
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">ATR</span>
-                    <div class="flex-1 flex items-baseline gap-1.5">
+                    <div class="tech-mid flex-1 flex items-baseline gap-1.5 min-w-0 overflow-hidden">
                         {#if data.atr?.percent != null}
-                            <span class="text-[12px] font-mono text-text-faint">({data.atr.percent}%)</span>
+                            <span class="text-[12px] text-text-faint truncate">({data.atr.percent}%)</span>
                         {/if}
                     </div>
-                    <span class="text-[13px] font-mono font-bold tabular-nums text-text-secondary w-14 text-right shrink-0">{data.atr?.value != null ? data.atr.value.toFixed(2) : '—'}</span>
+                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.atr?.value != null ? data.atr.value.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.atr?.status]} {STATUS_COLORS[data.atr?.status]} shrink-0">{STATUS_LABELS[data.atr?.status] || '—'}</span>
                 </div>
             </button>
 
             <!-- Beta -->
-            <button class="w-full text-left"
+            <button class="w-full min-w-0 text-left"
                 onmouseenter={(e) => showTooltip('beta', e)}
                 onmouseleave={hideTooltip}
             >
-                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default">
+                <div class="flex items-center gap-2 px-3 py-2 rounded-xl border border-border-subtle hover:bg-bg-hover transition-colors cursor-default min-w-0">
                     <span class="text-[12px] font-semibold text-text uppercase tracking-wider w-12 shrink-0">BETA</span>
-                    <div class="flex-1 flex items-baseline gap-1.5">
-                        <span class="text-[12px] text-text-faint">vs S&P</span>
+                    <div class="tech-mid flex-1 flex items-baseline gap-1.5 min-w-0 overflow-hidden">
+                        <span class="text-[12px] text-text-faint truncate">vs S&P</span>
                     </div>
-                    <span class="text-[13px] font-mono font-bold tabular-nums text-text-secondary w-10 text-right shrink-0">{data.beta?.value != null ? data.beta.value.toFixed(2) : '—'}</span>
+                    <span class="text-[13px] font-bold tabular-nums text-text-secondary text-right shrink-0">{data.beta?.value != null ? data.beta.value.toFixed(2) : '—'}</span>
                     <span class="text-[11px] font-bold uppercase px-1.5 py-0.5 rounded {STATUS_BG[data.beta?.status]} {STATUS_COLORS[data.beta?.status]} shrink-0">{STATUS_LABELS[data.beta?.status] || '—'}</span>
                 </div>
             </button>
@@ -352,7 +352,7 @@
             {#each tt.levels as lvl}
                 <div class="flex items-start gap-2 mb-1.5">
                     <span class="text-[12px] font-bold uppercase w-20 shrink-0 {lvl.color}">{lvl.label}</span>
-                    <span class="text-[14px] font-mono text-text-faint w-16 shrink-0">{lvl.range}</span>
+                    <span class="text-[14px] text-text-faint w-16 shrink-0">{lvl.range}</span>
                     <span class="text-[13px] text-text-muted leading-snug">{lvl.meaning}</span>
                 </div>
             {/each}
@@ -361,6 +361,12 @@
 </div>
 
 <style>
+    .tech-rows { container-type: inline-size; }
+
+    @container (max-width: 220px) {
+        .tech-mid { display: none; }
+    }
+
     .tt-portal {
         display: contents;
     }

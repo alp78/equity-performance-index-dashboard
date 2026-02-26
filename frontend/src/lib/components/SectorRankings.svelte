@@ -173,7 +173,7 @@
                              style="width:{barW(row.return_pct)}; background:var(--color-text-muted); opacity:{isActive ? 1 : 0.6}">
                         </div>
                     </div>
-                    <span class="return-val font-semibold font-mono tabular-nums flex-shrink-0"
+                    <span class="return-val font-semibold tabular-nums flex-shrink-0"
                           style="color:{pos ? 'var(--color-up)' : 'var(--color-down)'}">
                         {fmt(row.return_pct)}
                     </span>

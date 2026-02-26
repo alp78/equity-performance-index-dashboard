@@ -146,10 +146,10 @@
                             <span class="text-[11px] text-text-faint truncate">{stock.name || ''}</span>
                         </div>
                         <div class="flex items-baseline gap-2 shrink-0">
-                            <span class="text-[14px] font-mono font-medium text-text-secondary tabular-nums">
+                            <span class="text-[14px] font-medium text-text-secondary tabular-nums">
                                 <span class="text-text-muted">{currency}</span>{fmtPrice(stock.last_price)}
                             </span>
-                            <span class="text-[12px] font-mono font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
+                            <span class="text-[12px] font-medium tabular-nums {pct >= 0 ? 'text-up' : 'text-down'}">
                                 {pct >= 0 ? '+' : ''}{pct.toFixed(2)}%
                             </span>
                         </div>
@@ -160,7 +160,7 @@
                         <div class="flex-1 h-2 rounded-sm bg-border-subtle overflow-hidden">
                             <div class="h-full rounded-sm bg-accent/15 transition-all duration-500" style="width: {volWidth}%"></div>
                         </div>
-                        <span class="text-[11px] font-mono font-medium text-text-muted tabular-nums w-10 text-right shrink-0">{fmtVol(stock.avg_volume)}</span>
+                        <span class="text-[11px] font-medium text-text-muted tabular-nums w-10 text-right shrink-0">{fmtVol(stock.avg_volume)}</span>
                     </div>
                 </div>
             {/each}

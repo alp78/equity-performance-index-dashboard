@@ -86,10 +86,10 @@
                 <span class="text-[15px] font-bold truncate transition-colors"
                       style="color:{isHighlighted ? (INDEX_COLORS[key] || 'var(--text-secondary)') : 'var(--text-secondary)'}">{cfg.shortLabel}</span>
                 {#if asset}
-                    <span class="ml-auto text-[15px] font-mono font-semibold tabular-nums">
+                    <span class="ml-auto text-[15px] font-semibold tabular-nums">
                         <span class="text-text-muted">{cfg.currency}</span><span class="text-text">{(asset.last_price ?? 0).toLocaleString(undefined, {minimumFractionDigits: 1, maximumFractionDigits: 1})}</span>
                     </span>
-                    <span class="text-[14px] font-mono font-semibold tabular-nums" style="color: var({(asset.daily_change_pct ?? 0) >= 0 ? '--color-positive' : '--color-negative'})">
+                    <span class="text-[14px] font-semibold tabular-nums" style="color: var({(asset.daily_change_pct ?? 0) >= 0 ? '--color-positive' : '--color-negative'})">
                         {(asset.daily_change_pct ?? 0) >= 0 ? '+' : ''}{(asset.daily_change_pct ?? 0).toFixed(2)}%
                     </span>
                 {:else}
@@ -105,11 +105,11 @@
                     <span class="text-[13px] font-medium text-text-muted">
                         {fxPair}
                         {#if fxVal != null}
-                            <span class="font-mono tabular-nums text-text-secondary ml-1">{fmtFx(fxPair, fxVal)}</span>
+                            <span class="tabular-nums text-text-secondary ml-1">{fmtFx(fxPair, fxVal)}</span>
                         {/if}
                     </span>
                     {#if fxPct != null}
-                        <span class="text-[12px] font-mono font-medium tabular-nums" style="color: var({fxPct >= 0 ? '--color-positive' : '--color-negative'})">
+                        <span class="text-[12px] font-medium tabular-nums" style="color: var({fxPct >= 0 ? '--color-positive' : '--color-negative'})">
                             {fxPct >= 0 ? '+' : ''}{Math.abs(fxPct).toFixed(2)}%
                         </span>
                     {/if}
@@ -124,7 +124,7 @@
                 {/if}
                 <span>{info?.city || ''}</span>
                 <span class="text-border">·</span>
-                <span class="font-mono tabular-nums">{localTime(info?.tz)}</span>
+                <span class="tabular-nums">{localTime(info?.tz)}</span>
             </div>
         </button>
     {/each}

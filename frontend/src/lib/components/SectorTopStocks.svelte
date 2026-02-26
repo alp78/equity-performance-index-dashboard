@@ -199,7 +199,7 @@
                             </button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative">
                                 <div class="h-full bg-up/15 border-l-2 border-up flex items-center justify-end rounded-sm relative transition-all duration-700 ease-out" style="width:{width}%">
-                                    <span class="text-[12px] font-mono tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">
+                                    <span class="text-[12px] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute left-full ml-1' : ''}">
                                         +{item.return_pct.toFixed(1)}%
                                     </span>
                                 </div>
@@ -227,7 +227,7 @@
                             </button>
                             <div class="flex-1 h-3/5 rounded-sm overflow-hidden relative flex justify-end">
                                 <div class="h-full bg-down/8 border-r-2 border-down flex items-center justify-start rounded-sm relative transition-all duration-700 ease-out" style="width:{width}%">
-                                    <span class="text-[12px] font-mono tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
+                                    <span class="text-[12px] tabular-nums font-medium text-text whitespace-nowrap px-2 {width < 45 ? 'absolute right-full mr-1' : ''}">
                                         {item.return_pct.toFixed(1)}%
                                     </span>
                                 </div>

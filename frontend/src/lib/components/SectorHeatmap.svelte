@@ -89,12 +89,6 @@
         return (val >= 0 ? '+' : '−') + str + '%';
     }
 
-    // --- DYNAMIC COLUMN WIDTHS ---
-    // sector 18%, avg 8%, remaining shared equally among index columns
-    let sectorW = $derived('18%');
-    let avgW    = $derived('8%');
-    let idxW    = $derived(`${Math.floor(74 / Math.max(indices.length, 1))}%`);
-
     let useShort = $derived(indices.length >= 4);
 
     // --- DATA FROM PRECOMPUTED SERIES (same source as chart) ---
@@ -208,7 +202,7 @@
         if (val == null) return 'color:var(--text-disabled)';
         const s = scale();
         const t = Math.min(Math.abs(val) / s, 1);
-        const a = (0.6 + t * 0.4).toFixed(2);
+        const a = (0.55 + t * 0.45).toFixed(2);
         return `color:var(--text-primary); opacity:${a}`;
     }
     function avgTextColor(val) {
@@ -217,11 +211,11 @@
     }
 </script>
 
-<Card fill padding={false} class="heatmap-root min-h-0 max-lg:overflow-x-auto">
+<Card fill padding={false} class="heatmap-root bg-bg-hover min-h-0 max-lg:overflow-x-auto">
 
     <!-- header -->
-    <div class="px-5 pt-5 pb-3 flex-shrink-0">
-        <SectionHeader title="Sector Heatmap" subtitle="Normalized % Change" border>
+    <div class="px-5 pt-5 pb-3 flex-shrink-0 border-b border-border">
+        <SectionHeader title="Sector Heatmap" subtitle="Normalized % Change">
             {#snippet action()}
                 <span class="text-[10px] font-semibold text-accent uppercase tracking-wider">{periodLabel}</span>
                 {#if !allSectorSeries}
@@ -231,119 +225,88 @@
         </SectionHeader>
     </div>
 
-    <!-- column headers -->
-    <div class="flex items-center col-hdr-row px-3 border-b border-border-subtle flex-shrink-0 heatmap-min-w">
-        <div style="width:{sectorW}" class="pl-3 text-left flex-shrink-0">
-            <span class="col-hdr-text font-semibold text-text-muted uppercase tracking-widest">Sector</span>
+    {#if sorted.length === 0 && !allSectorSeries}
+        <div class="flex-1 flex items-center justify-center">
+            <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin"></div>
         </div>
-        <div style="width:{avgW}" class="text-right pr-2 flex-shrink-0">
-            <span class="col-hdr-text font-semibold text-text-muted uppercase tracking-widest">Avg</span>
-        </div>
-        {#each indices as idx}
-            <div style="width:{idxW}" class="text-center flex-shrink-0" title="{INDEX_CONFIG[idx]?.label||idx}">
-                <div class="flex items-center justify-center gap-1.5">
+    {:else}
+    <div class="flex-1 min-h-0 p-3 flex flex-col">
+        <!-- column headers -->
+        <div class="flex shrink-0 col-hdr-row" style="padding-left: 18%;">
+            <div class="flex-shrink-0 flex items-center justify-center col-avg-hdr">
+                <span class="col-hdr-text font-semibold text-text-muted uppercase tracking-wider">Avg</span>
+            </div>
+            {#each indices as idx}
+                <div class="flex-1 flex items-center justify-center gap-1" title="{INDEX_CONFIG[idx]?.label||idx}">
                     <span class="{INDEX_CONFIG[idx]?.flag || ''} fis rounded-sm flex-shrink-0 col-flag"></span>
                     <span class="col-hdr-text font-semibold uppercase tracking-wider truncate"
                           style="color:{INDEX_COLORS[idx]||'#8b5cf6'}">{INDEX_CONFIG[idx]?.abbr||idx}</span>
                 </div>
-            </div>
-        {/each}
-    </div>
+            {/each}
+        </div>
 
-    <!-- data rows -->
-    <div class="flex-1 min-h-0 overflow-y-auto overflow-x-auto heatmap-min-w">
-        {#if sorted.length === 0 && !allSectorSeries}
-            <div class="flex items-center justify-center h-full">
-                <div class="w-4 h-4 border border-border border-t-text-muted rounded-full animate-spin"></div>
-            </div>
-        {/if}
-
-        {#each sorted as row, rowIdx (row.sector)}
-            {@const isActive = row.sector === activeSec}
-            <!-- inset box-shadow acts as bg colour without creating a stacking context -->
-            <div class="row-wrap relative border-b border-border-subtle transition-all duration-150 {rowIdx % 2 === 1 ? 'bg-surface-1' : ''}">
-
-                {#if isActive}
-                    <div class="absolute left-0 top-0 bottom-0 w-[3px] pointer-events-none bg-selected-border"></div>
-                {/if}
-
-                <div
-                    class="data-row w-full flex items-center"
-                >
-                    <!-- sector name — highlight only on active row -->
-                    <button style="width:{sectorW}"
-                         class="pl-4 pr-2 text-left flex-shrink-0 h-full flex items-center cursor-pointer hover:bg-bg-hover transition-colors {isActive ? 'bg-bg-active' : ''}"
+        <!-- matrix rows -->
+        <div class="flex-1 flex flex-col min-h-0" role="grid" aria-label="Sector return heatmap">
+            {#each sorted as row, rowIdx (row.sector)}
+                {@const isActive = row.sector === activeSec}
+                {@const dimmed = activeSec && !isActive}
+                <div class="flex-1 flex items-center min-h-0 row-wrap" role="row">
+                    <!-- row header (sector name) -->
+                    <button class="w-[18%] flex items-center pr-2 shrink-0 h-full cursor-pointer transition-opacity"
+                         style="opacity: {dimmed ? 0.25 : 1};"
                          onclick={() => selectedSector.set(row.sector)}>
-                        <span class="row-sec font-bold truncate block"
-                              style="color:{isActive ? getSectorColor(row.sector) : 'var(--text-secondary)'}">
+                        <span class="row-sec font-bold truncate"
+                              style="color:{isActive ? getSectorColor(row.sector) : 'var(--text-secondary)'}; {isActive ? 'text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 2px;' : ''}">
                             {row.sector}
                         </span>
                     </button>
 
                     <!-- average return -->
-                    <div style="width:{avgW}" class="pr-2 text-right flex-shrink-0">
-                        <span class="row-avg font-semibold font-mono tabular-nums"
+                    <div class="flex-shrink-0 flex items-center justify-center cell-avg transition-opacity"
+                         style="opacity: {dimmed ? 0.2 : 1};">
+                        <span class="cell-text font-semibold tabular-nums"
                               style="{avgTextColor(row.avg_return_pct)}">
                             {fmt(row.avg_return_pct)}
                         </span>
                     </div>
 
-                    <!-- per-index cells -->
+                    <!-- per-index cells (same tile style as correlation matrix) -->
                     {#each indices as idx}
                         {@const val = row.indices?.[idx]?.return_pct ?? null}
-                        <div style="width:{idxW}" class="px-1 flex-shrink-0" title="{INDEX_CONFIG[idx]?.label||idx}: {fmt(val)}">
-                            <div class="cell-inner rounded flex items-center justify-center transition-colors duration-300"
-                                 style="{cellBg(val)}">
-                                <span class="cell-text font-mono tabular-nums font-medium"
-                                      style="{cellTextColor(val)}">
-                                    {useShort ? fmtShort(val) : fmt(val)}
-                                </span>
-                            </div>
-                        </div>
+                        <button
+                            role="gridcell"
+                            class="flex-1 flex items-center justify-center rounded-sm cell-inner transition-all
+                                cursor-pointer hover:ring-1 hover:ring-border hover:scale-[1.03]"
+                            style="{cellBg(val)}; {cellTextColor(val)}; {dimmed ? 'opacity: 0.2;' : ''}"
+                            title="{INDEX_CONFIG[idx]?.label||idx}: {fmt(val)}"
+                            onclick={() => selectedSector.set(row.sector)}
+                        >
+                            <span class="cell-text tabular-nums font-medium">
+                                {useShort ? fmtShort(val) : fmt(val)}
+                            </span>
+                        </button>
                     {/each}
                 </div>
-            </div>
-        {/each}
+            {/each}
+        </div>
     </div>
+    {/if}
 </Card>
 
 <style>
     /* container queries drive responsive sizing via cqh units */
     :global(.heatmap-root) { container-type: size; }
 
-    .col-hdr-row  { padding: clamp(2px, 0.8cqh, 6px) 0; }
-    .col-hdr-text { font-size: clamp(11px, 1.5cqh, 13px); }
-    .col-flag     { font-size: clamp(12px, 1.6cqh, 16px) !important; }
+    .col-hdr-row  { padding-top: clamp(2px, 0.5cqh, 5px); padding-bottom: clamp(2px, 0.5cqh, 5px); }
+    .col-hdr-text { font-size: clamp(10px, 1.3cqh, 14px); }
+    .col-flag     { font-size: clamp(9px, 1.1cqh, 13px) !important; }
+    .col-avg-hdr  { width: clamp(44px, 7cqw, 64px); }
 
-    /* row height = available height / 12 (11 sectors + header) */
-    .row-wrap    { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12);
-                   min-height: 22px;
-                   max-height: 44px; }
+    .row-wrap     { min-height: 0; }
+    .row-sec      { font-size: clamp(10px, 1.3cqh, 14px); }
+    .cell-avg     { width: clamp(44px, 7cqw, 64px); }
+    .cell-text    { font-size: clamp(10px, 1.2cqh, 13px); }
 
-    .data-row    { height: 100%;
-                   padding: 0;
-                   cursor: pointer;
-                   display: flex;
-                   align-items: center; }
-
-    .row-sec     { font-size: clamp(11px, 1.7cqh, 15px); }
-    .row-avg     { font-size: clamp(12px, 1.7cqh, 15px); }
-    .cell-text   { font-size: clamp(11px, 1.6cqh, 14px); }
-
-    .cell-inner  { height: calc((100cqh - clamp(45px, 12cqh, 70px)) / 12 - 6px);
-                   min-height: 16px;
-                   max-height: 36px; }
-
-    /* On mobile/narrow, ensure table has minimum width for readability with horizontal scroll */
-    @media (max-width: 1024px) {
-        .heatmap-min-w { min-width: 500px; }
-    }
-
-    /* Container width query: shrink text for narrow inline widths */
-    @container (max-width: 450px) {
-        .row-sec   { font-size: 11px; }
-        .row-avg   { font-size: 11px; }
-        .cell-text { font-size: 10px; }
-        .col-hdr-text { font-size: 10px; }
-    }
+    /* Match correlation matrix tile style: full height, vertical gaps only */
+    .cell-inner   { min-height: 0; height: 100%; margin-top: 1px; margin-bottom: 1px; }
 </style>

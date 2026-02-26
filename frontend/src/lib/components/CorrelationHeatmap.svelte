@@ -231,7 +231,7 @@
                                 onclick={() => !isDiag && onCellClick?.({ row: rowLabel, col: colLabel, value: val })}
                                 disabled={isDiag}
                             >
-                                <span class="cell-text font-medium font-mono tabular-nums">
+                                <span class="cell-text font-medium tabular-nums">
                                     {isDiag ? '—' : val != null ? val.toFixed(2) : '—'}
                                 </span>
                             </button>

@@ -58,11 +58,11 @@
         </span>
     {/if}
     <div class="flex items-baseline gap-2 rounded px-1 -mx-1 {flashClass}">
-        <span class="{sizes.value} font-bold text-primary font-mono tabular-nums">
+        <span class="{sizes.value} font-bold text-primary tabular-nums">
             {value}
         </span>
         {#if change !== null}
-            <span class="{sizes.change} font-semibold font-mono tabular-nums {changeColor}">
+            <span class="{sizes.change} font-semibold tabular-nums {changeColor}">
                 {changeSymbol}{changePrefix}{typeof change === 'number' ? change.toFixed(2) : change}{changeLabel || '%'}
             </span>
         {/if}
