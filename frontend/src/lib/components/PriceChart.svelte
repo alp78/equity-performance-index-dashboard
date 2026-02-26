@@ -989,11 +989,32 @@
 
     $effect(() => {
         const period = currentPeriod;
-        if (processedData.length > 0 && period) {
+        const range = customRange;
+        if (processedData.length === 0) return;
+
+        if (period) {
             if (comparisonSeries.length > 0) {
                 rebaseComparison(period);
             }
             applyPeriodRange(period);
+            setTimeout(() => updatePriceLineVisibility(), 100);
+        } else if (range && range.start && range.end) {
+            // Custom range: rebase comparison origin to range start, zoom to range
+            if (comparisonSeries.length > 0) {
+                rebaseComparison(null, range.start);
+                applyPeriodRange('max');
+                chart?.timeScale().setVisibleRange({ from: range.start, to: range.end });
+            } else {
+                // Stock mode: zoom to range
+                const startIdx = processedData.findIndex(d => d.time >= range.start);
+                const endEntries = processedData.filter(d => d.time <= range.end);
+                const endIdx = endEntries.length > 0 ? processedData.indexOf(endEntries[endEntries.length - 1]) : -1;
+                if (startIdx >= 0 && endIdx >= 0) {
+                    isProgrammaticRangeChange = true;
+                    chart?.timeScale().setVisibleLogicalRange({ from: startIdx, to: endIdx + 3 });
+                    setTimeout(() => { isProgrammaticRangeChange = false; }, 50);
+                }
+            }
             setTimeout(() => updatePriceLineVisibility(), 100);
         }
     });

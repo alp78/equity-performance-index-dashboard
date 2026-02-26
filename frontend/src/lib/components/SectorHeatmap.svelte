@@ -17,7 +17,7 @@
 
 <script>
     import { sectorSelectedIndices, selectedSector, INDEX_CONFIG } from '$lib/stores.js';
-    import { INDEX_COLORS, getSectorColor } from '$lib/theme.js';
+    import { INDEX_COLORS, getSectorColor, SECTOR_ABBREV } from '$lib/theme.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
@@ -255,9 +255,9 @@
                     <button class="w-[18%] flex items-center pr-2 shrink-0 h-full cursor-pointer transition-opacity"
                          style="opacity: {dimmed ? 0.25 : 1};"
                          onclick={() => selectedSector.set(row.sector)}>
-                        <span class="row-sec font-bold truncate"
+                        <span class="row-sec font-bold truncate uppercase tracking-wider"
                               style="color:{isActive ? getSectorColor(row.sector) : 'var(--text-secondary)'}; {isActive ? 'text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 2px;' : ''}">
-                            {row.sector}
+                            {SECTOR_ABBREV[row.sector] || row.sector}
                         </span>
                     </button>
 

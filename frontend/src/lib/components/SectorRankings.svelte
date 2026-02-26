@@ -16,7 +16,7 @@
     import { browser } from '$app/environment';
     import { API_BASE_URL } from '$lib/config.js';
     import { singleSelectedIndex, selectedSector, selectedSectors, sectorHighlightEnabled, INDEX_CONFIG } from '$lib/stores.js';
-    import { SECTOR_PALETTE } from '$lib/theme.js';
+    import { SECTOR_PALETTE, SECTOR_ABBREV } from '$lib/theme.js';
     import Card from '$lib/components/ui/Card.svelte';
     import SectionHeader from '$lib/components/ui/SectionHeader.svelte';
 
@@ -163,9 +163,9 @@
                 {#if isActive}
                     <div class="absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg" style="background:{color}"></div>
                 {/if}
-                <span class="sector-name font-bold flex-shrink-0 truncate text-left transition-colors duration-150"
+                <span class="sector-name font-bold flex-shrink-0 truncate text-left uppercase tracking-wider transition-colors duration-150"
                       style="width:40%; color:{isActive ? color : 'var(--color-text-secondary)'}">
-                    {row.sector}
+                    {SECTOR_ABBREV[row.sector] || row.sector}
                 </span>
                 <div class="flex-1 flex items-center gap-2 min-w-0">
                     <div class="flex-1 h-[9px] rounded-full bg-bg-hover overflow-hidden min-w-0">

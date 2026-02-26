@@ -83,6 +83,7 @@
     let fullStockData = $state([]);
     let allComparisonData = $state(null);
     let comparisonData = $state(null);
+    let _comparisonVersion = 0;
     let currencyMode = $state('local'); // 'local' or 'usd'
     let fxError = $state(false);
     let highlightKey = $derived($macroHighlightIndex);
@@ -865,11 +866,17 @@
     }
 
     function setPeriod(p) {
-        currentPeriod = p;
         customRange = null;
         selectMode = false;
         sessionStorage.setItem('chart_period', p);
         sessionStorage.removeItem('chart_custom_range');
+        // Force re-trigger even if same period (resets zoom to period range)
+        if (currentPeriod === p) {
+            currentPeriod = null;
+            setTimeout(() => { currentPeriod = p; }, 10);
+        } else {
+            currentPeriod = p;
+        }
     }
 
     function toggleCustomMode() {
@@ -1008,8 +1015,9 @@
 
         // Serve cached data instantly (mode switch / browser refresh)
         const cached = getCached(cacheKey);
-        if (cached && !allComparisonData) {
-            allComparisonData = cached.data;
+        if (cached) {
+            _comparisonVersion++;
+            allComparisonData = { ...cached.data, _version: _comparisonVersion };
             fxError = cached.data?.fxError || false;
         }
         // Skip network if still fresh
@@ -1024,7 +1032,8 @@
             );
             if (res.ok) {
                 const data = await res.json();
-                allComparisonData = data;
+                _comparisonVersion++;
+                allComparisonData = { ...data, _version: _comparisonVersion };
                 fxError = data?.fxError || false;
                 setCached(cacheKey, data, COMPARISON_TTL);
             }
@@ -1036,8 +1045,8 @@
     function setCurrencyMode(mode) {
         if (mode === currencyMode) return;
         currencyMode = mode;
-        allComparisonData = null;
-        comparisonData = null;
+        // Don't null out data — keep current chart visible while new data loads.
+        // This prevents PriceChart from unmounting/remounting (which resets the period).
         fetchComparisonData();
     }
 
