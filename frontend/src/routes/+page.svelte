@@ -1184,8 +1184,8 @@
 
     const modes = [
         { key: 'macro',   label: 'Index Benchmarks', short: 'Indices',  icon: Globe },
-        { key: 'sectors', label: 'Sector Analysis',  short: 'Sectors',  icon: PieChart },
         { key: 'stocks',  label: 'Stock Browser',    short: 'Stocks',   icon: TrendingUp },
+        { key: 'sectors', label: 'Sector Analysis',  short: 'Sectors',  icon: PieChart },
         { key: 'context', label: 'Macro Context',    short: 'Macro',    icon: Newspaper },
     ];
 
