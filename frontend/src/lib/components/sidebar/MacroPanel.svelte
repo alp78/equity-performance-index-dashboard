@@ -102,7 +102,7 @@
 
                 <!-- Row 2: FX rate (if applicable) -->
                 {#if fxPair}
-                    <div class="flex items-baseline justify-between mb-0.5 pl-[1.7rem]">
+                    <div class="flex items-baseline gap-2 mb-0.5 pl-[1.7rem]">
                         <span class="text-[13px] font-medium text-text-muted">
                             {fxPair}
                             {#if fxVal != null}

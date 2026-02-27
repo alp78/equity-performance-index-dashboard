@@ -382,13 +382,16 @@
         border-radius: var(--radius-lg);
         backdrop-filter: blur(8px);
         box-shadow: var(--shadow-tooltip);
+        white-space: normal; 
+        
         overflow-wrap: break-word;
         word-break: break-word;
         opacity: 0;
         animation: tech-tt-fade 0.12s ease-out forwards;
     }
     :global(.tech-tt .tt-row) {
-        display: flex;
+        display: grid;
+        grid-template-columns: 90px 65px 1fr; /* Safe column widths */
         align-items: start;
         gap: 8px;
         margin-bottom: 6px;
@@ -397,21 +400,16 @@
         font-size: 12px;
         font-weight: 700;
         text-transform: uppercase;
-        width: 72px;
-        flex-shrink: 0;
     }
     :global(.tech-tt .tt-range) {
         font-size: 12px;
         color: var(--text-faint);
-        width: 56px;
-        flex-shrink: 0;
     }
     :global(.tech-tt .tt-meaning) {
         font-size: 13px;
         color: var(--text-muted);
         line-height: 1.4;
         min-width: 0;
-        flex: 1;
     }
     @keyframes tech-tt-fade {
         to { opacity: 1; }
