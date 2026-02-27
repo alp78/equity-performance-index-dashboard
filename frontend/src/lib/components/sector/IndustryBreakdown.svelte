@@ -1,17 +1,3 @@
-<!--
-  ═══════════════════════════════════════════════════════════════════════════
-   IndustryBreakdown — Industry Turnover Pie Chart (ECharts)
-  ═══════════════════════════════════════════════════════════════════════════
-   Pie/doughnut chart showing trading turnover (close × volume) per
-   industry within the selected sector.  Industries below 2 % of total
-   are grouped into an "Other" slice.  Responds to the selectedIndustries
-   store to highlight filtered industries.
-
-   Data source : GET /sector-comparison/industry-turnover
-   Placement   : sidebar "Sector Rotation" → single-index mode, right col
-  ═══════════════════════════════════════════════════════════════════════════
--->
-
 <script>
     import { browser } from '$app/environment';
     import { onMount, onDestroy } from 'svelte';
@@ -34,6 +20,9 @@
     let observer;
     let isMobile = $state(typeof window !== 'undefined' && window.innerWidth < 640);
 
+    let abortCtrl = null;
+    let loadingTimer = null;
+
     let indexKey  = $derived(($singleSelectedIndex || [])[0] || 'sp500');
     let sector    = $derived($selectedSector || '');
     let indexCfg  = $derived(INDEX_CONFIG?.[indexKey] || {});
@@ -49,7 +38,7 @@
     let isCustom    = $derived(!!(customRange?.start));
     let periodLabel = $derived(
         isCustom ? `${fmtDate(customRange.start)} → ${fmtDate(customRange.end)}`
-                 : (currentPeriod || '1y').toUpperCase()
+            : (currentPeriod || '1y').toUpperCase()
     );
 
     // Base color for palette generation
@@ -72,27 +61,46 @@
 
     async function load(period, range, idx, sec) {
         if (!browser || !idx || !sec) return;
+        
         const pKey = range?.start ? `${range.start}_${range.end}` : (period || '1y');
         const cKey = `turnover_${idx}_${sec}_${pKey}`;
-        if (cache[cKey]) { rows = cache[cKey]; hasEverLoaded = true; return; }
-        loading = true;
+        
+        if (cache[cKey]) { 
+            rows = cache[cKey]; 
+            hasEverLoaded = true; 
+            return; 
+        }
+
+        if (abortCtrl) abortCtrl.abort();
+        abortCtrl = new AbortController();
+
+        clearTimeout(loadingTimer);
+        loadingTimer = setTimeout(() => { loading = true; }, 150);
+
         try {
             const base = `${API_BASE_URL}/sector-comparison/industry-turnover?index=${idx}&sector=${encodeURIComponent(sec)}`;
             const url  = range?.start
                 ? `${base}&start=${range.start}&end=${range.end}`
                 : `${base}&period=${period||'1y'}`;
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 12000);
-            const res = await fetch(url, { signal: ctrl.signal });
+            
+            const t = setTimeout(() => abortCtrl.abort(), 12000);
+            const res = await fetch(url, { signal: abortCtrl.signal });
             clearTimeout(t);
+            
             if (res.ok) {
                 const data = await res.json();
                 cache[cKey] = data;
                 rows = data;
             }
-        } catch {}
-        loading = false;
-        hasEverLoaded = true;
+        } catch (err) {
+            // Fetch aborts will be caught here; safely ignored
+        } finally {
+            clearTimeout(loadingTimer);
+            if (!abortCtrl.signal.aborted) {
+                loading = false;
+                hasEverLoaded = true;
+            }
+        }
     }
 
     $effect(() => { load(currentPeriod, customRange, indexKey, sector); });
@@ -254,7 +262,6 @@
 
 <Card fill padding={false} class="min-h-0">
 
-    <!-- header -->
     <div class="px-5 pt-5 pb-3 flex-shrink-0">
         <SectionHeader title="Industry Turnover" subtitle="Turnover ({currSym})" border titleClass={currentSectorIndustries.length > 0 ? 'text-blue-400' : ''}>
             {#snippet action()}
@@ -271,7 +278,6 @@
         {/if}
     </div>
 
-    <!-- chart area -->
     <div class="flex-1 min-h-0 relative">
         {#if pieData.length === 0 && !loading && !hasEverLoaded && sector}
             <div class="absolute inset-0 flex items-center justify-center">
